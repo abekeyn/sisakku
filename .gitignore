@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# ローカルDB（クラウドはPostgreSQLを使う／顧客情報を含むので公開しない）
+data/
+
+# 秘密情報（接続URL・パスワード。絶対にGitに上げない）
+.streamlit/secrets.toml
+
+# 顧客情報を含むCSVは公開リポジトリに含めない（デプロイ後に画面からアップロード）
+*発行済データ*.csv
+
+# 出力・作業ファイル
+ヤマト出荷CSV/
+_inspect_out.txt
+run_test*
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
