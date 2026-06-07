@@ -68,7 +68,7 @@ st.write(f"選択中：**{len(selected)} 件**")
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("↓ ヤマトCSVを保存", type="primary", use_container_width=True,
+    if st.button("📄 ヤマトCSVを作成", type="primary", use_container_width=True,
                  disabled=selected.empty):
         # 編集内容をDBへ反映
         for _, r in edited.iterrows():
@@ -85,7 +85,8 @@ with col1:
         if res["mode"] == "saved":
             st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました（{len(orders_for_csv)}件）。\n\n📄 {res['path']}")
         else:
-            st.info(f"今すぐ書けないため出力を予約しました（{len(orders_for_csv)}件）。PC起動時に自動保存されます。")
+            st.success(f"送り状CSVを作成しました（{len(orders_for_csv)}件）。👇 下の「送り状CSVをダウンロード」で保存できます。\n\n"
+                       "（PCを起動すると、デスクトップの『ヤマト出荷CSV』にも自動保存されます）")
 
 with col2:
     if st.button("✓ 選択した注文を「出荷済み」にする", use_container_width=True,
@@ -95,14 +96,14 @@ with col2:
         st.success(f"{len(selected)} 件を出荷済みにしました。")
         st.rerun()
 
-# ダウンロード（控え用）
+# ダウンロード（クラウドではこれが保存の主役）
 if st.session_state.get("csv_bytes"):
     st.download_button(
-        "↓ CSVをダウンロード（控え）",
+        "⬇️ 送り状CSVをダウンロード",
         data=st.session_state["csv_bytes"],
         file_name=exporter.make_filename(),
         mime="text/csv",
-        use_container_width=True,
+        use_container_width=True, type="primary",
     )
     st.caption("※ Shift-JIS形式・ヤマトB2クラウド取込フォーマット。"
                "B2クラウドにアップロード → 送り状印刷 → 発送が済んだら「出荷済みにする」を押してください。")

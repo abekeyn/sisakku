@@ -9,10 +9,19 @@
 from __future__ import annotations
 
 import base64
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
 from . import db
+
+
+def is_local_pc() -> bool:
+    """このアプリが阿部さんのPC上で動いているか（クラウドはLinux）。
+
+    PCでだけデスクトップへ直接保存し、クラウドでは予約＋ダウンロードにする。
+    """
+    return sys.platform.startswith("win")
 
 ROOT = Path(__file__).resolve().parent.parent
 # プロジェクトはデスクトップ直下にあるので、その親＝デスクトップ
@@ -61,15 +70,20 @@ def reserve(csv_bytes: bytes, d: date | None = None) -> int:
 
 
 def save_or_reserve(csv_bytes: bytes, d: date | None = None) -> dict:
-    """まず直接保存を試み、できなければ予約する。
+    """PCならデスクトップへ直接保存、クラウドなら予約する。
 
     returns {"mode": "saved"|"reserved", "path": str|"", "error": str}
     """
-    ok, info = save_now(csv_bytes, d)
-    if ok:
-        return {"mode": "saved", "path": info, "error": ""}
+    if is_local_pc():
+        ok, info = save_now(csv_bytes, d)
+        if ok:
+            return {"mode": "saved", "path": info, "error": ""}
+        # PCだが書けない場合も予約にフォールバック
+        reserve(csv_bytes, d)
+        return {"mode": "reserved", "path": "", "error": info}
+    # クラウド（Linux）：デスクトップに書けないので予約のみ
     reserve(csv_bytes, d)
-    return {"mode": "reserved", "path": "", "error": info}
+    return {"mode": "reserved", "path": "", "error": ""}
 
 
 def process_pending() -> list[str]:

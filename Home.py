@@ -145,7 +145,7 @@ if not s.get("name"):
 c1, c2 = st.columns(2)
 
 with c1:
-    if st.button("↓ ヤマトCSVを保存", type="primary", use_container_width=True,
+    if st.button("📄 ヤマトCSVを作成", type="primary", use_container_width=True,
                  disabled=not sel_ids):
         for _, r in edited.iterrows():
             db.update_order(int(r["_id"]), {
@@ -160,8 +160,8 @@ with c1:
         if res["mode"] == "saved":
             st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました。\n\n📄 {res['path']}")
         else:
-            st.info("このPCのフォルダに今すぐ書けないため、出力を**予約**しました。"
-                    "PCが起動すると自動で『ヤマト出荷CSV』に保存されます。")
+            st.success("送り状CSVを作成しました。👇 下の「送り状CSVをダウンロード」で保存できます。\n\n"
+                       "（PCを起動すると、デスクトップの『ヤマト出荷CSV』にも自動保存されます）")
 
 with c2:
     if st.button("✓ 出荷完了（各サイトも反映）", use_container_width=True,
@@ -185,13 +185,13 @@ with c2:
             st.link_button("コメフル管理画面を開く", komeful.SELLER_URL, use_container_width=True)
         st.session_state["dash_reload"] = True
 
-# CSVダウンロード（保存に加えて手元にも欲しいとき用）
+# CSVダウンロード（クラウドではこれが保存の主役）
 if st.session_state.get("dash_csv"):
     st.download_button(
-        "↓ CSVをダウンロード（控え）",
+        "⬇️ 送り状CSVをダウンロード",
         data=st.session_state["dash_csv"],
         file_name=exporter.make_filename(),
-        mime="text/csv", use_container_width=True,
+        mime="text/csv", use_container_width=True, type="primary",
     )
 
 if st.session_state.pop("dash_reload", False):
