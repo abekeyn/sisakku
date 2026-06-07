@@ -9,4 +9,4 @@ font = "sans serif"
 gatherUsageStats = false
 
 [server]
-headless = false
+headless = true
