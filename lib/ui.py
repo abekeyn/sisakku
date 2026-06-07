@@ -76,6 +76,12 @@ def inject_css() -> None:
             color: var(--ink);
         }}
 
+        /* 上部ツールバーにロゴが隠れないよう、本文の上に余白を確保 */
+        .block-container, [data-testid="stMainBlockContainer"], [data-testid="stAppViewBlockContainer"] {{
+            padding-top: 3.4rem !important;
+        }}
+        .brand-header {{ margin-top: .3rem; }}
+
         /* 見出しは明朝 */
         h1, h2, h3, h4 {{
             font-family: 'Shippori Mincho', 'Yu Mincho', 'Hiragino Mincho ProN', serif !important;
@@ -171,7 +177,7 @@ def inject_css() -> None:
 
         /* スマホ最適化 */
         @media (max-width: 640px) {{
-            .block-container {{ padding: .8rem .6rem 3rem !important; }}
+            .block-container {{ padding: 3rem .6rem 3rem !important; }}
             .brand-sub {{ letter-spacing:.12em; font-size:.82rem; white-space:nowrap; }}
             .stButton > button, .stDownloadButton > button {{ width:100%; padding:.7rem; font-size:.95rem; }}
             [data-testid="stMetricValue"] {{ font-size: 1.5rem; }}
