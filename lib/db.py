@@ -106,7 +106,12 @@ def get_engine() -> Engine:
         return _engine
     url = config.database_url()
     if url:
-        _engine = create_engine(_normalize_url(url), pool_pre_ping=True)
+        _engine = create_engine(
+            _normalize_url(url),
+            pool_pre_ping=True,   # 切れた接続を自動回復（安定性）
+            pool_recycle=1800,    # 30分で接続を再生成
+            pool_size=5, max_overflow=5,
+        )
     else:
         DATA_DIR.mkdir(exist_ok=True)
         _engine = create_engine(

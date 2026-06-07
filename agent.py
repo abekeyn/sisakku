@@ -1,29 +1,47 @@
 # -*- coding: utf-8 -*-
-"""予約出力エージェント（PC起動時に自動実行する用）。
+"""予約出力エージェント（PCで常駐）。
 
-アプリ(Streamlit)を開かなくても、スマホ等から予約された
-ヤマト出荷CSVをデスクトップの『ヤマト出荷CSV』フォルダへ書き出す。
+クラウド（スマホ等）で「ヤマトCSVを作成」すると、注文がクラウドDBに
+『予約』として積まれる。このエージェントがそれを監視し、PCのデスクトップ
+『ヤマト出荷CSV』フォルダへ自動で書き出す。
 
-スタートアップに登録しておくと、PC起動のたびに自動で実行される。
-（クラウド公開してDBを共有すると、PC停止中にスマホから予約 → 起動時に自動保存 が実現する）
+- 監視モード（常駐）:  python agent.py --watch
+- 1回だけ実行:        python agent.py
+
+スタートアップに登録すると、PC起動中はずっと監視し、
+PC停止中に予約された分も起動時にまとめて書き出す。
 """
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib import db, exporter  # noqa: E402
 
+INTERVAL = 6  # 監視間隔（秒）
+
+
+def _process_once() -> int:
+    written = exporter.process_pending()
+    for p in written:
+        print("書き出し:", p, flush=True)
+    return len(written)
+
 
 def main() -> None:
     db.init_db()
-    written = exporter.process_pending()
-    if written:
-        print(f"{len(written)} 件の予約出力を書き出しました：")
-        for p in written:
-            print("  ", p)
+    if "--watch" in sys.argv:
+        print(f"予約出力エージェント開始（{INTERVAL}秒ごとに監視）", flush=True)
+        while True:
+            try:
+                _process_once()
+            except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
+                print("一時エラー（次回再試行）:", e, flush=True)
+            time.sleep(INTERVAL)
     else:
-        print("予約された出力はありません。")
+        n = _process_once()
+        print(f"{n} 件書き出しました。" if n else "予約された出力はありません。")
 
 
 if __name__ == "__main__":
