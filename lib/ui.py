@@ -17,6 +17,19 @@ from . import config
 
 ROOT = Path(__file__).resolve().parent.parent
 
+
+@lru_cache(maxsize=1)
+def _page_icon():
+    """ブラウザのタブ／スマホのホーム画面アイコン（正方形ロゴ）。"""
+    p = ROOT / "icon.png"
+    if not p.exists():
+        return "🌾"
+    try:
+        from PIL import Image
+        return Image.open(p)
+    except Exception:  # noqa: BLE001
+        return "🌾"
+
 # ブランドカラー
 NAVY = "#211F4B"       # 阿部農園ロゴの藍
 NAVY_SOFT = "#3A3768"
@@ -110,8 +123,12 @@ def inject_css() -> None:
         .stTabs [data-baseweb="tab-highlight"] {{ background: var(--gold) !important; }}
 
         /* ブランドヘッダー */
-        .brand-header {{ text-align:center; padding: 8px 0 4px; }}
-        .brand-header img {{ height: 96px; }}
+        .brand-header {{ text-align:center; padding: 8px 0 4px; overflow:visible; }}
+        .brand-header img {{
+            display:block; margin:0 auto;
+            height: clamp(46px, 12vw, 88px);
+            width:auto; max-width:92%; object-fit:contain;
+        }}
         .brand-sub {{
             font-family:'Shippori Mincho',serif; color: var(--gold);
             font-size: .95rem; letter-spacing:.25em; margin-top:2px;
@@ -155,7 +172,6 @@ def inject_css() -> None:
         /* スマホ最適化 */
         @media (max-width: 640px) {{
             .block-container {{ padding: .8rem .6rem 3rem !important; }}
-            .brand-header img {{ height: 58px; }}
             .brand-sub {{ letter-spacing:.12em; font-size:.82rem; white-space:nowrap; }}
             .stButton > button, .stDownloadButton > button {{ width:100%; padding:.7rem; font-size:.95rem; }}
             [data-testid="stMetricValue"] {{ font-size: 1.5rem; }}
@@ -216,7 +232,7 @@ def require_login() -> None:
 
 def setup_page(title: str, icon: str = "🌾", subtitle: str = "", layout: str = "centered") -> None:
     """各ページ先頭の定型処理（ページ設定＋CSS＋ログイン＋ヘッダー）。"""
-    st.set_page_config(page_title=title, page_icon=icon, layout=layout)
+    st.set_page_config(page_title=title, page_icon=_page_icon(), layout=layout)
     inject_css()
     require_login()
     if subtitle is not None:
