@@ -221,13 +221,18 @@ def view_home():
         dlg_csv_import()
 
     # ---- 今日のサマリ ----
-    m1, m2, m3 = st.columns(3)
+    genmai = [o for o in pending if o["category"] == "玄米"]
+    genmai_qty = sum(o["qty"] or 1 for o in genmai)
+    genmai_kg = sum((o["weight_kg"] or 0) * (o["qty"] or 1) for o in genmai)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("精米する量", f"{summary['total_kg']:g} kg")
     m2.metric("精米 袋数", f"{sum(p['qty'] for p in summary['by_product'])} 袋")
-    m3.metric("発送待ち", f"{len(unshipped)} 件")
+    m3.metric("玄米 袋数", f"{genmai_qty} 袋",
+              help=f"玄米の合計 {genmai_kg:g}kg（精米不要・そのまま用意）")
+    m4.metric("発送待ち", f"{len(unshipped)} 件")
 
-    # ---- ① 精米キュー ----
-    ui.section("① 精米する", "精米が終わったら「精米完了」。発送待ちに移ります")
+    # ---- ① 精米・用意キュー ----
+    ui.section("① 精米・用意する", "精米が終わったら「精米完了」。玄米・やさいは精米不要なので、そのまま用意してください")
     groups: dict[str, dict] = {}
     for o in pending:
         qty = o["qty"] or 1
@@ -244,8 +249,18 @@ def view_home():
         g["qty"] += qty
         g["kg"] += kg
 
-    if not groups:
-        st.success("精米待ちはありません 🎉")
+    # 精米不要（玄米・やさい等）の用意リスト
+    prep_groups: dict[str, dict] = {}
+    for o in pending:
+        if o["needs_milling"] or o["category"] == "複合":
+            continue
+        qty = o["qty"] or 1
+        g = prep_groups.setdefault(o["product_name"], {"qty": 0, "kg": 0.0, "cat": o["category"]})
+        g["qty"] += qty
+        g["kg"] += (o["weight_kg"] or 0) * qty
+
+    if not groups and not prep_groups:
+        st.success("精米・用意するものはありません 🎉")
     for key, g in sorted(groups.items(), key=lambda x: -x[1]["kg"]):
         c1, c2 = st.columns([3, 1])
         c1.markdown(
@@ -257,6 +272,14 @@ def view_home():
             db.update_order_status(g["ids"], "milled")
             st.toast(f"{key} を精米済みにしました", icon="🌾")
             st.rerun(scope="fragment")
+    for key, g in sorted(prep_groups.items(), key=lambda x: -x[1]["kg"]):
+        kg_txt = f' ＝ <b>{g["kg"]:g}kg</b>' if g["kg"] else ""
+        st.markdown(
+            f'<div class="mill-row"><span class="mill-big">{key}</span>'
+            f'<span>×{g["qty"]}袋{kg_txt}　'
+            f'<span class="chip" style="color:#475569;background:#E2E8F0">精米不要</span></span></div>',
+            unsafe_allow_html=True,
+        )
 
     # 複合で精米量未入力のもの
     checks = [o for o in pending
