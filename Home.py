@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
-"""トップ＝精米・発送ダッシュボード（ハブ画面）。"""
+"""阿部農園 精米・発送管理システム（単一アプリ・タブナビ型）。
+
+画面構成（受注管理システムの定石にならったワークキュー型）：
+- 🏠 ホーム : 今日やること。精米キュー → 発送キュー → 出荷 まで一画面で完結
+- 📋 注文   : 全注文の検索・編集・削除・状態変更
+- 👤 顧客   : 顧客マスタの検索・追加・編集・削除
+- ⚙ 設定   : 送り主・商品・CSV取込・BASE連携・データ管理
+追加・編集はすべてモーダル（ダイアログ）で行い、画面遷移しない。
+"""
 from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
 
-from lib import base_api, bootstrap, db, exporter, komeful, logic, ui, yamato
+from lib import base_api, bootstrap, db, exporter, komeful, logic, seed, ui, yamato
 
-ui.setup_page("精米・発送ダッシュボード", icon="🌾", subtitle="精 米 ・ 発 送 管 理")
+ui.setup_page()
 bootstrap.ensure_initialized()
 
 TIME_CODES = {
@@ -15,186 +23,527 @@ TIME_CODES = {
     "16-18時": "1618", "18-20時": "1820", "19-21時": "1921",
 }
 CODE_TO_LABEL = {v: k for k, v in TIME_CODES.items()}
+CHANNEL_OPTS = {"LINE": "line", "コメフル": "komeful", "BASE": "base", "手入力": "manual"}
+
+
+def _parse_date(s: str) -> date:
+    try:
+        return datetime.strptime(str(s), "%Y/%m/%d").date()
+    except (ValueError, TypeError):
+        return date.today()
+
+
+def _unshipped(orders):
+    return [o for o in orders if o["status"] in ("pending", "milled")]
+
 
 # ===========================================================================
-# クイック操作（取込・追加）
+# ダイアログ（モーダル）
 # ===========================================================================
-base_ready = bool((db.get_setting("base_config") or {}).get("refresh_token"))
+@st.dialog("➕ 注文を追加")
+def dlg_add_order():
+    customers = db.list_customers()
+    products = db.list_products()
+    prod_labels = {p["name"]: p["id"] for p in products}
 
-a1, a2 = st.columns(2)
-with a1:
-    if st.button("BASE取込", use_container_width=True):
-        if base_ready:
+    tab_old, tab_new = st.tabs(["👤 既存のお客様", "🆕 新規のお客様"])
+
+    with tab_old:
+        if not customers:
+            st.info("顧客が未登録です。「新規のお客様」から追加してください。")
+        else:
+            cust_labels = {f'{c["name"]}（{c["address"]}）': c["id"] for c in customers}
+            sel = st.selectbox("お客様（名前で検索できます）", list(cust_labels))
+            c1, c2 = st.columns(2)
+            prod = c1.selectbox("商品", list(prod_labels))
+            qty = c2.number_input("数量", min_value=1, value=1)
+            c3, c4 = st.columns(2)
+            ch = c3.selectbox("経路", list(CHANNEL_OPTS))
+            ship = c4.date_input("出荷予定日", value=date.today())
+            mill = st.number_input("複合の精米kg（複合商品のみ・1個あたり）", min_value=0.0, value=0.0, step=1.0)
+            note = st.text_input("メモ（任意）")
+            if st.button("追加する", type="primary", use_container_width=True):
+                db.add_order({
+                    "customer_id": cust_labels[sel], "product_id": prod_labels[prod],
+                    "qty": int(qty), "channel": CHANNEL_OPTS[ch],
+                    "order_date": date.today().strftime("%Y/%m/%d"),
+                    "ship_date": ship.strftime("%Y/%m/%d"),
+                    "delivery_date": "", "delivery_time": "",
+                    "milling_kg_override": mill if mill > 0 else None,
+                    "note": note, "status": "pending", "external_id": "", "dispatch_ref": "",
+                })
+                st.rerun()
+
+    with tab_new:
+        n1, n2 = st.columns(2)
+        name = n1.text_input("お届け先名 *")
+        kana = n2.text_input("フリガナ")
+        n3, n4 = st.columns([1, 2])
+        zipc = n3.text_input("郵便番号 *", placeholder="9630211")
+        addr = n4.text_input("住所 *")
+        n5, n6 = st.columns(2)
+        addr2 = n5.text_input("建物名・部屋番号")
+        tel = n6.text_input("電話番号 *")
+        o1, o2 = st.columns(2)
+        prod_n = o1.selectbox("商品", list(prod_labels), key="np")
+        qty_n = o2.number_input("数量", min_value=1, value=1, key="nq")
+        o3, o4 = st.columns(2)
+        ch_n = o3.selectbox("経路", list(CHANNEL_OPTS), key="nc")
+        ship_n = o4.date_input("出荷予定日", value=date.today(), key="ns")
+        if st.button("お客様＋注文を追加", type="primary", use_container_width=True, key="nbtn"):
+            if not (name and zipc and addr and tel):
+                st.error("名前・郵便番号・住所・電話番号は必須です。")
+            else:
+                cid = db.upsert_customer({
+                    "name": name, "kana": kana, "tel": tel, "zip": zipc,
+                    "address": addr, "address2": addr2, "honorific": "様",
+                })
+                db.add_order({
+                    "customer_id": cid, "product_id": prod_labels[prod_n],
+                    "qty": int(qty_n), "channel": CHANNEL_OPTS[ch_n],
+                    "order_date": date.today().strftime("%Y/%m/%d"),
+                    "ship_date": ship_n.strftime("%Y/%m/%d"),
+                    "delivery_date": "", "delivery_time": "",
+                    "milling_kg_override": None, "note": "",
+                    "status": "pending", "external_id": "", "dispatch_ref": "",
+                })
+                st.rerun()
+
+
+@st.dialog("✏️ 注文を編集")
+def dlg_edit_order(o):
+    st.markdown(f'**{o["customer_name"]} 様**　{o["product_name"]}')
+    c1, c2 = st.columns(2)
+    qty = c1.number_input("数量", min_value=1, value=int(o["qty"] or 1))
+    ship = c2.date_input("出荷予定日", value=_parse_date(o["ship_date"]))
+    c3, c4 = st.columns(2)
+    ddate = c3.text_input("お届け日（空欄=指定なし）", o["delivery_date"] or "", placeholder="2026/06/15")
+    dtime = c4.selectbox("時間帯", list(TIME_CODES),
+                         index=list(TIME_CODES.values()).index(o["delivery_time"])
+                         if o["delivery_time"] in TIME_CODES.values() else 0)
+    mill = st.number_input(
+        "複合の精米kg（1個あたり）", min_value=0.0, step=1.0,
+        value=float(o["milling_kg_override"] or 0),
+        help="複合商品のとき、1個あたり何kg精米するか。入力すると精米量に反映されます。",
+    ) if o["category"] == "複合" else None
+    note = st.text_input("メモ", o["note"] or "")
+    b1, b2 = st.columns(2)
+    if b1.button("保存", type="primary", use_container_width=True):
+        db.update_order(o["id"], {
+            "qty": int(qty), "ship_date": ship.strftime("%Y/%m/%d"),
+            "delivery_date": ddate.strip(), "delivery_time": TIME_CODES[dtime],
+            "milling_kg_override": (mill if (mill and mill > 0) else None) if o["category"] == "複合" else o["milling_kg_override"],
+            "note": note,
+        })
+        st.rerun()
+    if b2.button("🗑 この注文を削除", use_container_width=True):
+        db.delete_order(o["id"])
+        st.rerun()
+
+
+@st.dialog("👤 お客様情報")
+def dlg_customer(c=None):
+    is_new = c is None
+    c = c or {}
+    n1, n2 = st.columns(2)
+    name = n1.text_input("お届け先名 *", c.get("name", ""))
+    kana = n2.text_input("フリガナ", c.get("kana", ""))
+    n3, n4 = st.columns([1, 2])
+    zipc = n3.text_input("郵便番号 *", c.get("zip", ""))
+    addr = n4.text_input("住所 *", c.get("address", ""))
+    n5, n6 = st.columns(2)
+    addr2 = n5.text_input("建物名等", c.get("address2", ""))
+    tel = n6.text_input("電話番号 *", c.get("tel", ""))
+    company = st.text_input("会社・部門名", c.get("company", ""))
+    if st.button("保存", type="primary", use_container_width=True):
+        if not (name and zipc and addr):
+            st.error("名前・郵便番号・住所は必須です。")
+        else:
+            data = {"name": name, "kana": kana, "tel": tel, "zip": zipc,
+                    "address": addr, "address2": addr2, "company": company,
+                    "honorific": "様"}
+            if is_new:
+                db.upsert_customer(data)
+            else:
+                db.update_customer(c["id"], data)
+            st.rerun()
+
+
+@st.dialog("📥 CSVから取り込む")
+def dlg_csv_import():
+    tab_b, tab_k = st.tabs(["🟢 BASE", "🟡 コメフル"])
+    with tab_b:
+        up = st.file_uploader("BASEの注文CSV", type=["csv"], key="csv_b")
+        if up and st.button("取り込む", type="primary", key="btn_b"):
+            r = base_api.import_base_csv(up.getvalue())
+            if r.get("error"):
+                st.error(r["error"])
+            else:
+                st.success(f"追加 {r['added']} 件／既存 {r['skipped']} 件")
+    with tab_k:
+        st.link_button("コメフル管理画面を開く", komeful.SELLER_URL, use_container_width=True)
+        up2 = st.file_uploader("コメフルの注文CSV", type=["csv"], key="csv_k")
+        if up2 and st.button("取り込む", type="primary", key="btn_k"):
+            r = komeful.import_komeful_csv(up2.getvalue())
+            if r.get("error"):
+                st.error(r["error"])
+            else:
+                st.success(f"追加 {r['added']} 件／既存 {r['skipped']} 件")
+
+
+# ===========================================================================
+# 🏠 ホーム（今日やること）
+# ===========================================================================
+@st.fragment
+def view_home():
+    orders_all = db.list_orders()
+    unshipped = _unshipped(orders_all)
+    pending = [o for o in unshipped if o["status"] == "pending"]
+    summary = logic.milling_summary(pending)
+
+    # ---- クイックアクション ----
+    a1, a2, a3 = st.columns(3)
+    if a1.button("➕ 注文追加", use_container_width=True):
+        dlg_add_order()
+    if a2.button("🔄 BASE取込", use_container_width=True):
+        cfg = db.get_setting("base_config") or {}
+        if not cfg.get("refresh_token"):
+            st.warning("設定タブでBASE連携を登録してください。")
+        else:
             with st.spinner("BASEから未発送の注文を取得中..."):
                 r = base_api.fetch_orders_via_api()
             if r.get("error"):
                 st.error(r["error"])
             else:
-                st.success(f"BASE：未発送 {r.get('target', 0)} 件のうち、"
-                           f"新規 {r['added']} 件を取り込みました（取込済み {r['skipped']} 件）")
+                st.toast(f"BASE：未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込", icon="✅")
+                st.rerun(scope="fragment")
+    if a3.button("📥 CSV取込", use_container_width=True):
+        dlg_csv_import()
+
+    # ---- 今日のサマリ ----
+    m1, m2, m3 = st.columns(3)
+    m1.metric("精米する量", f"{summary['total_kg']:g} kg")
+    m2.metric("精米 袋数", f"{sum(p['qty'] for p in summary['by_product'])} 袋")
+    m3.metric("発送待ち", f"{len(unshipped)} 件")
+
+    # ---- ① 精米キュー ----
+    ui.section("① 精米する", "精米が終わったら「精米完了」。発送待ちに移ります")
+    groups: dict[str, dict] = {}
+    for o in pending:
+        qty = o["qty"] or 1
+        if o["category"] == "複合" and o["milling_kg_override"]:
+            key = f'{o["product_name"]}（精米{o["milling_kg_override"]:g}kg/個）'
+            kg = o["milling_kg_override"] * qty
+        elif o["needs_milling"]:
+            key = o["product_name"]
+            kg = (o["weight_kg"] or 0) * qty
         else:
-            st.switch_page("pages/3_🛒_取込.py")
-with a2:
-    if st.button("コメフル取込", use_container_width=True):
-        st.switch_page("pages/3_🛒_取込.py")
+            continue
+        g = groups.setdefault(key, {"ids": [], "qty": 0, "kg": 0.0})
+        g["ids"].append(o["id"])
+        g["qty"] += qty
+        g["kg"] += kg
 
-b1, b2 = st.columns(2)
-with b1:
-    if st.button("＋ 注文を追加", use_container_width=True):
-        st.switch_page("pages/1_📝_注文入力.py")
-with b2:
-    if st.button("↻ 最新に更新", use_container_width=True):
-        db.clear_cache()
-        st.rerun()
+    if not groups:
+        st.success("精米待ちはありません 🎉")
+    for key, g in sorted(groups.items(), key=lambda x: -x[1]["kg"]):
+        c1, c2 = st.columns([3, 1])
+        c1.markdown(
+            f'<div class="mill-row"><span class="mill-big">{key}</span>'
+            f'<span>×{g["qty"]}袋 ＝ <b>{g["kg"]:g}kg</b></span></div>',
+            unsafe_allow_html=True,
+        )
+        if c2.button("精米完了", key=f'mill{key}', use_container_width=True):
+            db.update_order_status(g["ids"], "milled")
+            st.toast(f"{key} を精米済みにしました", icon="🌾")
+            st.rerun(scope="fragment")
 
-# ===========================================================================
-# 今日のサマリ（数字が必ず整合：出荷 = 精米 + 精米不要 + 要確認）
-# ===========================================================================
-orders = db.list_orders(status="pending")
-summary = logic.milling_summary(orders)
+    # 複合で精米量未入力のもの
+    checks = [o for o in pending
+              if o["category"] == "複合" and not o["milling_kg_override"]]
+    for o in checks:
+        c1, c2 = st.columns([3, 1])
+        c1.warning(f'⚠️ {o["customer_name"]}様の「{o["product_name"]}」は精米kgが未入力です')
+        if c2.button("入力する", key=f'fix{o["id"]}', use_container_width=True):
+            dlg_edit_order(o)
 
-total_qty = sum(o["qty"] or 1 for o in orders)
-milling_qty = sum(p["qty"] for p in summary["by_product"])
-nonmill_qty = sum(p["qty"] for p in summary["non_milling"])
-check_qty = sum(x["qty"] for x in summary["needs_check"])
+    # ---- ② 発送キュー ----
+    st.markdown('<hr class="brand-rule"/>', unsafe_allow_html=True)
+    ui.section("② 発送する", "出荷する注文を選んで、CSV作成 → 出荷完了")
 
-ui.section("今日の精米・発送")
-m1, m2, m3 = st.columns(3)
-m1.metric("出荷 合計", f"{total_qty} 袋", help="= 精米 + 精米不要 + 要確認")
-m2.metric("精米する量", f"{summary['total_kg']:g} kg")
-m3.metric("精米 袋数", f"{milling_qty} 袋")
+    if not unshipped:
+        st.info("発送待ちの注文はありません。")
+        return
 
-st.caption(
-    f"内訳：精米 **{milling_qty}袋**／精米不要 **{nonmill_qty}袋**"
-    f"／精米量の確認待ち **{check_qty}袋**　"
-    f"（合計 {total_qty}袋・{len(orders)}件）"
-)
+    sel_ids = []
+    for o in unshipped:
+        c1, c2, c3 = st.columns([0.5, 5.2, 0.8])
+        checked = c1.checkbox(" ", value=True, key=f'sel{o["id"]}',
+                              label_visibility="collapsed")
+        if checked:
+            sel_ids.append(o["id"])
+        c2.markdown(ui.order_card(o), unsafe_allow_html=True)
+        with c3.popover("⋮"):
+            if st.button("✏️ 編集", key=f'e{o["id"]}', use_container_width=True):
+                dlg_edit_order(o)
+            if o["status"] == "milled":
+                if st.button("↩ 精米待ちに戻す", key=f'um{o["id"]}', use_container_width=True):
+                    db.update_order_status([o["id"]], "pending")
+                    st.rerun(scope="fragment")
 
-if summary["by_product"]:
-    st.dataframe(
-        [{"品目": p["name"], "袋数": p["qty"], "精米量(kg)": f"{p['kg']:g}"}
-         for p in summary["by_product"]],
-        use_container_width=True, hide_index=True,
-    )
-else:
-    st.info("精米が必要な未出荷注文はありません。")
+    # 出荷オプション
+    o1, o2 = st.columns(2)
+    ship_d = o1.date_input("出荷日", value=date.today(), key="bulk_ship")
+    time_sel = o2.selectbox("時間帯", ["注文の指定どおり"] + list(TIME_CODES), key="bulk_time")
 
-if summary["non_milling"]:
-    st.caption("精米不要：" + "／".join(f'{p["name"]}×{p["qty"]}' for p in summary["non_milling"]))
-if summary["needs_check"]:
-    st.warning("精米量の確認が必要：" +
-               "／".join(f'{x["customer"]}様 {x["name"]}×{x["qty"]}' for x in summary["needs_check"]))
+    sender = db.get_setting("sender") or {}
+    if not sender.get("name"):
+        st.warning("送り主が未設定です（設定タブで登録してください）")
 
-st.markdown('<hr class="brand-rule"/>', unsafe_allow_html=True)
-
-# ===========================================================================
-# 顧客別 発送リスト
-# ===========================================================================
-ui.section("発送リスト", "誰に・何を・何kg")
-
-if not orders:
-    st.info("未出荷の注文はありません。")
-    st.stop()
-
-for o in orders:
-    kg = (o["weight_kg"] or 0) * (o["qty"] or 1)
-    kg_txt = f"（{kg:g}kg）" if o["needs_milling"] else "（精米不要）" if o["category"] in ("玄米", "その他") else ""
-    st.markdown(
-        f'<div class="ship-card">'
-        f'<span class="ship-name">{o["customer_name"]} 様</span> '
-        f'{ui.channel_badge(o["channel"])}'
-        f'<div class="ship-item">{o["product_name"]} × {o["qty"]} {kg_txt}'
-        f'　/　{o["zip"]} {o["address"]}</div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-# 操作用テーブル（選択・日付調整）
-ui.section("出荷する注文を選択")
-rows = [{
-    "選択": True,
-    "お客様": o["customer_name"],
-    "内容": f'{o["product_name"]} × {o["qty"]}',
-    "経路": ui.CHANNELS.get(o["channel"], {}).get("label", o["channel"]),
-    "出荷予定日": o["ship_date"] or date.today().strftime("%Y/%m/%d"),
-    "時間帯": CODE_TO_LABEL.get(o["delivery_time"], "指定なし"),
-    "_id": o["id"],
-} for o in orders]
-edited = st.data_editor(
-    pd.DataFrame(rows), use_container_width=True, hide_index=True,
-    column_config={
-        "選択": st.column_config.CheckboxColumn("選択", default=True),
-        "お客様": st.column_config.TextColumn("お客様", disabled=True),
-        "内容": st.column_config.TextColumn("内容", disabled=True),
-        "経路": st.column_config.TextColumn("経路", disabled=True),
-        "出荷予定日": st.column_config.TextColumn("出荷予定日"),
-        "時間帯": st.column_config.SelectboxColumn("時間帯", options=list(TIME_CODES.keys())),
-        "_id": None,
-    },
-    key="dash_ship_editor",
-)
-selected = edited[edited["選択"]]
-sel_ids = [int(x) for x in selected["_id"]]
-st.write(f"選択中：**{len(sel_ids)} 件**")
-
-# ===========================================================================
-# 出荷アクション
-# ===========================================================================
-s = db.get_setting("sender") or {}
-if not s.get("name"):
-    st.warning("送り主が未設定です。「設定」ページで登録してください。")
-
-c1, c2 = st.columns(2)
-
-with c1:
-    if st.button("📄 ヤマトCSVを作成", type="primary", use_container_width=True,
-                 disabled=not sel_ids):
-        for _, r in edited.iterrows():
-            db.update_order(int(r["_id"]), {
-                "ship_date": r["出荷予定日"],
-                "delivery_time": TIME_CODES.get(r["時間帯"], "0000"),
-            })
-        sel = set(sel_ids)
-        targets = [o for o in db.list_orders(status="pending") if o["id"] in sel]
-        csv_bytes = yamato.export_csv(targets, s)
-        st.session_state["dash_csv"] = csv_bytes
+    b1, b2 = st.columns(2)
+    if b1.button(f"📄 ヤマトCSV作成（{len(sel_ids)}件）", type="primary",
+                 use_container_width=True, disabled=not sel_ids):
+        targets = [o for o in unshipped if o["id"] in set(sel_ids)]
+        for o in targets:
+            upd = {"ship_date": ship_d.strftime("%Y/%m/%d")}
+            if time_sel != "注文の指定どおり":
+                upd["delivery_time"] = TIME_CODES[time_sel]
+            db.update_order(o["id"], upd)
+        targets = [o for o in _unshipped(db.list_orders()) if o["id"] in set(sel_ids)]
+        csv_bytes = yamato.export_csv(targets, sender)
+        st.session_state["csv_data"] = csv_bytes
         res = exporter.save_or_reserve(csv_bytes)
         if res["mode"] == "saved":
-            st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました。\n\n📄 {res['path']}")
+            st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n📄 {res['path']}")
         else:
-            st.success("送り状CSVを作成しました。👇 下の「送り状CSVをダウンロード」で保存できます。\n\n"
-                       "（PCを起動すると、デスクトップの『ヤマト出荷CSV』にも自動保存されます）")
+            st.success("CSVを作成しました。下のボタンでダウンロードできます。"
+                       "（PC起動中なら数秒でデスクトップにも自動保存されます）")
 
-with c2:
-    if st.button("✓ 出荷完了（各サイトも反映）", use_container_width=True,
+    if b2.button(f"✅ 出荷完了（{len(sel_ids)}件）", use_container_width=True,
                  disabled=not sel_ids,
-                 help="自社を出荷済みにし、BASEはAPIで自動発送完了。コメフルは管理画面リンクを表示します。"):
-        sel = set(sel_ids)
-        targets = [o for o in db.list_orders(status="pending") if o["id"] in sel]
-        msgs, komeful_needed = [], False
+                 help="BASEの注文はAPIで自動的に発送完了になります"):
+        targets = [o for o in unshipped if o["id"] in set(sel_ids)]
+        msgs, komeful_flag = [], False
         for o in targets:
             if o["channel"] == "base":
                 ok, msg = base_api.dispatch_order(o)
                 msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
             elif o["channel"] == "komeful":
-                komeful_needed = True
+                komeful_flag = True
         db.update_order_status(sel_ids, "shipped")
-        st.success(f"{len(targets)} 件を出荷済みにしました。")
+        st.success(f"{len(sel_ids)} 件を出荷済みにしました。")
         for m in msgs:
             st.write(m)
-        if komeful_needed:
-            st.info("コメフルの注文があります。管理画面で出荷処理をしてください。")
-            st.link_button("コメフル管理画面を開く", komeful.SELLER_URL, use_container_width=True)
-        st.session_state["dash_reload"] = True
+        if komeful_flag:
+            st.link_button("🛒 コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
+        st.rerun(scope="fragment")
 
-# CSVダウンロード（クラウドではこれが保存の主役）
-if st.session_state.get("dash_csv"):
-    st.download_button(
-        "⬇️ 送り状CSVをダウンロード",
-        data=st.session_state["dash_csv"],
-        file_name=exporter.make_filename(),
-        mime="text/csv", use_container_width=True, type="primary",
+    if st.session_state.get("csv_data"):
+        st.download_button(
+            "⬇️ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
+            file_name=exporter.make_filename(), mime="text/csv",
+            use_container_width=True,
+        )
+        st.caption("ヤマトB2クラウド「送り状発行 → 外部データ取込」にアップロードすると印刷できます。")
+
+
+# ===========================================================================
+# 📋 注文（一覧・検索・編集）
+# ===========================================================================
+@st.fragment
+def view_orders():
+    f1, f2 = st.columns([2, 3])
+    flt = f1.segmented_control(
+        "状態", ["未出荷", "出荷済み", "すべて"], default="未出荷",
+        key="oflt", label_visibility="collapsed",
+    ) or "未出荷"
+    q = f2.text_input("検索", placeholder="🔍 お客様名・商品名で検索",
+                      key="oq", label_visibility="collapsed")
+
+    orders = db.list_orders()
+    if flt == "未出荷":
+        orders = _unshipped(orders)
+    elif flt == "出荷済み":
+        orders = [o for o in orders if o["status"] == "shipped"]
+    if q.strip():
+        key = logic.normalize_text(q)
+        orders = [o for o in orders
+                  if key in logic.normalize_text(o["customer_name"])
+                  or key in logic.normalize_text(o["product_name"])]
+
+    st.caption(f"{len(orders)} 件")
+    for o in orders[:80]:
+        c1, c2 = st.columns([6, 0.8])
+        meta = f'<div class="o-meta">注文日 {o["order_date"] or "-"}／出荷予定 {o["ship_date"] or "-"}</div>'
+        c1.markdown(ui.order_card(o, meta), unsafe_allow_html=True)
+        with c2.popover("⋮"):
+            if o["status"] != "shipped":
+                if st.button("✏️ 編集", key=f'oe{o["id"]}', use_container_width=True):
+                    dlg_edit_order(o)
+                if st.button("✅ 出荷済みにする", key=f'os{o["id"]}', use_container_width=True):
+                    db.update_order_status([o["id"]], "shipped")
+                    st.rerun(scope="fragment")
+            else:
+                if st.button("↩ 未出荷に戻す", key=f'ob{o["id"]}', use_container_width=True):
+                    db.update_order_status([o["id"]], "pending")
+                    st.rerun(scope="fragment")
+            if st.button("🗑 削除", key=f'od{o["id"]}', use_container_width=True):
+                db.delete_order(o["id"])
+                st.rerun(scope="fragment")
+    if len(orders) > 80:
+        st.caption(f"…ほか {len(orders)-80} 件（検索で絞り込めます）")
+
+
+# ===========================================================================
+# 👤 顧客（一覧・追加・編集）
+# ===========================================================================
+@st.fragment
+def view_customers():
+    c1, c2 = st.columns([3, 1.2])
+    q = c1.text_input("検索", placeholder="🔍 名前・住所で検索",
+                      key="cq", label_visibility="collapsed")
+    if c2.button("➕ 新規追加", use_container_width=True):
+        dlg_customer(None)
+
+    customers = db.list_customers()
+    if q.strip():
+        key = logic.normalize_text(q)
+        customers = [c for c in customers
+                     if key in logic.normalize_text(c["name"])
+                     or key in logic.normalize_text(c["address"])]
+
+    order_counts: dict[int, int] = {}
+    for o in db.list_orders():
+        order_counts[o["customer_id"]] = order_counts.get(o["customer_id"], 0) + 1
+
+    st.caption(f"{len(customers)} 名")
+    for c in customers:
+        k1, k2 = st.columns([6, 0.8])
+        n = order_counts.get(c["id"], 0)
+        k1.markdown(
+            f'<div class="o-card"><span class="o-name">{c["name"]} 様</span>　'
+            f'<span class="o-meta">注文 {n} 回</span>'
+            f'<div class="o-meta">〒{c["zip"]}　{c["address"]}{c["address2"] or ""}　📞 {c["tel"]}</div></div>',
+            unsafe_allow_html=True,
+        )
+        with k2.popover("⋮"):
+            if st.button("✏️ 編集", key=f'ce{c["id"]}', use_container_width=True):
+                dlg_customer(c)
+            if n == 0:
+                if st.button("🗑 削除", key=f'cd{c["id"]}', use_container_width=True):
+                    db.delete_customer(c["id"])
+                    st.rerun(scope="fragment")
+            else:
+                st.caption("注文履歴があるため削除不可")
+
+
+# ===========================================================================
+# ⚙ 設定
+# ===========================================================================
+def view_settings():
+    tab_sender, tab_prod, tab_base, tab_data = st.tabs(
+        ["📮 送り主", "🍚 商品", "🔗 BASE連携", "🗃 データ"]
     )
 
-if st.session_state.pop("dash_reload", False):
-    st.rerun()
+    with tab_sender:
+        s = db.get_setting("sender") or {}
+        with st.form("sender_form"):
+            c1, c2 = st.columns(2)
+            name = c1.text_input("ご依頼主名", s.get("name", ""))
+            kana = c2.text_input("フリガナ", s.get("kana", ""))
+            c3, c4 = st.columns([1, 2])
+            zipc = c3.text_input("郵便番号", s.get("zip", ""))
+            addr = c4.text_input("住所", s.get("address", ""))
+            c5, c6 = st.columns(2)
+            addr2 = c5.text_input("建物名等", s.get("address2", ""))
+            tel = c6.text_input("電話番号", s.get("tel", ""))
+            if st.form_submit_button("💾 保存", type="primary"):
+                db.set_setting("sender", {
+                    "name": name, "kana": kana, "tel": tel,
+                    "zip": zipc, "address": addr, "address2": addr2,
+                })
+                st.success("保存しました。")
+
+    with tab_prod:
+        st.caption("「精米が必要」の商品だけが精米量に加算されます。『品名(送り状用)』が送り状に印字されます。")
+        products = db.list_products(active_only=False)
+        pdf = pd.DataFrame([{
+            "商品名": p["name"], "区分": p["category"], "重量kg": p["weight_kg"],
+            "精米が必要": bool(p["needs_milling"]), "品名(送り状用)": p["yamato_name"],
+            "並び順": p["sort_order"], "有効": bool(p["active"]),
+        } for p in products])
+        edited = st.data_editor(
+            pdf, use_container_width=True, hide_index=True, num_rows="dynamic",
+            column_config={
+                "区分": st.column_config.SelectboxColumn("区分", options=["精米", "玄米", "複合", "その他"]),
+                "精米が必要": st.column_config.CheckboxColumn("精米が必要"),
+                "有効": st.column_config.CheckboxColumn("有効"),
+            },
+            key="prod_editor",
+        )
+        if st.button("💾 商品を保存", type="primary"):
+            for _, r in edited.iterrows():
+                if not str(r["商品名"]).strip():
+                    continue
+                db.upsert_product({
+                    "name": r["商品名"], "category": r["区分"] or "その他",
+                    "weight_kg": float(r["重量kg"] or 0),
+                    "needs_milling": 1 if r["精米が必要"] else 0,
+                    "yamato_name": r["品名(送り状用)"] or r["商品名"],
+                    "sort_order": int(r["並び順"] or 0),
+                    "active": 1 if r["有効"] else 0,
+                })
+            st.success("保存しました。")
+            st.rerun()
+
+    with tab_base:
+        cfg = db.get_setting("base_config") or {}
+        if cfg.get("refresh_token"):
+            st.success("✅ BASE連携は設定済みです（自動取込・自動出荷が使えます）")
+        with st.form("base_form"):
+            client_id = st.text_input("Client ID", cfg.get("client_id", ""))
+            client_secret = st.text_input("Client Secret", cfg.get("client_secret", ""), type="password")
+            redirect_uri = st.text_input("Redirect URI", cfg.get("redirect_uri", ""))
+            refresh_token = st.text_input("リフレッシュトークン", cfg.get("refresh_token", ""), type="password")
+            if st.form_submit_button("💾 保存", type="primary"):
+                db.set_setting("base_config", {
+                    "client_id": client_id, "client_secret": client_secret,
+                    "redirect_uri": redirect_uri, "refresh_token": refresh_token,
+                })
+                st.success("保存しました。")
+
+    with tab_data:
+        ui.section("顧客データの取込", "ヤマトB2クラウドの発行済データCSVから顧客を登録します")
+        up = st.file_uploader("発行済データCSV", type=["csv"], key="reimport")
+        hist = st.checkbox("過去の注文も記録する（出荷済み扱い）", value=False)
+        if up is not None and st.button("📥 取り込む"):
+            r = seed.import_issued_csv(up.getvalue(), import_history=hist)
+            db.clear_cache()
+            st.success(f"顧客 +{r['customers']} 名／注文 +{r['orders']} 件")
+
+        st.divider()
+        ui.section("ログアウト")
+        if st.button("🚪 ログアウト"):
+            st.session_state.pop("authed", None)
+            st.rerun()
+
+        st.divider()
+        ui.section("全データの初期化", "注文・顧客・設定をすべて消去します（元に戻せません）")
+        confirm = st.text_input('「リセット」と入力すると実行できます', "")
+        if st.button("🗑 全データをリセット", disabled=(confirm != "リセット")):
+            db.reset_all()
+            st.success("初期化しました。再読み込みすると初期状態になります。")
+
+
+# ===========================================================================
+# ルーティング
+# ===========================================================================
+view = ui.render_nav()
+if view == "ホーム":
+    view_home()
+elif view == "注文":
+    view_orders()
+elif view == "顧客":
+    view_customers()
+else:
+    view_settings()

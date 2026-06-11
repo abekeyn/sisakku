@@ -230,6 +230,16 @@ def upsert_customer(data: dict) -> int:
         return res.inserted_primary_key[0]
 
 
+def update_customer(cid: int, data: dict) -> None:
+    """idを指定して顧客情報を直接更新（住所変更でも別人扱いにならない）。"""
+    vals = {f: data[f] for f in _CUST_FIELDS if f in data}
+    if not vals:
+        return
+    with get_engine().begin() as c:
+        c.execute(update(customers).where(customers.c.id == cid).values(**vals))
+    clear_cache()
+
+
 def delete_customer(cid: int) -> None:
     with get_engine().begin() as c:
         c.execute(delete(customers).where(customers.c.id == cid))
