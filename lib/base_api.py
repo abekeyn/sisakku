@@ -143,9 +143,10 @@ def import_base_csv(raw: bytes, channel: str = "base") -> dict:
 # ---------------------------------------------------------------------------
 # 2) API取込
 # ---------------------------------------------------------------------------
-def _http_post(url: str, data: dict) -> dict:
+def _http_post(url: str, data: dict, token: str | None = None) -> dict:
     body = urllib.parse.urlencode(data).encode()
-    req = urllib.request.Request(url, data=body, method="POST")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode())
 
@@ -245,29 +246,51 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
     return result
 
 
-def dispatch_order(order_row) -> tuple[bool, str]:
-    """BASEの1注文を発送完了(dispatched)にする。
+YAMATO_DELIVERY_COMPANY_ID = 3  # BASEにおけるヤマト運輸のID
 
-    order_row は db.list_orders の行（dispatch_ref に order_item_id のJSON配列）。
+
+def dispatch_order(order_row) -> tuple[bool, str]:
+    """BASEの1注文を発送完了(dispatched)にする。伝票番号があれば一緒に登録する。
+
+    order_row は db.list_orders の行（dispatch_ref に order_item_id のJSON配列、
+    tracking_no にヤマト伝票番号）。
     returns (成功, メッセージ)
     """
+    import re as _re
+    import urllib.error
+
     cfg = db.get_setting("base_config")
     if not cfg or not cfg.get("refresh_token"):
         return False, "BASE API未設定"
-    ref = order_row["dispatch_ref"] if "dispatch_ref" in order_row.keys() else ""
+    ref = order_row.get("dispatch_ref") or ""
     try:
         item_ids = json.loads(ref) if ref else []
     except (json.JSONDecodeError, TypeError):
         item_ids = []
     if not item_ids:
         return False, "発送対象の商品IDが未取得（API取込で取得されます）"
+
+    # 伝票番号（半角英数のみ許可のためハイフン等を除去）
+    tracking = _re.sub(r"[^0-9A-Za-z]", "", str(order_row.get("tracking_no") or ""))
+
     try:
         token = refresh_access_token(cfg)
         for iid in item_ids:
-            _http_post(f"{BASE_API}/orders/edit_status", {
-                "order_item_id": iid,
-                "status": "dispatched",
-            })
-        return True, "BASE発送完了"
+            params = {"order_item_id": iid, "status": "dispatched"}
+            if tracking:
+                params["tracking_number"] = tracking
+                params["delivery_company_id"] = YAMATO_DELIVERY_COMPANY_ID
+            try:
+                _http_post(f"{BASE_API}/orders/edit_status", params, token=token)
+            except urllib.error.HTTPError:
+                if not tracking:
+                    raise
+                # 伝票番号付きで拒否された場合は、発送完了のみ再試行
+                _http_post(f"{BASE_API}/orders/edit_status", {
+                    "order_item_id": iid, "status": "dispatched",
+                }, token=token)
+                tracking = ""  # メッセージ用
+        msg = "BASE発送完了" + (f"（伝票番号 {tracking} を登録）" if tracking else "")
+        return True, msg
     except Exception as e:  # noqa: BLE001
         return False, f"BASE発送失敗: {e}"

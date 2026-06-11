@@ -76,6 +76,7 @@ orders = Table(
     Column("status", String(16), default="pending"),
     Column("external_id", String(128), default=""),
     Column("dispatch_ref", Text, default=""),
+    Column("tracking_no", String(64), default=""),   # ヤマト伝票番号
     Column("created_at", String(64)),
 )
 
@@ -122,7 +123,14 @@ def get_engine() -> Engine:
 
 
 def init_db() -> None:
-    metadata.create_all(get_engine())
+    engine = get_engine()
+    metadata.create_all(engine)
+    # マイグレーション：既存テーブルに不足カラムがあれば追加
+    from sqlalchemy import inspect as _inspect
+    cols = [c["name"] for c in _inspect(engine).get_columns("orders")]
+    if "tracking_no" not in cols:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE orders ADD COLUMN tracking_no VARCHAR(64) DEFAULT ''"))
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +298,8 @@ def upsert_product(data: dict) -> int:
 # ---------------------------------------------------------------------------
 _ORDER_FIELDS = ("customer_id", "product_id", "qty", "channel", "order_date",
                  "ship_date", "delivery_date", "delivery_time",
-                 "milling_kg_override", "note", "status", "external_id", "dispatch_ref")
+                 "milling_kg_override", "note", "status", "external_id",
+                 "dispatch_ref", "tracking_no")
 
 
 def add_order(data: dict) -> int:
@@ -356,7 +365,7 @@ def update_order_status(order_ids: list[int], status: str) -> None:
 
 def update_order(order_id: int, data: dict) -> None:
     allowed = ("qty", "ship_date", "delivery_date", "delivery_time",
-               "milling_kg_override", "note", "status")
+               "milling_kg_override", "note", "status", "tracking_no")
     vals = {f: data[f] for f in data if f in allowed}
     if not vals:
         return

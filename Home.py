@@ -191,6 +191,84 @@ def dlg_csv_import():
                 st.success(f"追加 {r['added']} 件／既存 {r['skipped']} 件")
 
 
+@st.dialog("🚚 伝票番号を取り込んで出荷完了")
+def dlg_confirm_shipment():
+    st.caption(
+        "ヤマトB2クラウドで送り状を**発行した後**、B2クラウドから「発行済データ」CSVを"
+        "ダウンロードしてここに入れると：伝票番号を注文に記録 → 出荷完了 → "
+        "**BASEには発送完了＋伝票番号を自動登録**します（お客様への発送メールに追跡番号が載ります）。"
+    )
+
+    # 直前の実行結果があれば表示
+    if st.session_state.get("ship_result"):
+        for m in st.session_state["ship_result"]:
+            st.write(m)
+        if st.button("閉じる", use_container_width=True):
+            st.session_state.pop("ship_result", None)
+            st.rerun()
+        return
+
+    up = st.file_uploader("B2クラウドの発行済データCSV", type=["csv"], key="trk_csv")
+    if up is None:
+        return
+
+    import re as _re
+
+    def _digits(s):
+        return _re.sub(r"\D", "", str(s or ""))
+
+    def _expected_item(o):
+        n, q = o["yamato_name"], o["qty"] or 1
+        return f"{n}×{q}" if q > 1 else n
+
+    rows = yamato.parse_issued_for_tracking(up.getvalue())
+    remaining = list(_unshipped(db.list_orders()))
+    matches, unmatched = [], []
+    for r in rows:
+        cand = [o for o in remaining if _digits(o["tel"]) == _digits(r["tel"])]
+        if len(cand) > 1:
+            exact = [o for o in cand if _expected_item(o) == r["item"]]
+            cand = exact or cand
+        if not cand:
+            cand = [o for o in remaining
+                    if logic.normalize_text(o["customer_name"]) == logic.normalize_text(r["name"])]
+        if cand:
+            o = cand[0]
+            remaining.remove(o)
+            matches.append((r, o))
+        else:
+            unmatched.append(r)
+
+    if matches:
+        st.success(f"{len(matches)} 件の注文と照合できました")
+        for r, o in matches:
+            st.write(f'・{o["customer_name"]} 様（{o["product_name"]} ×{o["qty"]}）→ 伝票番号 **{r["tracking"]}**')
+    if unmatched:
+        st.warning("照合できなかった行：" +
+                   "、".join(f'{r["name"]}（{r["tracking"]}）' for r in unmatched))
+    if not matches:
+        return
+
+    if st.button(f"✅ {len(matches)}件を出荷完了にする（BASEにも反映）",
+                 type="primary", use_container_width=True):
+        msgs = []
+        komeful_flag = False
+        for r, o in matches:
+            db.update_order(o["id"], {"tracking_no": r["tracking"], "status": "shipped"})
+            if o["channel"] == "base":
+                o2 = dict(o)
+                o2["tracking_no"] = r["tracking"]
+                ok, msg = base_api.dispatch_order(o2)
+                msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
+            elif o["channel"] == "komeful":
+                komeful_flag = True
+        msgs.insert(0, f"**{len(matches)} 件を出荷完了にしました。**")
+        if komeful_flag:
+            msgs.append(f"🛒 コメフルの注文は管理画面で出荷処理してください：{komeful.SELLER_URL}")
+        st.session_state["ship_result"] = msgs
+        st.rerun(scope="fragment")
+
+
 # ===========================================================================
 # 🏠 ホーム（今日やること）
 # ===========================================================================
@@ -220,16 +298,13 @@ def view_home():
     if a3.button("📥 CSV取込", use_container_width=True):
         dlg_csv_import()
 
-    # ---- 今日のサマリ ----
+    # ---- 今日のサマリ（kg中心） ----
     genmai = [o for o in pending if o["category"] == "玄米"]
-    genmai_qty = sum(o["qty"] or 1 for o in genmai)
     genmai_kg = sum((o["weight_kg"] or 0) * (o["qty"] or 1) for o in genmai)
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("精米する量", f"{summary['total_kg']:g} kg")
-    m2.metric("精米 袋数", f"{sum(p['qty'] for p in summary['by_product'])} 袋")
-    m3.metric("玄米 袋数", f"{genmai_qty} 袋",
-              help=f"玄米の合計 {genmai_kg:g}kg（精米不要・そのまま用意）")
-    m4.metric("発送待ち", f"{len(unshipped)} 件")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("精米", f"{summary['total_kg']:g} kg")
+    m2.metric("玄米", f"{genmai_kg:g} kg", help="精米不要。そのまま用意してください")
+    m3.metric("発送待ち", f"{len(unshipped)} 件")
 
     # ---- ① 精米・用意キュー ----
     ui.section("① 精米・用意する", "精米が終わったら「精米完了」。玄米・やさいは精米不要なので、そのまま用意してください")
@@ -265,7 +340,7 @@ def view_home():
         c1, c2 = st.columns([3, 1])
         c1.markdown(
             f'<div class="mill-row"><span class="mill-big">{key}</span>'
-            f'<span>×{g["qty"]}袋 ＝ <b>{g["kg"]:g}kg</b></span></div>',
+            f'<span><b>{g["kg"]:g}kg</b>（×{g["qty"]}）</span></div>',
             unsafe_allow_html=True,
         )
         if c2.button("精米完了", key=f'mill{key}', use_container_width=True):
@@ -273,10 +348,10 @@ def view_home():
             st.toast(f"{key} を精米済みにしました", icon="🌾")
             st.rerun(scope="fragment")
     for key, g in sorted(prep_groups.items(), key=lambda x: -x[1]["kg"]):
-        kg_txt = f' ＝ <b>{g["kg"]:g}kg</b>' if g["kg"] else ""
+        kg_txt = f'<b>{g["kg"]:g}kg</b>（×{g["qty"]}）' if g["kg"] else f'×{g["qty"]}'
         st.markdown(
             f'<div class="mill-row"><span class="mill-big">{key}</span>'
-            f'<span>×{g["qty"]}袋{kg_txt}　'
+            f'<span>{kg_txt}　'
             f'<span class="chip" style="color:#475569;background:#E2E8F0">精米不要</span></span></div>',
             unsafe_allow_html=True,
         )
@@ -368,6 +443,13 @@ def view_home():
             use_container_width=True,
         )
         st.caption("ヤマトB2クラウド「送り状発行 → 外部データ取込」にアップロードすると印刷できます。")
+
+    # ---- ③ 印刷後：伝票番号の取込 ----
+    st.markdown('<hr class="brand-rule"/>', unsafe_allow_html=True)
+    ui.section("③ 印刷後：伝票番号の取込",
+               "B2クラウドで印刷したら「発行済データ」CSVをここへ。伝票番号を記録して出荷完了し、BASEにも自動登録します")
+    if st.button("🚚 発行済データを取り込んで出荷完了", use_container_width=True):
+        dlg_confirm_shipment()
 
 
 # ===========================================================================

@@ -285,6 +285,8 @@ def order_card(order, extra_html: str = "") -> str:
     kg = (order["weight_kg"] or 0) * qty
     kg_txt = f"（{kg:g}kg）" if order["needs_milling"] and kg else ""
     note = f'<div class="o-meta">📝 {order["note"]}</div>' if order.get("note") else ""
+    if order.get("tracking_no"):
+        note += f'<div class="o-meta">🚚 伝票番号 {order["tracking_no"]}</div>'
     return (
         f'<div class="o-card">'
         f'<span class="o-name">{order["customer_name"]} 様</span>　'

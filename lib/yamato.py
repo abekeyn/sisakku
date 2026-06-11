@@ -37,6 +37,27 @@ def col(row: list[str], header: list[str], name: str) -> str:
         return ""
 
 
+def parse_issued_for_tracking(path_or_bytes) -> list[dict]:
+    """B2クラウドの発行済データCSVから、伝票番号と照合用情報を取り出す。
+
+    returns [{tracking, tel, name, item, ship_date}, ...]
+    """
+    header, rows = read_issued_csv(path_or_bytes)
+    out = []
+    for r in rows:
+        tn = col(r, header, "伝票番号").strip()
+        if not tn:
+            continue
+        out.append({
+            "tracking": tn,
+            "tel": col(r, header, "お届け先電話番号").strip(),
+            "name": col(r, header, "お届け先名").strip(),
+            "item": col(r, header, "品名１").strip(),
+            "ship_date": col(r, header, "出荷予定日").strip(),
+        })
+    return out
+
+
 def build_row(order, sender: dict) -> list[str]:
     """注文1件(orders結合行) + 送り主情報 から、送り状CSVの1行(97列)を作る。"""
     row = [""] * len(YAMATO_HEADER)
