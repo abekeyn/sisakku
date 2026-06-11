@@ -147,6 +147,28 @@ def inject_css() -> None:
             color:var(--navy); font-weight:700; font-family:'Shippori Mincho',serif;
         }}
 
+        /* ステップ見出し（作業手順） */
+        .step-head {{
+            display:flex; align-items:center; gap:.6rem;
+            margin: 1.0rem 0 .1rem;
+        }}
+        .step-no {{
+            flex:0 0 auto; width:30px; height:30px; border-radius:50%;
+            background:var(--navy); color:#fff;
+            display:flex; align-items:center; justify-content:center;
+            font-weight:700; font-family:'Shippori Mincho',serif; font-size:1rem;
+            box-shadow:0 1px 3px rgba(33,31,75,.25);
+        }}
+        .step-title {{
+            font-family:'Shippori Mincho',serif; font-weight:700;
+            color:var(--navy); font-size:1.18rem; word-break:keep-all;
+        }}
+        .step-done .step-no {{ background:var(--gold); }}
+        .step-sub {{ color:#8a7f6a; font-size:.8rem; margin:.05rem 0 .55rem 2.5rem; }}
+        hr.step-rule {{
+            border:0; border-top:1px dashed #D9CDB2; margin:1.3rem 0 .1rem;
+        }}
+
         /* セクション見出し（金のひし形） */
         .sec-title {{
             display:flex; align-items:center; gap:.55rem;
@@ -258,6 +280,21 @@ def section(title: str, sub: str = "") -> None:
     st.markdown(f'<div class="sec-title">{title}</div>', unsafe_allow_html=True)
     if sub:
         st.markdown(f'<div class="sec-sub">{sub}</div>', unsafe_allow_html=True)
+
+
+def step(n: int, title: str, sub: str = "", done: bool = False, first: bool = False) -> None:
+    """作業手順のステップ見出し（番号丸＋タイトル＋説明）。"""
+    if not first:
+        st.markdown('<hr class="step-rule"/>', unsafe_allow_html=True)
+    cls = "step-head step-done" if done else "step-head"
+    no = "✓" if done else str(n)
+    st.markdown(
+        f'<div class="{cls}"><span class="step-no">{no}</span>'
+        f'<span class="step-title">{title}</span></div>',
+        unsafe_allow_html=True,
+    )
+    if sub:
+        st.markdown(f'<div class="step-sub">{sub}</div>', unsafe_allow_html=True)
 
 
 def channel_badge(channel: str) -> str:

@@ -244,11 +244,19 @@ def view_home():
     pending = [o for o in unshipped if o["status"] == "pending"]
     summary = logic.milling_summary(pending)
 
-    # ---- クイックアクション ----
+    # ---- 今日のようす（サマリ） ----
+    genmai = [o for o in pending if o["category"] == "玄米"]
+    genmai_kg = sum((o["weight_kg"] or 0) * (o["qty"] or 1) for o in genmai)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("精米", f"{summary['total_kg']:g} kg")
+    m2.metric("玄米", f"{genmai_kg:g} kg", help="精米不要。そのまま用意してください")
+    m3.metric("発送待ち", f"{len(unshipped)} 件")
+
+    # ======= STEP 1｜注文を集める =======
+    ui.step(1, "注文を集める",
+            "BASEはボタン1つで自動取込。LINE・コメフルの注文は手で追加します", first=True)
     a1, a2, a3 = st.columns(3)
-    if a1.button("➕ 注文追加", use_container_width=True):
-        dlg_add_order()
-    if a2.button("🔄 BASE取込", use_container_width=True):
+    if a1.button("🔄 BASE取込", use_container_width=True):
         cfg = db.get_setting("base_config") or {}
         if not cfg.get("refresh_token"):
             st.warning("設定タブでBASE連携を登録してください。")
@@ -260,19 +268,12 @@ def view_home():
             else:
                 st.toast(f"BASE：未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込", icon="✅")
                 st.rerun(scope="fragment")
+    if a2.button("➕ 注文追加", use_container_width=True):
+        dlg_add_order()
     if a3.button("📥 CSV取込", use_container_width=True):
         dlg_csv_import()
 
-    # ---- 今日のサマリ（kg中心） ----
-    genmai = [o for o in pending if o["category"] == "玄米"]
-    genmai_kg = sum((o["weight_kg"] or 0) * (o["qty"] or 1) for o in genmai)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("精米", f"{summary['total_kg']:g} kg")
-    m2.metric("玄米", f"{genmai_kg:g} kg", help="精米不要。そのまま用意してください")
-    m3.metric("発送待ち", f"{len(unshipped)} 件")
-
-    # ---- ① 精米・用意キュー ----
-    ui.section("① 精米・用意する", "精米が終わったら「精米完了」。玄米・やさいは精米不要なので、そのまま用意してください")
+    # ======= STEP 2｜精米する =======
     groups: dict[str, dict] = {}
     for o in pending:
         qty = o["qty"] or 1
@@ -299,8 +300,17 @@ def view_home():
         g["qty"] += qty
         g["kg"] += (o["weight_kg"] or 0) * qty
 
-    if not groups and not prep_groups:
-        st.success("精米・用意するものはありません 🎉")
+    checks = [o for o in pending
+              if o["category"] == "複合" and not o["milling_kg_override"]]
+    ui.step(2, "精米する",
+            "精米が終わったら「精米完了」→ 発送待ちに移ります。玄米・やさいは精米不要なので、そのまま用意してください",
+            done=bool(unshipped) and not groups and not checks)
+
+    if not groups and not prep_groups and not checks:
+        if unshipped:
+            st.success("精米・用意は完了しています 🎉 次は ③ 送り状づくりへ")
+        else:
+            st.caption("注文を取り込むと、ここに精米する量が表示されます。")
     for key, g in sorted(groups.items(), key=lambda x: -x[1]["kg"]):
         c1, c2 = st.columns([3, 1])
         c1.markdown(
@@ -322,22 +332,21 @@ def view_home():
         )
 
     # 複合で精米量未入力のもの
-    checks = [o for o in pending
-              if o["category"] == "複合" and not o["milling_kg_override"]]
     for o in checks:
         c1, c2 = st.columns([3, 1])
         c1.warning(f'⚠️ {o["customer_name"]}様の「{o["product_name"]}」は精米kgが未入力です')
         if c2.button("入力する", key=f'fix{o["id"]}', use_container_width=True):
             dlg_edit_order(o)
 
-    # ---- ② 発送キュー ----
-    st.markdown('<hr class="brand-rule"/>', unsafe_allow_html=True)
-    ui.section("② 発送する", "出荷する注文を選んで、CSV作成 → 出荷完了")
+    # ======= STEP 3｜送り状を作る =======
+    ui.step(3, "送り状を作る（ヤマト）",
+            "出荷する注文を選んで「ヤマトCSV作成」→ B2クラウドに取り込んで印刷します")
 
     if not unshipped:
-        st.info("発送待ちの注文はありません。")
+        st.caption("発送待ちの注文はありません。")
         return
 
+    st.caption("出荷する注文（チェックを外すと今回の送り状から除外されます）")
     sel_ids = []
     for o in unshipped:
         c1, c2, c3 = st.columns([0.5, 5.2, 0.8])
@@ -363,8 +372,7 @@ def view_home():
     if not sender.get("name"):
         st.warning("送り主が未設定です（設定タブで登録してください）")
 
-    b1, b2 = st.columns(2)
-    if b1.button(f"📄 ヤマトCSV作成（{len(sel_ids)}件）", type="primary",
+    if st.button(f"📄 ヤマトCSVを作成する（{len(sel_ids)}件）", type="primary",
                  use_container_width=True, disabled=not sel_ids):
         targets = [o for o in unshipped if o["id"] in set(sel_ids)]
         for o in targets:
@@ -377,29 +385,12 @@ def view_home():
         st.session_state["csv_data"] = csv_bytes
         res = exporter.save_or_reserve(csv_bytes)
         if res["mode"] == "saved":
-            st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n📄 {res['path']}")
+            st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n📄 {res['path']}\n\n"
+                       "→ B2クラウドの「送り状発行 → 外部データ取込」で読み込んで印刷してください。")
         else:
-            st.success("CSVを作成しました。下のボタンでダウンロードできます。"
+            st.success("CSVを作成しました。下のボタンで保存し、"
+                       "B2クラウドの「送り状発行 → 外部データ取込」で読み込んで印刷してください。"
                        "（PC起動中なら数秒でデスクトップにも自動保存されます）")
-
-    if b2.button(f"✅ 出荷完了（{len(sel_ids)}件）", use_container_width=True,
-                 disabled=not sel_ids,
-                 help="BASEの注文はAPIで自動的に発送完了になります"):
-        targets = [o for o in unshipped if o["id"] in set(sel_ids)]
-        msgs, komeful_flag = [], False
-        for o in targets:
-            if o["channel"] == "base":
-                ok, msg = base_api.dispatch_order(o)
-                msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
-            elif o["channel"] == "komeful":
-                komeful_flag = True
-        db.update_order_status(sel_ids, "shipped")
-        st.success(f"{len(sel_ids)} 件を出荷済みにしました。")
-        for m in msgs:
-            st.write(m)
-        if komeful_flag:
-            st.link_button("🛒 コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
-        st.rerun(scope="fragment")
 
     if st.session_state.get("csv_data"):
         st.download_button(
@@ -407,19 +398,15 @@ def view_home():
             file_name=exporter.make_filename(), mime="text/csv",
             use_container_width=True,
         )
-        st.caption("ヤマトB2クラウド「送り状発行 → 外部データ取込」にアップロードすると印刷できます。")
 
-    # ---- ③ 印刷後：伝票番号の取込 ----
-    st.markdown('<hr class="brand-rule"/>', unsafe_allow_html=True)
-    ui.section("③ 印刷後：伝票番号の取込",
-               "B2クラウドで印刷したら、伝票番号を取り込んで出荷を確定（BASEにも自動登録）")
-    t1, t2 = st.columns(2)
-    if t1.button("🤖 B2から自動取得", use_container_width=True,
-                 help="PCの常駐エージェントがB2クラウドに自動ログインして発行済データを取得し、出荷完了まで自動処理します（PCが起動している必要があります）"):
+    # ======= STEP 4｜出荷を確定する =======
+    ui.step(4, "出荷を確定する",
+            "B2クラウドで印刷できたら押すだけ。伝票番号を取り込んで出荷完了にし、BASEにも自動反映します")
+
+    if st.button("🤖 B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
+                 help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
         db.set_setting("b2_fetch_request", datetime.now().isoformat())
         st.toast("PCに自動取得を指示しました（30秒〜1分ほどで完了します）", icon="🤖")
-    if t2.button("🚚 CSVを手動で取り込む", use_container_width=True):
-        dlg_confirm_shipment()
 
     b2res = db.get_setting("b2_fetch_result")
     if b2res:
@@ -427,6 +414,28 @@ def view_home():
         st.caption(f'{icon} 前回の自動取得（{b2res.get("at","")}）：{b2res.get("summary","")}')
         for m in b2res.get("messages", []):
             st.caption(m)
+
+    with st.expander("その他の確定方法（自動取得が使えないとき）"):
+        if st.button("🚚 発行済データCSVを手動で取り込む", use_container_width=True):
+            dlg_confirm_shipment()
+        if st.button(f"✅ 選択中の{len(sel_ids)}件を伝票番号なしで出荷完了",
+                     use_container_width=True, disabled=not sel_ids,
+                     help="伝票番号は記録されませんが、出荷済みにしてBASEへ発送完了を送ります"):
+            targets = [o for o in unshipped if o["id"] in set(sel_ids)]
+            msgs, komeful_flag = [], False
+            for o in targets:
+                if o["channel"] == "base":
+                    ok, msg = base_api.dispatch_order(o)
+                    msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
+                elif o["channel"] == "komeful":
+                    komeful_flag = True
+            db.update_order_status(sel_ids, "shipped")
+            st.success(f"{len(sel_ids)} 件を出荷済みにしました。")
+            for m in msgs:
+                st.write(m)
+            if komeful_flag:
+                st.link_button("🛒 コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
+            st.rerun(scope="fragment")
 
 
 # ===========================================================================
