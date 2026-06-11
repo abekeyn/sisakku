@@ -13,7 +13,8 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
-from lib import base_api, bootstrap, db, exporter, komeful, logic, seed, ui, yamato
+from lib import (base_api, bootstrap, db, exporter, komeful, logic, seed,
+                 shipping, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -212,32 +213,8 @@ def dlg_confirm_shipment():
     if up is None:
         return
 
-    import re as _re
-
-    def _digits(s):
-        return _re.sub(r"\D", "", str(s or ""))
-
-    def _expected_item(o):
-        n, q = o["yamato_name"], o["qty"] or 1
-        return f"{n}×{q}" if q > 1 else n
-
     rows = yamato.parse_issued_for_tracking(up.getvalue())
-    remaining = list(_unshipped(db.list_orders()))
-    matches, unmatched = [], []
-    for r in rows:
-        cand = [o for o in remaining if _digits(o["tel"]) == _digits(r["tel"])]
-        if len(cand) > 1:
-            exact = [o for o in cand if _expected_item(o) == r["item"]]
-            cand = exact or cand
-        if not cand:
-            cand = [o for o in remaining
-                    if logic.normalize_text(o["customer_name"]) == logic.normalize_text(r["name"])]
-        if cand:
-            o = cand[0]
-            remaining.remove(o)
-            matches.append((r, o))
-        else:
-            unmatched.append(r)
+    matches, unmatched = shipping.match_tracking(rows, _unshipped(db.list_orders()))
 
     if matches:
         st.success(f"{len(matches)} 件の注文と照合できました")
@@ -251,20 +228,8 @@ def dlg_confirm_shipment():
 
     if st.button(f"✅ {len(matches)}件を出荷完了にする（BASEにも反映）",
                  type="primary", use_container_width=True):
-        msgs = []
-        komeful_flag = False
-        for r, o in matches:
-            db.update_order(o["id"], {"tracking_no": r["tracking"], "status": "shipped"})
-            if o["channel"] == "base":
-                o2 = dict(o)
-                o2["tracking_no"] = r["tracking"]
-                ok, msg = base_api.dispatch_order(o2)
-                msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
-            elif o["channel"] == "komeful":
-                komeful_flag = True
-        msgs.insert(0, f"**{len(matches)} 件を出荷完了にしました。**")
-        if komeful_flag:
-            msgs.append(f"🛒 コメフルの注文は管理画面で出荷処理してください：{komeful.SELLER_URL}")
+        result = shipping.confirm_shipments(matches)
+        msgs = [f"**{result['shipped']} 件を出荷完了にしました。**"] + result["messages"]
         st.session_state["ship_result"] = msgs
         st.rerun(scope="fragment")
 
@@ -447,9 +412,21 @@ def view_home():
     # ---- ③ 印刷後：伝票番号の取込 ----
     st.markdown('<hr class="brand-rule"/>', unsafe_allow_html=True)
     ui.section("③ 印刷後：伝票番号の取込",
-               "B2クラウドで印刷したら「発行済データ」CSVをここへ。伝票番号を記録して出荷完了し、BASEにも自動登録します")
-    if st.button("🚚 発行済データを取り込んで出荷完了", use_container_width=True):
+               "B2クラウドで印刷したら、伝票番号を取り込んで出荷を確定（BASEにも自動登録）")
+    t1, t2 = st.columns(2)
+    if t1.button("🤖 B2から自動取得", use_container_width=True,
+                 help="PCの常駐エージェントがB2クラウドに自動ログインして発行済データを取得し、出荷完了まで自動処理します（PCが起動している必要があります）"):
+        db.set_setting("b2_fetch_request", datetime.now().isoformat())
+        st.toast("PCに自動取得を指示しました（30秒〜1分ほどで完了します）", icon="🤖")
+    if t2.button("🚚 CSVを手動で取り込む", use_container_width=True):
         dlg_confirm_shipment()
+
+    b2res = db.get_setting("b2_fetch_result")
+    if b2res:
+        icon = "✅" if b2res.get("ok") else "⚠️"
+        st.caption(f'{icon} 前回の自動取得（{b2res.get("at","")}）：{b2res.get("summary","")}')
+        for m in b2res.get("messages", []):
+            st.caption(m)
 
 
 # ===========================================================================
