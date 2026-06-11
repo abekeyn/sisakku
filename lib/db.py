@@ -126,17 +126,53 @@ def init_db() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 読み取りキャッシュ（速度対策）
+# クラウドではアプリ(米国)→DB(ソウル)の往復が遅いため、読み取り結果を
+# 短時間キャッシュする。書き込み時は clear_cache() で即座に消す。
+# Streamlit実行中のみ有効（常駐エージェント等では素通し）。
+# ---------------------------------------------------------------------------
+def _cacheable(ttl: int):
+    def deco(fn):
+        try:
+            import streamlit as st
+            from streamlit import runtime
+            if runtime.exists():
+                return st.cache_data(ttl=ttl, show_spinner=False)(fn)
+        except Exception:  # noqa: BLE001
+            pass
+        return fn
+    return deco
+
+
+def clear_cache() -> None:
+    """書き込み後に読み取りキャッシュを破棄する（Streamlit実行中のみ）。"""
+    try:
+        import streamlit as st
+        from streamlit import runtime
+        if runtime.exists():
+            st.cache_data.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
 # 設定 (settings)
 # ---------------------------------------------------------------------------
-def get_setting(key: str, default=None):
+@_cacheable(ttl=120)
+def _get_setting_raw(key: str):
     with get_engine().connect() as c:
         row = c.execute(select(settings.c.value).where(settings.c.key == key)).first()
-    if row is None:
+    return None if row is None else row[0]
+
+
+def get_setting(key: str, default=None):
+    raw = _get_setting_raw(key)
+    if raw is None:
         return default
     try:
-        return json.loads(row[0])
+        return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        return row[0]
+        return raw
 
 
 def set_setting(key: str, value) -> None:
@@ -147,6 +183,7 @@ def set_setting(key: str, value) -> None:
             c.execute(update(settings).where(settings.c.key == key).values(value=payload))
         else:
             c.execute(insert(settings).values(key=key, value=payload))
+    clear_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -156,22 +193,26 @@ _CUST_FIELDS = ("name", "kana", "tel", "zip", "address", "address2",
                 "company", "honorific", "note")
 
 
+@_cacheable(ttl=120)
 def list_customers():
     with get_engine().connect() as c:
-        return c.execute(select(customers).order_by(customers.c.name)).mappings().all()
+        rows = c.execute(select(customers).order_by(customers.c.name)).mappings().all()
+    return [dict(r) for r in rows]
 
 
 def get_customer(cid: int):
     with get_engine().connect() as c:
-        return c.execute(select(customers).where(customers.c.id == cid)).mappings().first()
+        row = c.execute(select(customers).where(customers.c.id == cid)).mappings().first()
+    return dict(row) if row else None
 
 
 def find_customer(name: str, address: str):
     with get_engine().connect() as c:
-        return c.execute(
+        row = c.execute(
             select(customers).where(customers.c.name == name,
                                     customers.c.address == address)
         ).mappings().first()
+    return dict(row) if row else None
 
 
 def upsert_customer(data: dict) -> int:
@@ -180,16 +221,19 @@ def upsert_customer(data: dict) -> int:
         if existing:
             vals = {f: data.get(f, existing[f]) for f in _CUST_FIELDS}
             c.execute(update(customers).where(customers.c.id == existing["id"]).values(**vals))
+            clear_cache()
             return existing["id"]
         vals = {f: data.get(f, "") for f in _CUST_FIELDS}
         vals["created_at"] = datetime.now().isoformat()
         res = c.execute(insert(customers).values(**vals))
+        clear_cache()
         return res.inserted_primary_key[0]
 
 
 def delete_customer(cid: int) -> None:
     with get_engine().begin() as c:
         c.execute(delete(customers).where(customers.c.id == cid))
+    clear_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -199,18 +243,21 @@ _PROD_FIELDS = ("name", "category", "weight_kg", "needs_milling",
                 "yamato_name", "sort_order", "active")
 
 
+@_cacheable(ttl=120)
 def list_products(active_only: bool = True):
     q = select(products)
     if active_only:
         q = q.where(products.c.active == 1)
     q = q.order_by(products.c.sort_order, products.c.id)
     with get_engine().connect() as c:
-        return c.execute(q).mappings().all()
+        rows = c.execute(q).mappings().all()
+    return [dict(r) for r in rows]
 
 
 def get_product(pid: int):
     with get_engine().connect() as c:
-        return c.execute(select(products).where(products.c.id == pid)).mappings().first()
+        row = c.execute(select(products).where(products.c.id == pid)).mappings().first()
+    return dict(row) if row else None
 
 
 def upsert_product(data: dict) -> int:
@@ -221,8 +268,10 @@ def upsert_product(data: dict) -> int:
         vals = {f: data.get(f) for f in _PROD_FIELDS}
         if existing:
             c.execute(update(products).where(products.c.id == existing[0]).values(**vals))
+            clear_cache()
             return existing[0]
         res = c.execute(insert(products).values(**vals))
+        clear_cache()
         return res.inserted_primary_key[0]
 
 
@@ -239,6 +288,7 @@ def add_order(data: dict) -> int:
     vals["created_at"] = datetime.now().isoformat()
     with get_engine().begin() as c:
         res = c.execute(insert(orders).values(**vals))
+        clear_cache()
         return res.inserted_primary_key[0]
 
 
@@ -248,6 +298,17 @@ def order_exists(external_id: str) -> bool:
     with get_engine().connect() as c:
         row = c.execute(
             select(orders.c.id).where(orders.c.external_id == external_id)
+        ).first()
+    return row is not None
+
+
+def order_exists_prefix(prefix: str) -> bool:
+    """external_id が prefix で始まる注文があるか（BASEの注文単位の取込済み判定）。"""
+    if not prefix:
+        return False
+    with get_engine().connect() as c:
+        row = c.execute(
+            select(orders.c.id).where(orders.c.external_id.like(f"{prefix}%"))
         ).first()
     return row is not None
 
@@ -265,12 +326,14 @@ _ORDER_JOIN_SQL = """
 """
 
 
+@_cacheable(ttl=45)
 def list_orders(status: str | None = None):
     where = "WHERE o.status = :status" if status else ""
     sql = text(_ORDER_JOIN_SQL.format(where=where))
     params = {"status": status} if status else {}
     with get_engine().connect() as c:
-        return c.execute(sql, params).mappings().all()
+        rows = c.execute(sql, params).mappings().all()
+    return [dict(r) for r in rows]
 
 
 def update_order_status(order_ids: list[int], status: str) -> None:
@@ -278,6 +341,7 @@ def update_order_status(order_ids: list[int], status: str) -> None:
         return
     with get_engine().begin() as c:
         c.execute(update(orders).where(orders.c.id.in_(order_ids)).values(status=status))
+    clear_cache()
 
 
 def update_order(order_id: int, data: dict) -> None:
@@ -288,11 +352,13 @@ def update_order(order_id: int, data: dict) -> None:
         return
     with get_engine().begin() as c:
         c.execute(update(orders).where(orders.c.id == order_id).values(**vals))
+    clear_cache()
 
 
 def delete_order(order_id: int) -> None:
     with get_engine().begin() as c:
         c.execute(delete(orders).where(orders.c.id == order_id))
+    clear_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -330,3 +396,4 @@ def reset_all() -> None:
     with get_engine().begin() as c:
         for t in (orders, customers, products, settings, export_jobs):
             c.execute(delete(t))
+    clear_cache()

@@ -25,12 +25,13 @@ a1, a2 = st.columns(2)
 with a1:
     if st.button("BASE取込", use_container_width=True):
         if base_ready:
-            with st.spinner("BASEから取得中..."):
+            with st.spinner("BASEから未発送の注文を取得中..."):
                 r = base_api.fetch_orders_via_api()
             if r.get("error"):
                 st.error(r["error"])
             else:
-                st.success(f"BASE：追加 {r['added']} 件／既存 {r['skipped']} 件")
+                st.success(f"BASE：未発送 {r.get('target', 0)} 件のうち、"
+                           f"新規 {r['added']} 件を取り込みました（取込済み {r['skipped']} 件）")
         else:
             st.switch_page("pages/3_🛒_取込.py")
 with a2:
@@ -43,6 +44,7 @@ with b1:
         st.switch_page("pages/1_📝_注文入力.py")
 with b2:
     if st.button("↻ 最新に更新", use_container_width=True):
+        db.clear_cache()
         st.rerun()
 
 # ===========================================================================

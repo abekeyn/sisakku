@@ -14,7 +14,7 @@ import io
 import json
 import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime
 
 from . import db, logic
 
@@ -49,8 +49,8 @@ def _save_orders(norm_orders: list[dict], channel: str = "base") -> dict:
             "channel": channel,
             "order_date": o.get("order_date", date.today().isoformat()),
             "ship_date": "",
-            "delivery_date": "",
-            "delivery_time": "",
+            "delivery_date": o.get("delivery_date", ""),
+            "delivery_time": o.get("delivery_time", ""),
             "milling_kg_override": None,
             "note": o.get("note", ""),
             "status": "pending",
@@ -171,41 +171,77 @@ def refresh_access_token(cfg: dict) -> str:
     return res["access_token"]
 
 
-def fetch_orders_via_api(only_unshipped: bool = True, limit: int = 100) -> dict:
-    """APIで注文を取得して取り込む。base_config 設定が必要。"""
+# BASEの希望時間帯 → ヤマトの時間帯コード（対応するものだけ）
+_TIME_ZONE_MAP = {
+    "am": "0812", "14_16": "1416", "16_18": "1618",
+    "18_20": "1820", "19_21": "1921",
+}
+
+
+def fetch_orders_via_api(limit: int = 100) -> dict:
+    """APIで「未発送(dispatch_status=ordered)」の注文だけを取り込む。
+
+    - 一覧APIで全注文を取得 → 未発送だけに絞る（発送済み・キャンセルは除外）
+    - 詳細API(orders/detail)で届け先住所・商品・order_item_id を取得
+    - 商品(order_item)ごとに1注文として登録（精米量の集計に乗る）
+    """
     cfg = db.get_setting("base_config")
     if not cfg or not cfg.get("refresh_token"):
         return {"added": 0, "skipped": 0, "error": "BASE APIの認証情報が未設定です（設定ページで登録してください）"}
 
     token = refresh_access_token(cfg)
-    params = {"limit": limit, "offset": 0, "order": "desc"}
+    params = {"limit": limit, "offset": 0}
     data = _http_get(f"{BASE_API}/orders?{urllib.parse.urlencode(params)}", token)
+    all_orders = data.get("orders", [])
+
+    # 未発送のみ（ordered=入金済み・未対応）。発送済み/キャンセル/入金待ちは取り込まない
+    targets = [o for o in all_orders if o.get("dispatch_status") == "ordered"]
 
     norm = []
-    for o in data.get("orders", []):
-        items = o.get("order_items", [])
-        # 発送完了API(edit_status)で使う order_item_id を保持
-        item_ids = [it.get("order_item_id") or it.get("id") for it in items
-                    if (it.get("order_item_id") or it.get("id"))]
-        # 配送先優先、無ければ注文者
-        norm.append({
-            "external_id": str(o.get("unique_key") or o.get("order_id") or ""),
-            "order_date": o.get("ordered", date.today().isoformat()),
-            "name": o.get("delivery_name") or o.get("order_name") or "",
-            "kana": o.get("delivery_kana") or "",
-            "zip": o.get("delivery_zip_code") or "",
-            "address": (o.get("delivery_address") or "") + (o.get("delivery_address2") or ""),
-            "tel": o.get("delivery_tel") or "",
-            "product": "; ".join(
-                f'{it.get("item_name","")}×{it.get("amount",1)}'
-                for it in items
-            ) or "商品",
-            "qty": sum(int(it.get("amount", 1)) for it in items) or 1,
-            "note": "",
-            "dispatch_ref": json.dumps(item_ids),
-        })
+    skipped = 0
+    for o in targets:
+        uk = str(o.get("unique_key") or "")
+        if not uk:
+            continue
+        if db.order_exists_prefix(uk):  # この注文は取込済み（detail呼び出しを節約）
+            skipped += 1
+            continue
+        detail = _http_get(f"{BASE_API}/orders/detail/{uk}", token)
+        d = detail.get("order", detail)
+
+        recv = d.get("order_receiver") or {}
+        name = f'{recv.get("last_name", "")}　{recv.get("first_name", "")}'.strip("　 ")
+        ts = d.get("ordered")
+        order_date = (datetime.fromtimestamp(ts).strftime("%Y/%m/%d")
+                      if isinstance(ts, (int, float)) else date.today().strftime("%Y/%m/%d"))
+        ddate = str(d.get("delivery_date") or "").replace("-", "/")
+        dtime = _TIME_ZONE_MAP.get(str(d.get("delivery_time_zone") or ""), "")
+
+        for it in d.get("order_items", []):
+            if it.get("status") and it["status"] != "ordered":
+                continue  # 商品単位でも未発送のみ
+            iid = it.get("order_item_id")
+            norm.append({
+                "external_id": f"{uk}:{iid}",
+                "order_date": order_date,
+                "name": name,
+                "kana": "",
+                "zip": recv.get("zip_code") or "",
+                "address": (recv.get("prefecture") or "") + (recv.get("address") or ""),
+                "address2": recv.get("address2") or "",
+                "tel": recv.get("tel") or "",
+                "product": it.get("title") or "商品",
+                "qty": int(it.get("amount", 1) or 1),
+                "note": d.get("remark") or "",
+                "delivery_date": ddate,
+                "delivery_time": dtime,
+                "dispatch_ref": json.dumps([iid]),
+            })
+
     result = _save_orders(norm, channel="base")
-    result["read"] = len(norm)
+    result["read"] = len(all_orders)
+    result["target"] = len(targets)
+    result["skipped"] += skipped
     return result
 
 

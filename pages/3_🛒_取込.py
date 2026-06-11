@@ -16,12 +16,13 @@ with tab_base:
     cfg = db.get_setting("base_config") or {}
     if cfg.get("refresh_token"):
         if st.button("🔄 BASEから自動取得（API）", type="primary"):
-            with st.spinner("取得中..."):
+            with st.spinner("未発送の注文を取得中..."):
                 r = base_api.fetch_orders_via_api()
             if r.get("error"):
                 st.error(r["error"])
             else:
-                st.success(f"取得 {r.get('read',0)} 件／追加 {r['added']} 件／既存 {r['skipped']} 件")
+                st.success(f"未発送 {r.get('target', 0)} 件のうち、新規 {r['added']} 件を取り込みました"
+                           f"（取込済み {r['skipped']} 件／発送済み・キャンセルは除外）")
         st.divider()
     else:
         st.info("API自動取得を使うには「設定」ページでBASEの認証情報を登録してください。下のCSV取込は今すぐ使えます。")
