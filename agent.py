@@ -61,6 +61,14 @@ def _check_b2_request() -> bool:
 
 def main() -> None:
     db.init_db()
+    if "--b2-test" in sys.argv:
+        # 出荷確定せず、取得と照合の確認だけ行う
+        from lib import b2_fetch
+        r = b2_fetch.fetch_and_process(dry_run=True)
+        print(f'[テスト] 読込{r["rows"]}行／照合可能{len(r["messages"])}件／未照合{r["unmatched"]}行')
+        for m in r["messages"]:
+            print(" ", m)
+        return
     if "--b2" in sys.argv:
         _run_b2_fetch()
         return

@@ -59,16 +59,16 @@ def _first_visible(page, selectors: list[str], timeout_ms: int = 8000):
     return None
 
 
-def fetch_and_process(days: int = 7, headful: bool = False) -> dict:
+def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False) -> dict:
     """B2クラウドから発行済データを取得し、出荷確定まで実行する。
 
+    dry_run=True なら照合結果の確認だけ行い、出荷確定・BASE反映はしない。
     returns {"rows", "shipped", "unmatched", "messages"} または raises B2Error
     """
     code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
-    uid = config.get_secret("YAMATO_ID", "")
     pw = config.get_secret("YAMATO_PASSWORD", "")
-    if not (uid and pw):
-        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml に YAMATO_ID / YAMATO_PASSWORD / YAMATO_CUSTOMER_CODE を設定）")
+    if not (code and pw):
+        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml に YAMATO_CUSTOMER_CODE / YAMATO_PASSWORD を設定）")
 
     from playwright.sync_api import sync_playwright
 
@@ -97,32 +97,48 @@ def fetch_and_process(days: int = 7, headful: bool = False) -> dict:
             if pw_input is None:
                 raise B2Error("ログイン画面が見つかりません: " + _shot(page, "login_not_found"))
 
-            # テキスト入力欄（パスワード以外）を取得して順に埋める
+            # お客様コード（最初のテキスト欄）＋パスワード。
+            # ハイフン以降・個人ユーザーIDは任意なので触らない。
             texts = page.locator(
                 'input[type="text"]:visible, input[type="tel"]:visible, '
-                'input[type="email"]:visible, input:not([type]):visible'
+                'input:not([type]):visible'
             )
-            n = texts.count()
-            if n >= 2 and code:
-                texts.nth(0).fill(code)   # お客さまコード
-                texts.nth(1).fill(uid)    # ID
-            elif n >= 1:
-                texts.nth(0).fill(uid)
-            else:
+            if texts.count() < 1:
                 raise B2Error("ログイン入力欄が見つかりません: " + _shot(page, "login_inputs"))
+            texts.nth(0).fill(code)
             pw_input.fill(pw)
 
+            # 送信ボタン：submit型を優先し、無ければ「ログイン」だけのボタン/リンク
+            # （「ログインに関するご質問」等の誤クリックを避ける）
+            import re as _re
             submit = _first_visible(page, [
-                'button:has-text("ログイン")', 'input[type="submit"]',
-                'a:has-text("ログイン")', 'button[type="submit"]',
-            ], 5000)
+                'input[type="submit"]', 'button[type="submit"]',
+            ], 2500)
             if submit is None:
-                raise B2Error("ログインボタンが見つかりません: " + _shot(page, "login_submit"))
-            submit.click()
-            page.wait_for_timeout(4000)
+                exact = _re.compile(r"^\s*ログイン\s*$")
+                cand = page.get_by_role("button", name=exact)
+                if cand.count() == 0:
+                    cand = page.get_by_role("link", name=exact)
+                submit = cand.first if cand.count() > 0 else None
+            if submit is not None:
+                submit.click()
+            else:
+                pw_input.press("Enter")  # フォーム送信にフォールバック
 
-            if _first_visible(page, ['input[type="password"]'], 1500) is not None:
-                raise B2Error("ログインに失敗した可能性があります（ID/パスワードを確認）: " + _shot(page, "login_failed"))
+            # ログイン完了待ち（パスワード欄が消えるまで最大20秒）
+            logged_in = False
+            for _ in range(40):
+                page.wait_for_timeout(500)
+                try:
+                    if not page.locator('input[type="password"]').first.is_visible():
+                        logged_in = True
+                        break
+                except Exception:  # noqa: BLE001  ページ遷移中
+                    logged_in = True
+                    break
+            if not logged_in:
+                raise B2Error("ログインに失敗した可能性があります（コード/パスワードを確認）: " + _shot(page, "login_failed"))
+            page.wait_for_timeout(3000)
 
             # ---- 2. B2クラウドを開く ----
             b2_link = _first_visible(page, [
@@ -140,7 +156,22 @@ def fetch_and_process(days: int = 7, headful: bool = False) -> dict:
             except Exception:  # noqa: BLE001  同一タブで開くパターン
                 pass
             b2.wait_for_load_state("domcontentloaded")
-            b2.wait_for_timeout(5000)
+            b2.wait_for_timeout(4000)
+
+            # サービス紹介ページに着いた場合は「このサービスを利用する」で本体を起動
+            use_btn = _first_visible(b2, [
+                'a:has-text("このサービスを利用する")',
+                'button:has-text("このサービスを利用する")',
+            ], 4000)
+            if use_btn is not None:
+                try:
+                    with ctx.expect_page(timeout=10000) as pinfo2:
+                        use_btn.click()
+                    b2 = pinfo2.value
+                except Exception:  # noqa: BLE001  同一タブ遷移
+                    pass
+                b2.wait_for_load_state("domcontentloaded")
+                b2.wait_for_timeout(6000)
 
             # ---- 3. 発行済データの検索 ----
             hist = _first_visible(b2, [
@@ -150,46 +181,171 @@ def fetch_and_process(days: int = 7, headful: bool = False) -> dict:
             ], 15000)
             if hist is None:
                 raise B2Error("「発行済データ」メニューが見つかりません: " + _shot(b2, "menu"))
-            hist.click()
-            b2.wait_for_timeout(4000)
-
-            search = _first_visible(b2, [
-                'button:has-text("検索")', 'input[type="submit"][value*="検索"]',
-                'a:has-text("検索")',
-            ], 10000)
-            if search:
-                search.click()
-                b2.wait_for_timeout(4000)
-
-            # 全選択（ヘッダーのチェックボックス）
             try:
-                chk = b2.locator('thead input[type="checkbox"], th input[type="checkbox"]').first
-                if chk.count() > 0:
-                    chk.check()
-                    b2.wait_for_timeout(800)
+                hist.click(timeout=8000)
+            except Exception:  # noqa: BLE001  オーバーレイ等に遮られた場合
+                hist.click(force=True)
+            b2.wait_for_timeout(5000)
+
+            # 検索期間を直近に絞る（出荷予定日の開始日を書き換え）
+            try:
+                from datetime import date as _date, timedelta as _td
+                date_from = (_date.today() - _td(days=days)).strftime("%Y/%m/%d")
+                for inp in b2.locator('input[type="text"]').all():
+                    v = inp.input_value() or ""
+                    if _re.match(r"\d{4}/\d{2}/\d{2}$", v.strip()):
+                        inp.fill(date_from)
+                        inp.press("Escape")  # カレンダー(datepicker)を閉じる
+                        break
+            except Exception:  # noqa: BLE001  期間はデフォルト(90日)のままでも動く
+                pass
+            # 開いたままのカレンダーが残っていれば閉じる
+            try:
+                b2.keyboard.press("Escape")
+                b2.wait_for_timeout(600)
             except Exception:  # noqa: BLE001
                 pass
 
-            # ---- 4. ダウンロード ----
-            dl_btn = _first_visible(b2, [
-                'button:has-text("ダウンロード")', 'a:has-text("ダウンロード")',
-                'button:has-text("CSV")', 'a:has-text("CSV")',
-                'button:has-text("出力")',
-            ], 10000)
-            if dl_btn is None:
-                raise B2Error("ダウンロードボタンが見つかりません: " + _shot(b2, "download_btn"))
+            # 検索（「詳細検索オプションを開く」等を誤クリックしないよう厳密一致）
+            exact_search = _re.compile(r"^\s*検索\s*$")
+            search = b2.get_by_role("button", name=exact_search)
+            if search.count() == 0:
+                search = b2.get_by_role("link", name=exact_search)
+            if search.count() == 0:
+                search = b2.locator('input[type="button"][value="検索"], input[type="submit"][value="検索"]')
+            if search.count() == 0:
+                search = b2.get_by_text("検索", exact=True)
+            if search.count() == 0:
+                raise B2Error("検索ボタンが見つかりません: " + _shot(b2, "search_btn"))
+            search.first.click()
+            b2.wait_for_timeout(6000)
 
-            with b2.expect_download(timeout=30000) as dlinfo:
-                dl_btn.click()
-                # 確認ダイアログ（OK等）が出る場合
-                ok = _first_visible(b2, ['button:has-text("OK")', 'button:has-text("はい")'], 3000)
-                if ok:
-                    ok.click()
-            download = dlinfo.value
+            # 検索結果が0件なら、ここで終了（出荷確定するものなし）
+            checked = b2.evaluate(
+                """() => {
+                    const boxes = [...document.querySelectorAll('input[type=checkbox]')];
+                    const all = boxes.find(b => b.className.includes('allCheck'));
+                    if (all && !all.checked) { all.click(); }
+                    let n = 0;
+                    document.querySelectorAll('input[type=checkbox]').forEach(b => {
+                        if (b.checked) n++;
+                        // 全選択で連動しない場合に備え、行内のものを個別クリック
+                    });
+                    if (n <= 1) {
+                        boxes.forEach(b => {
+                            if (!b.className.includes('allCheck') && !b.checked) {
+                                const tr = b.closest('tr');
+                                if (tr && /\\d{4}-\\d{4}-\\d{4}/.test(tr.innerText||'')) b.click();
+                            }
+                        });
+                    }
+                    return [...document.querySelectorAll('input[type=checkbox]')]
+                        .filter(b => b.checked && !b.className.includes('allCheck')).length;
+                }"""
+            )
+            b2.wait_for_timeout(1000)
+            if not checked:
+                # 0件＝この期間に発行済データが無い
+                return {"rows": 0, "shipped": 0, "unmatched": 0,
+                        "messages": ["B2クラウドに対象期間の発行済データがありませんでした"]}
+
+            # ---- 4. 「外部ファイルに出力」→ CSVダウンロード ----
+            out_btn = _first_visible(b2, [
+                'button:has-text("外部ファイルに出力")', 'a:has-text("外部ファイルに出力")',
+                'input[value*="外部ファイル"]',
+            ], 10000)
+            if out_btn is None:
+                raise B2Error("「外部ファイルに出力」が見つかりません: " + _shot(b2, "output_btn"))
+
+            out_btn.click()
+            b2.wait_for_timeout(2800)
+            _shot(b2, "after_output_click")
+
+            # ダイアログ「発行済データ外部出力」は別フレームの可能性 → 全フレームから探す
+            def _frame_with(text: str):
+                for fr in b2.frames:
+                    try:
+                        if fr.get_by_text(text, exact=False).count() > 0:
+                            return fr
+                    except Exception:  # noqa: BLE001
+                        continue
+                return None
+
+            dlg = _frame_with("ファイル出力") or b2.main_frame
+
+            # 「1行目に見出しを出力する」にチェック（解析に必須）
+            try:
+                dlg.evaluate(
+                    """() => {
+                        const lbl = [...document.querySelectorAll('*')].find(
+                            e => (e.textContent||'').includes('1行目に見出し') && e.children.length===0);
+                        let cb = null;
+                        if (lbl) {
+                            const row = lbl.closest('div,li,label,tr') || document;
+                            cb = row.querySelector('input[type=checkbox]');
+                        }
+                        if (!cb) cb = document.querySelector('input[type=checkbox]');
+                        if (cb && !cb.checked) cb.click();
+                    }"""
+                )
+            except Exception:  # noqa: BLE001  見出しなしでも parse は耐性あり
+                pass
+
+            # どのページ/ポップアップで発火してもダウンロードを捕捉する
+            holder = {}
+
+            def _on_dl(d):
+                holder["d"] = d
+
+            for pg in ctx.pages:
+                pg.on("download", _on_dl)
+            ctx.on("page", lambda pg: pg.on("download", _on_dl))
+
+            # 「ファイル出力」を native click（信頼イベントでダウンロードを発火させる）
+            btn = dlg.get_by_role("button", name=_re.compile("ファイル出力"))
+            if btn.count() == 0:
+                btn = dlg.get_by_text(_re.compile(r"^\s*ファイル出力\s*$"))
+            if btn.count() == 0:
+                raise B2Error("「ファイル出力」ボタンが見つかりません: " + _shot(b2, "file_output"))
+            btn.first.click()
+            b2.wait_for_timeout(3500)  # 「ダウンロード準備が完了しました」ダイアログを待つ
+
+            # 第2ダイアログ「ファイルダウンロード」の［ダウンロード］を押す
+            def _click_download():
+                dl_frame = _frame_with("ダウンロード準備") or _frame_with("ファイルダウンロード") or dlg
+                loc = dl_frame.get_by_role("button", name=_re.compile(r"^\s*ダウンロード\s*$"))
+                if loc.count() == 0:
+                    loc = dl_frame.get_by_text(_re.compile(r"^\s*ダウンロード\s*$"))
+                if loc.count() > 0:
+                    loc.first.click()
+                    return True
+                return False
+
+            for _ in range(10):
+                if holder.get("d"):
+                    break
+                try:
+                    _click_download()
+                except Exception:  # noqa: BLE001
+                    pass
+                b2.wait_for_timeout(1500)
+            if not holder.get("d"):
+                raise B2Error("ファイル出力のダウンロードが発火しませんでした: " + _shot(b2, "no_download"))
+            download = holder["d"]
             tmp = Path(download.path())
             raw = tmp.read_bytes()
 
             # ---- 5. 照合・出荷確定 ----
+            if dry_run:
+                from . import db, yamato
+                rows = yamato.parse_issued_for_tracking(raw)
+                unshipped = [o for o in db.list_orders() if o["status"] in ("pending", "milled")]
+                matches, unmatched = shipping.match_tracking(rows, unshipped)
+                return {
+                    "rows": len(rows), "shipped": 0, "unmatched": len(unmatched),
+                    "messages": [f'[テスト] 照合可能: {o["customer_name"]}様 → {r["tracking"]}'
+                                 for r, o in matches],
+                }
             result = shipping.process_issued_csv(raw)
             return result
         finally:

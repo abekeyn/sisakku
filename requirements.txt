@@ -3,3 +3,4 @@ pandas==3.0.3
 numpy==2.4.6
 SQLAlchemy==2.0.50
 psycopg[binary]==3.3.4
+# playwright はPC常駐エージェント（ヤマトB2自動取得）専用。クラウドでは未使用
