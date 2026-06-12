@@ -151,6 +151,15 @@ def _http_post(url: str, data: dict, token: str | None = None) -> dict:
         return json.loads(r.read().decode())
 
 
+def _err_detail(e) -> str:
+    """BASE APIのHTTPErrorから日本語で分かるメッセージを取り出す。"""
+    try:
+        body = json.loads(e.read().decode())
+        return body.get("error_description") or body.get("error") or str(body)
+    except Exception:  # noqa: BLE001
+        return f"HTTP {getattr(e, 'code', '?')}"
+
+
 def _http_get(url: str, token: str) -> dict:
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -249,48 +258,69 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
 YAMATO_DELIVERY_COMPANY_ID = 3  # BASEにおけるヤマト運輸のID
 
 
-def dispatch_order(order_row) -> tuple[bool, str]:
-    """BASEの1注文を発送完了(dispatched)にする。伝票番号があれば一緒に登録する。
+def _edit_status_one(iid, tracking: str, comment: str, token: str) -> None:
+    """1商品をクロネコヤマト＋伝票番号で発送完了にする。
 
-    order_row は db.list_orders の行（dispatch_ref に order_item_id のJSON配列、
-    tracking_no にヤマト伝票番号）。
+    通常決済は status=dispatched、後払い(あと払い/コンビニ等)は atobarai_status=shipping
+    が必要なので、両方を順に試す。どちらも失敗したら最後のエラーを送出する。
+    """
+    import urllib.error
+
+    base = {"order_item_id": iid}
+    if tracking:
+        base["tracking_number"] = tracking
+        base["delivery_company_id"] = YAMATO_DELIVERY_COMPANY_ID  # クロネコヤマト
+    if comment:
+        base["add_comment"] = comment[:250]  # 発送メールに添える一言
+
+    attempts = [{**base, "status": "dispatched"}]
+    if tracking:  # 後払いは伝票番号必須・atobarai_status で発送通知
+        attempts.append({**base, "atobarai_status": "shipping"})
+
+    last = None
+    for p in attempts:
+        try:
+            _http_post(f"{BASE_API}/orders/edit_status", p, token=token)
+            return
+        except urllib.error.HTTPError as e:
+            last = _err_detail(e)
+        except Exception as e:  # noqa: BLE001
+            last = str(e)
+    raise RuntimeError(last or "不明なエラー")
+
+
+def dispatch_order(order_row, comment: str = "") -> tuple[bool, str]:
+    """BASEの1注文を「クロネコヤマト＋伝票番号」で発送完了にする。
+
+    - 配送業者：クロネコヤマトを自動選択（delivery_company_id=3）
+    - 伝票番号：order_row['tracking_no'] を自動入力
+    - 通常決済／後払い の両方に対応（発送通知メールも自動送信される）
     returns (成功, メッセージ)
     """
     import re as _re
-    import urllib.error
 
     cfg = db.get_setting("base_config")
     if not cfg or not cfg.get("refresh_token"):
-        return False, "BASE API未設定"
+        return False, "BASE API未設定（設定タブで連携してください）"
     ref = order_row.get("dispatch_ref") or ""
     try:
         item_ids = json.loads(ref) if ref else []
     except (json.JSONDecodeError, TypeError):
         item_ids = []
     if not item_ids:
-        return False, "発送対象の商品IDが未取得（API取込で取得されます）"
+        return False, "発送対象の商品IDが未取得（BASE取込をやり直してください）"
 
-    # 伝票番号（半角英数のみ許可のためハイフン等を除去）
     tracking = _re.sub(r"[^0-9A-Za-z]", "", str(order_row.get("tracking_no") or ""))
 
     try:
         token = refresh_access_token(cfg)
         for iid in item_ids:
-            params = {"order_item_id": iid, "status": "dispatched"}
-            if tracking:
-                params["tracking_number"] = tracking
-                params["delivery_company_id"] = YAMATO_DELIVERY_COMPANY_ID
-            try:
-                _http_post(f"{BASE_API}/orders/edit_status", params, token=token)
-            except urllib.error.HTTPError:
-                if not tracking:
-                    raise
-                # 伝票番号付きで拒否された場合は、発送完了のみ再試行
-                _http_post(f"{BASE_API}/orders/edit_status", {
-                    "order_item_id": iid, "status": "dispatched",
-                }, token=token)
-                tracking = ""  # メッセージ用
-        msg = "BASE発送完了" + (f"（伝票番号 {tracking} を登録）" if tracking else "")
-        return True, msg
+            _edit_status_one(iid, tracking, comment, token)
+        if tracking:
+            return True, f"BASE発送完了（クロネコヤマト・伝票番号 {tracking}）"
+        return True, "BASE発送完了"
     except Exception as e:  # noqa: BLE001
-        return False, f"BASE発送失敗: {e}"
+        hint = ""
+        if not tracking:
+            hint = "（後払い注文は伝票番号が必須です。B2から伝票番号を取得して出荷してください）"
+        return False, f"BASE発送失敗：{e}{hint}"
