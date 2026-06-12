@@ -406,12 +406,12 @@ def _login_css() -> str:
         }
         .login-sub {
             color: rgba(244,238,223,.62); font-size:.82rem; letter-spacing:.08em;
-            margin-bottom: 1.8rem;
+            margin-bottom: 0;
         }
         /* 織り菱の飾り罫（ロゴの紋様と呼応する、意味のある区切り） */
         .login-orn {
-            display:flex; align-items:center; justify-content:center; gap:10px;
-            width:210px; margin:18px auto 0;
+            display:flex; align-items:center; justify-content:center; gap:12px;
+            width:230px; margin: 26px auto 14px;
         }
         .login-orn .l {
             flex:1; height:1px;
@@ -458,6 +458,7 @@ def _login_css() -> str:
             border: none !important; padding: 0 !important;
             max-width: 320px; margin: 0 auto;
         }
+        [data-testid="stFormSubmitButton"] { margin-top: 6px; }
         [data-testid="stForm"] .stButton > button,
         [data-testid="stForm"] button[kind="primaryFormSubmit"] {
             background: linear-gradient(180deg, #C9A24B, #A9842F) !important;
