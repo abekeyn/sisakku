@@ -289,6 +289,9 @@ def inject_css() -> None:
         }}
         a {{ color: var(--gold-l) !important; }}
 
+        /* 入力中の英語ヒント(Press Enter to apply等)は世界観に合わないため非表示 */
+        [data-testid="InputInstructions"] {{ display:none !important; }}
+
         /* ダイアログ */
         [data-testid="stDialog"] h2 {{ font-size:1.15rem; }}
 
@@ -433,6 +436,8 @@ def _login_css() -> str:
         }
         [data-testid="stTextInput"] input::placeholder { color: rgba(244,238,223,.4) !important; letter-spacing:.1em;}
         [data-testid="stTextInput"] svg { color: rgba(244,238,223,.6) !important; }
+        /* 入力中の英語ヒント(Press Enter to submit form)を消す */
+        [data-testid="InputInstructions"] { display:none !important; }
 
         [data-testid="stForm"] {
             border: none !important; padding: 0 !important;
