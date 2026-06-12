@@ -502,10 +502,70 @@ def require_login() -> None:
         if st.form_submit_button("ログイン", type="primary", use_container_width=True):
             if entered == str(pw):
                 st.session_state["authed"] = True
+                st.session_state["just_logged_in"] = True
                 st.rerun()
             else:
                 st.error("パスワードが違います。")
     st.stop()
+
+
+def _render_splash() -> None:
+    """ログイン直後のローディング演出。
+
+    濃紺のスプラッシュ（ロゴが静かに脈打つ）が約1秒かかった後にとけて消え、
+    管理画面がふわっと浮かび上がる。すべてCSSアニメーション（追加の待ち時間なし）。
+    """
+    logo = _logo_b64("阿部農園ロゴ.png")
+    img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
+    st.markdown(
+        """
+        <style>
+        .splash {
+            position: fixed; inset: 0; z-index: 999999;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 18px;
+            background:
+              radial-gradient(1200px 800px at 50% 30%, #2a2c5a 0%, #1b1d3e 45%, #131228 100%);
+            animation: splashFade .8s ease 1.05s forwards;
+            pointer-events: none;
+        }
+        @keyframes splashFade {
+            to { opacity: 0; visibility: hidden; }
+        }
+        .splash img {
+            height: 110px;
+            filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
+            animation: splashPulse 1.5s ease-in-out infinite;
+        }
+        @keyframes splashPulse {
+            0%, 100% { opacity: .82; transform: scale(1); }
+            50%      { opacity: 1;   transform: scale(1.04); }
+        }
+        .splash .dia {
+            width: 10px; height: 10px;
+            background: linear-gradient(135deg, #C9A24B, #E9D18C);
+            border-radius: 2px;
+            box-shadow: 0 0 10px rgba(201,162,75,.6);
+            animation: diaTurn 1.3s ease-in-out infinite;
+        }
+        @keyframes diaTurn {
+            0%   { transform: rotate(45deg)  scale(1); }
+            50%  { transform: rotate(225deg) scale(.75); }
+            100% { transform: rotate(405deg) scale(1); }
+        }
+        /* 管理画面はふわっと浮かび上がる */
+        .block-container, [data-testid="stMainBlockContainer"] {
+            animation: appRise 1.2s ease .95s both;
+        }
+        @keyframes appRise {
+            from { opacity: 0; transform: translateY(14px); }
+            to   { opacity: 1; transform: none; }
+        }
+        </style>
+        <div class="splash">""" + img + """<span class="dia"></span></div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def section(title: str, sub: str = "") -> None:
@@ -587,4 +647,6 @@ def setup_page() -> None:
     )
     inject_css()
     require_login()
+    if st.session_state.pop("just_logged_in", False):
+        _render_splash()
     render_header()
