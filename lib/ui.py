@@ -421,12 +421,19 @@ def _login_css() -> str:
 
         [data-testid="stTextInput"] label { display:none; }
         [data-testid="stTextInput"] > div { max-width: 320px; margin: 0 auto; }
-        [data-testid="stTextInput"] [data-baseweb="input"],
-        [data-testid="stTextInput"] [data-baseweb="base-input"],
-        [data-testid="stTextInput"] > div > div {
+        /* 枠はいちばん外側の1枚だけ（内側は全て透明・枠なしで二重枠を防ぐ） */
+        [data-testid="stTextInput"] [data-baseweb="input"] {
             background: rgba(255,255,255,.07) !important;
             border: 1px solid rgba(201,162,75,.45) !important;
             border-radius: 11px !important;
+            overflow: hidden;
+        }
+        [data-testid="stTextInput"] [data-baseweb="input"] > div,
+        [data-testid="stTextInput"] [data-baseweb="base-input"],
+        [data-testid="stTextInput"] [data-baseweb="input"] button {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
         }
         [data-testid="stTextInput"] input {
             background: transparent !important;
