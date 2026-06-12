@@ -59,12 +59,217 @@ def _first_visible(page, selectors: list[str], timeout_ms: int = 8000):
     return None
 
 
+def _login_and_open_b2(ctx, page, code: str, pw: str):
+    """ヤマトビジネスメンバーズにログインし、B2クラウド本体のページを返す。"""
+    import re as _re
+
+    # ---- ログイン ----
+    page.goto(YBM_URL, wait_until="domcontentloaded", timeout=45000)
+    page.wait_for_timeout(2500)
+    login_btn = _first_visible(page, [
+        'text="ログイン"', 'a:has-text("ログイン")', 'button:has-text("ログイン")',
+    ], 4000)
+    if login_btn and _first_visible(page, ['input[type="password"]'], 1500) is None:
+        login_btn.click()
+        page.wait_for_timeout(2500)
+
+    pw_input = _first_visible(page, ['input[type="password"]'], 12000)
+    if pw_input is None:
+        raise B2Error("ログイン画面が見つかりません: " + _shot(page, "login_not_found"))
+    texts = page.locator(
+        'input[type="text"]:visible, input[type="tel"]:visible, input:not([type]):visible'
+    )
+    if texts.count() < 1:
+        raise B2Error("ログイン入力欄が見つかりません: " + _shot(page, "login_inputs"))
+    texts.nth(0).fill(code)
+    pw_input.fill(pw)
+
+    submit = _first_visible(page, ['input[type="submit"]', 'button[type="submit"]'], 2500)
+    if submit is None:
+        exact = _re.compile(r"^\s*ログイン\s*$")
+        cand = page.get_by_role("button", name=exact)
+        if cand.count() == 0:
+            cand = page.get_by_role("link", name=exact)
+        submit = cand.first if cand.count() > 0 else None
+    if submit is not None:
+        submit.click()
+    else:
+        pw_input.press("Enter")
+
+    for _ in range(40):
+        page.wait_for_timeout(500)
+        try:
+            if not page.locator('input[type="password"]').first.is_visible():
+                break
+        except Exception:  # noqa: BLE001
+            break
+    else:
+        raise B2Error("ログインに失敗した可能性があります（コード/パスワードを確認）: " + _shot(page, "login_failed"))
+    page.wait_for_timeout(3000)
+
+    # ---- B2クラウドを開く ----
+    b2_link = _first_visible(page, [
+        'a:has-text("B2クラウド")', 'text="送り状発行システムB2クラウド"',
+        'a:has-text("送り状発行")', 'img[alt*="B2"]',
+    ], 12000)
+    if b2_link is None:
+        raise B2Error("B2クラウドへのリンクが見つかりません: " + _shot(page, "b2_link"))
+    b2 = page
+    try:
+        with ctx.expect_page(timeout=8000) as pinfo:
+            b2_link.click()
+        b2 = pinfo.value
+    except Exception:  # noqa: BLE001
+        pass
+    b2.wait_for_load_state("domcontentloaded")
+    b2.wait_for_timeout(4000)
+
+    use_btn = _first_visible(b2, [
+        'a:has-text("このサービスを利用する")', 'button:has-text("このサービスを利用する")',
+    ], 4000)
+    if use_btn is not None:
+        try:
+            with ctx.expect_page(timeout=10000) as pinfo2:
+                use_btn.click()
+            b2 = pinfo2.value
+        except Exception:  # noqa: BLE001
+            pass
+        b2.wait_for_load_state("domcontentloaded")
+        b2.wait_for_timeout(6000)
+    return b2
+
+
+def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
+                    headful: bool = False, dry_run: bool = False) -> dict:
+    """送り状CSVをB2クラウドの「外部データから発行」に通して送り状を発行する。
+
+    手順：① データ取込み（パターン選択・ファイル選択・取込み開始）
+         ② 取込み結果表示  ← dry_run はここで停止（発行しない＝安全）
+         ③ 印刷内容の確認 → ④ 登録完了・印刷（PDFを取得）
+
+    returns {"issued": bool, "pdf": bytes|None, "rows": int, "message": str}
+    dry_run=True のときは取込み結果だけ確認し、発行・PDF取得はしない。
+    """
+    import re as _re
+    import tempfile
+
+    code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
+    pw = config.get_secret("YAMATO_PASSWORD", "")
+    if not (code and pw):
+        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml）")
+    pattern = pattern or config.get_secret("B2_IMPORT_PATTERN", "") or "基本レイアウト(csv,xls,xlsx)"
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pl:
+        browser = pl.chromium.launch(headless=not headful)
+        ctx = browser.new_context(locale="ja-JP", accept_downloads=True,
+                                  viewport={"width": 1366, "height": 1000})
+        page = ctx.new_page()
+        try:
+            b2 = _login_and_open_b2(ctx, page, code, pw)
+
+            # 「外部データから発行」のメニューカードを開く
+            # （部分一致・DOM順で最初＝メニューカード。FAQの長文リンクは後方にある）
+            import re as _re2
+            link = b2.get_by_text(_re2.compile("外部データから発行")).first
+            if link.count() == 0:
+                raise B2Error("「外部データから発行」が見つかりません: " + _shot(b2, "issue_menu"))
+            try:
+                link.click(timeout=8000)
+            except Exception:  # noqa: BLE001
+                link.click(force=True)
+            b2.wait_for_timeout(5000)
+
+            # 取込みパターンを選択
+            try:
+                sel = b2.locator("select").first
+                sel.select_option(label=pattern, timeout=4000)
+            except Exception:  # noqa: BLE001  ラベル不一致時は部分一致で
+                try:
+                    opts = b2.locator("select").first.locator("option").all()
+                    for o in opts:
+                        if pattern.split("(")[0] in (o.inner_text() or ""):
+                            b2.locator("select").first.select_option(value=o.get_attribute("value"))
+                            break
+                except Exception:  # noqa: BLE001
+                    _shot(b2, "pattern_select")
+            b2.wait_for_timeout(1500)
+
+            # ファイルをアップロード（フレーム横断で input[type=file] を探す）
+            tmp = Path(tempfile.gettempdir()) / "abe_yamato_issue.csv"
+            tmp.write_bytes(csv_bytes)
+            _shot(b2, "issue_before_upload")
+            fin = None
+            for fr in b2.frames:
+                try:
+                    loc = fr.locator('input[type="file"]')
+                    if loc.count() > 0:
+                        fin = loc.first
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if fin is None:
+                raise B2Error("ファイル選択欄が見つかりません: " + _shot(b2, "no_file_input"))
+            fin.set_input_files(str(tmp), timeout=15000)
+            b2.wait_for_timeout(2500)
+
+            # 「取込み開始」
+            start = _first_visible(b2, [
+                'button:has-text("取込み開始")', 'a:has-text("取込み開始")',
+                'input[value*="取込み開始"]', 'button:has-text("取込開始")',
+            ], 8000)
+            if start is None:
+                raise B2Error("「取込み開始」ボタンが見つかりません: " + _shot(b2, "import_start"))
+            start.click()
+            b2.wait_for_timeout(6000)
+            _shot(b2, "import_result")
+
+            body = ""
+            try:
+                body = b2.inner_text("body")
+            except Exception:  # noqa: BLE001
+                pass
+            m = _re.search(r"(\d+)\s*件", body)
+            rows = int(m.group(1)) if m else 0
+            if "エラー" in body and "0" in (m.group(1) if m else "0"):
+                raise B2Error("取込みでエラーが出ました（パターン/列の対応を確認）: " + _shot(b2, "import_error"))
+
+            if dry_run:
+                return {"issued": False, "pdf": None, "rows": rows,
+                        "message": f"[テスト] 取込み確認OK（{rows}件・発行はしていません）"}
+
+            # ③④ 確認 → 発行 → 印刷（PDF取得）
+            for label in ["次へ", "印刷内容の確認", "発行", "印刷"]:
+                btn = _first_visible(b2, [
+                    f'button:has-text("{label}")', f'a:has-text("{label}")',
+                    f'input[value*="{label}"]',
+                ], 4000)
+                if btn:
+                    try:
+                        with b2.expect_download(timeout=8000) as dl:
+                            btn.click()
+                        d = dl.value
+                        return {"issued": True, "pdf": Path(d.path()).read_bytes(),
+                                "rows": rows, "message": f"発行しました（{rows}件）"}
+                    except Exception:  # noqa: BLE001  ダウンロードでなく次画面へ
+                        b2.wait_for_timeout(3000)
+            _shot(b2, "issue_end")
+            return {"issued": True, "pdf": None, "rows": rows,
+                    "message": f"発行操作を実行しました（{rows}件）。PDFは取得できませんでした。"}
+        finally:
+            ctx.close()
+            browser.close()
+
+
 def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False) -> dict:
     """B2クラウドから発行済データを取得し、出荷確定まで実行する。
 
     dry_run=True なら照合結果の確認だけ行い、出荷確定・BASE反映はしない。
     returns {"rows", "shipped", "unmatched", "messages"} または raises B2Error
     """
+    import re as _re
+
     code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
     pw = config.get_secret("YAMATO_PASSWORD", "")
     if not (code and pw):
@@ -81,97 +286,7 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
         )
         page = ctx.new_page()
         try:
-            # ---- 1. ログイン ----
-            page.goto(YBM_URL, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(2500)
-
-            # ログインページへ（トップにログインボタンがある場合）
-            login_btn = _first_visible(page, [
-                'text="ログイン"', 'a:has-text("ログイン")', 'button:has-text("ログイン")',
-            ], 4000)
-            if login_btn and _first_visible(page, ['input[type="password"]'], 1500) is None:
-                login_btn.click()
-                page.wait_for_timeout(2500)
-
-            pw_input = _first_visible(page, ['input[type="password"]'], 12000)
-            if pw_input is None:
-                raise B2Error("ログイン画面が見つかりません: " + _shot(page, "login_not_found"))
-
-            # お客様コード（最初のテキスト欄）＋パスワード。
-            # ハイフン以降・個人ユーザーIDは任意なので触らない。
-            texts = page.locator(
-                'input[type="text"]:visible, input[type="tel"]:visible, '
-                'input:not([type]):visible'
-            )
-            if texts.count() < 1:
-                raise B2Error("ログイン入力欄が見つかりません: " + _shot(page, "login_inputs"))
-            texts.nth(0).fill(code)
-            pw_input.fill(pw)
-
-            # 送信ボタン：submit型を優先し、無ければ「ログイン」だけのボタン/リンク
-            # （「ログインに関するご質問」等の誤クリックを避ける）
-            import re as _re
-            submit = _first_visible(page, [
-                'input[type="submit"]', 'button[type="submit"]',
-            ], 2500)
-            if submit is None:
-                exact = _re.compile(r"^\s*ログイン\s*$")
-                cand = page.get_by_role("button", name=exact)
-                if cand.count() == 0:
-                    cand = page.get_by_role("link", name=exact)
-                submit = cand.first if cand.count() > 0 else None
-            if submit is not None:
-                submit.click()
-            else:
-                pw_input.press("Enter")  # フォーム送信にフォールバック
-
-            # ログイン完了待ち（パスワード欄が消えるまで最大20秒）
-            logged_in = False
-            for _ in range(40):
-                page.wait_for_timeout(500)
-                try:
-                    if not page.locator('input[type="password"]').first.is_visible():
-                        logged_in = True
-                        break
-                except Exception:  # noqa: BLE001  ページ遷移中
-                    logged_in = True
-                    break
-            if not logged_in:
-                raise B2Error("ログインに失敗した可能性があります（コード/パスワードを確認）: " + _shot(page, "login_failed"))
-            page.wait_for_timeout(3000)
-
-            # ---- 2. B2クラウドを開く ----
-            b2_link = _first_visible(page, [
-                'a:has-text("B2クラウド")', 'text="送り状発行システムB2クラウド"',
-                'a:has-text("送り状発行")', 'img[alt*="B2"]',
-            ], 12000)
-            if b2_link is None:
-                raise B2Error("B2クラウドへのリンクが見つかりません: " + _shot(page, "b2_link"))
-
-            b2 = page
-            try:
-                with ctx.expect_page(timeout=8000) as pinfo:
-                    b2_link.click()
-                b2 = pinfo.value
-            except Exception:  # noqa: BLE001  同一タブで開くパターン
-                pass
-            b2.wait_for_load_state("domcontentloaded")
-            b2.wait_for_timeout(4000)
-
-            # サービス紹介ページに着いた場合は「このサービスを利用する」で本体を起動
-            use_btn = _first_visible(b2, [
-                'a:has-text("このサービスを利用する")',
-                'button:has-text("このサービスを利用する")',
-            ], 4000)
-            if use_btn is not None:
-                try:
-                    with ctx.expect_page(timeout=10000) as pinfo2:
-                        use_btn.click()
-                    b2 = pinfo2.value
-                except Exception:  # noqa: BLE001  同一タブ遷移
-                    pass
-                b2.wait_for_load_state("domcontentloaded")
-                b2.wait_for_timeout(6000)
+            b2 = _login_and_open_b2(ctx, page, code, pw)
 
             # ---- 3. 発行済データの検索 ----
             hist = _first_visible(b2, [
