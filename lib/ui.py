@@ -397,12 +397,6 @@ def _login_css() -> str:
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
             opacity: .96;
         }
-        .login-eyebrow {
-            margin-top: 10px;
-            font-family: 'Shippori Mincho', serif;
-            color: var(--gold-l); letter-spacing: .42em;
-            font-size: .82rem; text-indent: .42em;
-        }
         .login-title {
             font-family: 'Shippori Mincho', serif; font-weight: 700;
             color: #F4EEDF !important; letter-spacing: .14em;
@@ -414,9 +408,23 @@ def _login_css() -> str:
             color: rgba(244,238,223,.62); font-size:.82rem; letter-spacing:.08em;
             margin-bottom: 1.8rem;
         }
-        .login-rule {
-            height:1px; width:74px; margin:14px auto 0; border:0;
-            background: linear-gradient(90deg, transparent, var(--gold-l), transparent);
+        /* 織り菱の飾り罫（ロゴの紋様と呼応する、意味のある区切り） */
+        .login-orn {
+            display:flex; align-items:center; justify-content:center; gap:10px;
+            width:210px; margin:18px auto 0;
+        }
+        .login-orn .l {
+            flex:1; height:1px;
+            background: linear-gradient(90deg, transparent, rgba(201,162,75,.6));
+        }
+        .login-orn .l.r {
+            background: linear-gradient(270deg, transparent, rgba(201,162,75,.6));
+        }
+        .login-orn .d {
+            width:7px; height:7px; flex:0 0 auto;
+            background: linear-gradient(135deg, var(--gold), var(--gold-l));
+            transform: rotate(45deg); border-radius:1px;
+            box-shadow: 0 0 8px rgba(201,162,75,.55);
         }
 
         [data-testid="stTextInput"] label { display:none; }
@@ -480,10 +488,10 @@ def require_login() -> None:
     img = f'<img src="data:image/png;base64,{logo}" alt="阿部農園"/>' if logo else ""
     st.markdown(
         f'<div class="login-brand">{img}'
-        f'<div class="login-eyebrow">阿 部 農 園</div>'
         f'<div class="login-title">精米・発送管理</div>'
         f'<div class="login-sub">Rice, and the time it makes</div>'
-        f'<hr class="login-rule"/></div>',
+        f'<div class="login-orn"><span class="l"></span><span class="d"></span>'
+        f'<span class="l r"></span></div></div>',
         unsafe_allow_html=True,
     )
 
