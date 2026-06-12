@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """ブランド統一のUI基盤（阿部農園／琥珀米）。
 
-設計方針（受注管理システムの定石パターンを採用）：
-- サイドバーを廃止し、上部タブナビ（ホーム/注文/顧客/設定）
-- ワークキュー型：今日やること（精米→発送）が一画面で完結
-- ステータスチップで注文の状態をひと目で表示
-- 追加・編集はモーダル（st.dialog）で画面遷移ゼロ
+世界観：公式サイトのヒーローと同じ「濃紺の夜に、金の光」。
+- 背景は濃紺のグラデーション、カードはガラス調、アクセントは琥珀ゴールド
+- 見出しは明朝（Shippori Mincho）、絵文字は使わず静かな記号のみ
+- ナビは上部タブ、追加・編集はモーダル
 """
 from __future__ import annotations
 
@@ -20,29 +19,31 @@ from . import config
 ROOT = Path(__file__).resolve().parent.parent
 
 # ブランドカラー
-NAVY = "#211F4B"       # 阿部農園ロゴの藍
-NAVY_SOFT = "#3A3768"
-GOLD = "#8C6E2B"       # 琥珀米のゴールド
-GOLD_LIGHT = "#C9A24B"
-CREAM = "#FBF7EE"
-PAPER = "#FFFDF8"
-INK = "#2A2620"
+NAVY = "#1B1D3E"        # 夜の濃紺（背景）
+NAVY_DEEP = "#14162E"
+GOLD = "#C9A24B"        # 琥珀ゴールド
+GOLD_DARK = "#A9842F"
+GOLD_LIGHT = "#E9D18C"
+TXT = "#F2EDE0"         # 生成り（本文）
+TXT_SOFT = "rgba(242,237,224,.62)"
+GLASS = "rgba(255,255,255,.05)"
+LINE = "rgba(201,162,75,.32)"
 
 # チャネル表示
 CHANNELS = {
     "base":    {"label": "BASE",    "color": "#1f7a5a"},
-    "line":    {"label": "LINE",    "color": "#06C755"},
-    "komeful": {"label": "コメフル", "color": GOLD},
-    "manual":  {"label": "手入力",   "color": "#777"},
-    "import":  {"label": "取込",     "color": "#999"},
+    "line":    {"label": "LINE",    "color": "#06985f"},
+    "komeful": {"label": "コメフル", "color": GOLD_DARK},
+    "manual":  {"label": "手入力",   "color": "#5a5e7a"},
+    "import":  {"label": "取込",     "color": "#5a5e7a"},
 }
 
-# 注文ステータス（pending=精米待ち/発送待ち, milled=精米済み, shipped=出荷済み）
+# 注文ステータス（ダーク背景向けの配色）
 STATUS_LABELS = {
-    "pending_mill": ("精米待ち", "#B45309", "#FEF3C7"),   # amber
-    "pending_ship": ("発送待ち", "#1D4ED8", "#DBEAFE"),   # blue
-    "milled":       ("精米済み", "#047857", "#D1FAE5"),   # green
-    "shipped":      ("出荷済み", "#6B7280", "#F3F4F6"),   # gray
+    "pending_mill": ("精米待ち", "#F5D08C", "rgba(201,162,75,.22)"),
+    "pending_ship": ("発送待ち", "#9DC4FF", "rgba(80,130,230,.22)"),
+    "milled":       ("精米済み", "#8FE3C0", "rgba(30,160,110,.22)"),
+    "shipped":      ("出荷済み", "#C5C9D6", "rgba(255,255,255,.12)"),
 }
 
 
@@ -73,21 +74,27 @@ def inject_css() -> None:
         @import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
 
         :root {{
-            --navy:{NAVY}; --gold:{GOLD}; --gold-l:{GOLD_LIGHT};
-            --cream:{CREAM}; --paper:{PAPER}; --ink:{INK};
+            --navy:{NAVY}; --gold:{GOLD}; --gold-l:{GOLD_LIGHT}; --gold-d:{GOLD_DARK};
+            --txt:{TXT}; --glass:{GLASS}; --line:{LINE};
         }}
 
-        .stApp {{ background: var(--cream); }}
+        /* ===== 夜の背景（上部にほのかな金のかがやき） ===== */
+        .stApp {{
+            background:
+              radial-gradient(900px 420px at 50% 0%, rgba(201,162,75,.10), transparent 70%),
+              radial-gradient(1100px 760px at 50% -10%, #272A57 0%, {NAVY} 52%, {NAVY_DEEP} 100%) !important;
+            background-attachment: fixed !important;
+        }}
+        header[data-testid="stHeader"] {{ background: transparent !important; }}
         html, body, [class*="css"] {{
             font-family: 'Noto Sans JP', sans-serif;
-            color: var(--ink);
+            color: var(--txt);
         }}
 
         /* サイドバー完全非表示（タブナビに統一） */
         section[data-testid="stSidebar"] {{ display:none !important; }}
         [data-testid="stSidebarCollapsedControl"] {{ display:none !important; }}
 
-        /* 上部の余白（ツールバーと重ならない） */
         .block-container, [data-testid="stMainBlockContainer"] {{
             padding-top: 2.6rem !important;
             padding-bottom: 4rem !important;
@@ -96,104 +103,155 @@ def inject_css() -> None:
 
         h1, h2, h3, h4 {{
             font-family: 'Shippori Mincho', 'Yu Mincho', serif !important;
-            color: var(--navy) !important;
+            color: var(--txt) !important;
             letter-spacing: .02em;
         }}
+        p, li, label, .stMarkdown {{ color: var(--txt); }}
+        [data-testid="stCaptionContainer"], .stCaption, small {{
+            color: {TXT_SOFT} !important;
+        }}
 
-        /* ヘッダー（コンパクト） */
+        /* 漂う金の光（控えめ） */
+        .app-motes {{
+            position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+        }}
+        .app-motes .mote {{
+            position: absolute; border-radius: 50%;
+            background: radial-gradient(circle, rgba(233,209,140,.8) 0%, rgba(201,162,75,.35) 40%, rgba(201,162,75,0) 70%);
+            box-shadow: 0 0 6px 1px rgba(201,162,75,.25);
+            opacity: 0;
+            animation-name: moteDrift; animation-iteration-count: infinite;
+            animation-timing-function: ease-in-out;
+        }}
+        @keyframes moteDrift {{
+            0%   {{ transform: translate(0,0) scale(.7);      opacity: 0; }}
+            20%  {{ opacity: .55; }}
+            50%  {{ transform: translate(12px,-24px) scale(1.05); opacity: .4; }}
+            80%  {{ opacity: .5; }}
+            100% {{ transform: translate(-8px,-48px) scale(.7);  opacity: 0; }}
+        }}
+        .block-container > div {{ position: relative; z-index: 2; }}
+
+        /* ===== ブランドヘッダー ===== */
         .brand-bar {{
-            display:flex; align-items:center; justify-content:center; gap:.6rem;
-            padding: 0 0 .2rem;
+            display:flex; align-items:center; justify-content:center; gap:.65rem;
+            padding: 0 0 .3rem;
         }}
-        .brand-bar img {{ height: clamp(34px, 8vw, 46px); }}
+        .brand-bar img {{
+            height: clamp(38px, 9vw, 50px);
+            filter: brightness(0) invert(1) drop-shadow(0 0 10px rgba(201,162,75,.35));
+            opacity:.95;
+        }}
         .brand-bar .t {{
-            font-family:'Shippori Mincho',serif; color:var(--navy);
-            font-weight:700; font-size: clamp(1rem, 3.4vw, 1.25rem); letter-spacing:.14em;
-            white-space:nowrap;
+            font-family:'Shippori Mincho',serif; color:var(--txt);
+            font-weight:700; font-size: clamp(1rem, 3.4vw, 1.22rem); letter-spacing:.16em;
+            white-space:nowrap; text-shadow: 0 1px 14px rgba(0,0,0,.4);
         }}
 
-        /* ナビ（segmented control） */
-        [data-testid="stButtonGroup"] {{ display:flex; justify-content:center; }}
+        /* ===== ナビ（上部タブ） ===== */
+        [data-testid="stButtonGroup"] {{ display:flex; justify-content:center; gap:6px; }}
         [data-testid="stButtonGroup"] button {{
-            font-weight:700; border-radius:999px !important; padding:.45rem 1.05rem;
+            font-weight:700; border-radius:999px !important; padding:.42rem 1.15rem;
+            background: rgba(255,255,255,.04) !important;
+            border: 1px solid rgba(201,162,75,.35) !important;
+            color: var(--txt) !important;
+            letter-spacing:.08em;
         }}
+        [data-testid="stButtonGroup"] button[kind="segmented_controlActive"],
         [data-testid="stButtonGroup"] button[aria-checked="true"],
-        [data-testid="stButtonGroup"] button[data-selected="true"] {{
-            background: var(--navy) !important; color:#fff !important;
-            border-color: var(--navy) !important;
+        [data-testid="stButtonGroup"] button[aria-pressed="true"] {{
+            background: linear-gradient(180deg, var(--gold), var(--gold-d)) !important;
+            color: {NAVY} !important; border-color: transparent !important;
+            box-shadow: 0 4px 16px rgba(201,162,75,.3);
         }}
 
-        /* ボタン */
-        .stButton > button, .stDownloadButton > button {{
-            border-radius: 12px; border: 1.5px solid var(--navy);
-            background: var(--paper); color: var(--navy);
+        /* ===== ボタン ===== */
+        .stButton > button, .stDownloadButton > button, .stLinkButton > a {{
+            border-radius: 12px;
+            border: 1px solid rgba(201,162,75,.5);
+            background: rgba(255,255,255,.04);
+            color: var(--txt);
             font-weight: 700; padding: .55rem 1rem; transition: all .15s ease;
         }}
-        .stButton > button:hover, .stDownloadButton > button:hover {{
-            background: var(--navy); color:#fff;
+        .stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {{
+            background: rgba(201,162,75,.18); border-color: var(--gold-l); color:#fff;
         }}
         .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {{
-            background: var(--navy); color:#fff;
+            background: linear-gradient(180deg, var(--gold), var(--gold-d)) !important;
+            color: {NAVY} !important; border:none !important;
+            box-shadow: 0 6px 20px rgba(201,162,75,.25);
         }}
-        .stButton > button[kind="primary"]:hover {{ background:#15133a; }}
+        .stButton > button[kind="primary"]:hover {{ filter: brightness(1.07); }}
+        .stButton > button:disabled, .stDownloadButton > button:disabled {{
+            opacity:.35;
+        }}
 
-        /* メトリクスカード */
+        /* ===== メトリクス（ガラスカード） ===== */
         [data-testid="stMetric"] {{
-            background: var(--paper); border:1px solid #E8DEC8;
-            border-left:5px solid var(--gold); border-radius:14px;
-            padding:12px 14px; box-shadow:0 1px 3px rgba(33,31,75,.06);
+            background: var(--glass);
+            border: 1px solid rgba(201,162,75,.25);
+            border-left: 4px solid var(--gold);
+            border-radius: 14px;
+            padding: 12px 14px;
+            box-shadow: 0 2px 12px rgba(0,0,0,.25);
         }}
         [data-testid="stMetricValue"] {{
-            color:var(--navy); font-weight:700; font-family:'Shippori Mincho',serif;
+            color:#F8F3E6 !important; font-weight:700;
+            font-family:'Shippori Mincho',serif;
         }}
+        [data-testid="stMetricLabel"] p {{ color: {TXT_SOFT} !important; }}
 
-        /* ステップ見出し（作業手順） */
-        .step-head {{
-            display:flex; align-items:center; gap:.6rem;
-            margin: 1.0rem 0 .1rem;
-        }}
+        /* ===== ステップ見出し ===== */
+        .step-head {{ display:flex; align-items:center; gap:.65rem; margin: 1.0rem 0 .1rem; }}
         .step-no {{
             flex:0 0 auto; width:30px; height:30px; border-radius:50%;
-            background:var(--navy); color:#fff;
+            border:1px solid var(--gold); color: var(--gold-l);
+            background: rgba(201,162,75,.1);
             display:flex; align-items:center; justify-content:center;
             font-weight:700; font-family:'Shippori Mincho',serif; font-size:1rem;
-            box-shadow:0 1px 3px rgba(33,31,75,.25);
+        }}
+        .step-done .step-no {{
+            background: linear-gradient(180deg, var(--gold), var(--gold-d));
+            color: {NAVY}; border-color: transparent;
+            box-shadow: 0 2px 10px rgba(201,162,75,.35);
         }}
         .step-title {{
             font-family:'Shippori Mincho',serif; font-weight:700;
-            color:var(--navy); font-size:1.18rem; word-break:keep-all;
+            color:var(--txt); font-size:1.18rem; word-break:keep-all;
+            letter-spacing:.04em;
         }}
-        .step-done .step-no {{ background:var(--gold); }}
-        .step-sub {{ color:#8a7f6a; font-size:.8rem; margin:.05rem 0 .55rem 2.5rem; }}
+        .step-sub {{ color:{TXT_SOFT}; font-size:.8rem; margin:.05rem 0 .55rem 2.5rem; }}
         hr.step-rule {{
-            border:0; border-top:1px dashed #D9CDB2; margin:1.3rem 0 .1rem;
+            border:0; border-top:1px dashed rgba(201,162,75,.28); margin:1.3rem 0 .1rem;
         }}
 
-        /* セクション見出し（金のひし形） */
+        /* ===== セクション見出し（金のひし形） ===== */
         .sec-title {{
             display:flex; align-items:center; gap:.55rem;
             font-family:'Shippori Mincho',serif; font-weight:700;
-            color:var(--navy); font-size:1.18rem; margin:.5rem 0 .15rem;
+            color:var(--txt); font-size:1.14rem; margin:.5rem 0 .15rem;
             word-break:keep-all; line-height:1.3;
         }}
         .sec-title::before {{
-            content:""; width:11px; height:11px; flex:0 0 auto;
+            content:""; width:10px; height:10px; flex:0 0 auto;
             background:linear-gradient(135deg,var(--gold),var(--gold-l));
             transform:rotate(45deg); border-radius:2px;
+            box-shadow: 0 0 8px rgba(201,162,75,.4);
         }}
-        .sec-sub {{ color:#8a7f6a; font-size:.8rem; margin:-.05rem 0 .45rem 1.55rem; }}
+        .sec-sub {{ color:{TXT_SOFT}; font-size:.8rem; margin:-.05rem 0 .45rem 1.55rem; }}
 
-        /* 注文カード */
+        /* ===== カード ===== */
         .o-card {{
-            background: var(--paper); border:1px solid #E8DEC8;
-            border-radius:14px; padding:10px 14px; margin-bottom:8px;
-            box-shadow:0 1px 3px rgba(33,31,75,.05);
+            background: var(--glass);
+            border: 1px solid rgba(201,162,75,.22);
+            border-radius: 14px; padding: 10px 14px; margin-bottom: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,.22);
         }}
-        .o-name {{ font-weight:700; color:var(--navy); font-size:1.02rem; }}
-        .o-line {{ color:var(--ink); font-size:.92rem; margin-top:1px; }}
-        .o-meta {{ color:#8a7f6a; font-size:.8rem; margin-top:1px; }}
+        .o-name {{ font-weight:700; color:#F8F3E6; font-size:1.02rem; }}
+        .o-line {{ color: var(--txt); font-size:.92rem; margin-top:1px; }}
+        .o-meta {{ color: {TXT_SOFT}; font-size:.8rem; margin-top:1px; }}
 
-        /* チップ */
+        /* ===== チップ・バッジ ===== */
         .chip {{
             display:inline-block; font-size:.7rem; font-weight:700;
             padding:2px 9px; border-radius:999px; vertical-align:middle;
@@ -202,22 +260,36 @@ def inject_css() -> None:
         .ch-badge {{
             display:inline-block; color:#fff; font-size:.68rem; font-weight:700;
             padding:2px 8px; border-radius:999px; vertical-align:middle;
+            opacity:.92;
         }}
 
-        /* 精米キュー行 */
+        /* ===== 精米キュー行 ===== */
         .mill-row {{
             display:flex; align-items:center; justify-content:space-between;
-            background:var(--paper); border:1px solid #E8DEC8; border-radius:12px;
+            background: var(--glass);
+            border:1px solid rgba(201,162,75,.22); border-radius:12px;
             padding:8px 12px; margin-bottom:6px;
+            color: var(--txt);
         }}
-        .mill-big {{ font-family:'Shippori Mincho',serif; font-weight:700; color:var(--navy); font-size:1.05rem; }}
+        .mill-big {{
+            font-family:'Shippori Mincho',serif; font-weight:700;
+            color:#F8F3E6; font-size:1.02rem;
+        }}
 
         hr.brand-rule {{
-            height:2px; width:64px; margin:14px auto 6px; border:0;
-            background:linear-gradient(90deg,var(--gold),var(--gold-l));
+            height:1px; width:74px; margin:14px auto 6px; border:0;
+            background:linear-gradient(90deg, transparent, var(--gold-l), transparent);
         }}
 
-        /* ダイアログ内の見た目 */
+        /* ===== 入力・フォーム類の細部 ===== */
+        [data-testid="stForm"] {{ border:1px solid rgba(201,162,75,.2); border-radius:14px; }}
+        [data-testid="stExpander"] details {{
+            border:1px solid rgba(201,162,75,.25) !important; border-radius:12px;
+            background: rgba(255,255,255,.03);
+        }}
+        a {{ color: var(--gold-l) !important; }}
+
+        /* ダイアログ */
         [data-testid="stDialog"] h2 {{ font-size:1.15rem; }}
 
         /* スマホ最適化 */
@@ -226,8 +298,9 @@ def inject_css() -> None:
             .stButton > button, .stDownloadButton > button {{ width:100%; padding:.68rem; font-size:.95rem; }}
             [data-testid="stMetricValue"] {{ font-size:1.45rem; }}
             [data-testid="stMetricLabel"] p {{ font-size:.76rem; }}
-            .sec-title {{ font-size:1.06rem; }}
-            [data-testid="stButtonGroup"] button {{ padding:.4rem .7rem; font-size:.86rem; }}
+            .step-title {{ font-size:1.06rem; }}
+            .sec-title {{ font-size:1.02rem; }}
+            [data-testid="stButtonGroup"] button {{ padding:.38rem .8rem; font-size:.86rem; }}
         }}
         </style>
         """,
@@ -236,10 +309,23 @@ def inject_css() -> None:
 
 
 def render_header() -> None:
-    """コンパクトなブランドヘッダー（ロゴ＋システム名を横並び）。"""
+    """ブランドヘッダー＋背景の光（控えめな粒）。"""
+    motes = []
+    spots = [
+        (10, 22, 4, 30, 0), (24, 70, 3, 36, 5), (40, 14, 5, 32, 2),
+        (58, 80, 4, 38, 7), (74, 30, 3, 34, 3), (88, 64, 5, 40, 1),
+        (6, 56, 3, 35, 8), (93, 12, 4, 33, 4),
+    ]
+    for left, top, size, dur, delay in spots:
+        motes.append(
+            f'<span class="mote" style="left:{left}%;top:{top}%;'
+            f'width:{size}px;height:{size}px;'
+            f'animation-duration:{dur}s;animation-delay:-{delay}s"></span>'
+        )
     logo = _logo_b64("阿部農園ロゴ.png")
     img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
     st.markdown(
+        f'<div class="app-motes">{"".join(motes)}</div>'
         f'<div class="brand-bar">{img}<span class="t">精米・発送管理</span></div>',
         unsafe_allow_html=True,
     )
@@ -247,7 +333,6 @@ def render_header() -> None:
 
 def _login_css() -> str:
     """ログイン画面専用：濃紺背景＋ゆっくり漂う金色の光（サイトのヒーロー風）。"""
-    # 金色の光の粒（位置・大きさ・速度を散らす）
     motes = []
     spots = [
         (8, 18, 5, 22, 0), (16, 72, 3, 28, 4), (27, 40, 7, 34, 2),
@@ -266,19 +351,15 @@ def _login_css() -> str:
     return (
         """
         <style>
-        /* ===== ログイン：濃紺の夜と、金の光 ===== */
         .stApp {
             background:
               radial-gradient(1200px 800px at 50% 18%, #2a2c5a 0%, #1b1d3e 45%, #131228 100%) !important;
         }
-        /* 上部ツールバー等を目立たなく */
         header[data-testid="stHeader"] { background: transparent !important; }
         .block-container, [data-testid="stMainBlockContainer"] {
             max-width: 440px !important;
             padding-top: 7vh !important;
         }
-
-        /* 光の粒レイヤー（背面・操作を邪魔しない） */
         .login-motes {
             position: fixed; inset: 0; z-index: 0; overflow: hidden;
             pointer-events: none;
@@ -299,22 +380,17 @@ def _login_css() -> str:
             80%  { opacity: .85; }
             100% { transform: translate(-10px,-52px) scale(.7); opacity: 0; }
         }
-        /* やわらかな中央のかがやき */
         .login-aura {
             position: fixed; left:50%; top:20%; transform:translateX(-50%);
             width: min(620px,90vw); height: 420px; z-index:0; pointer-events:none;
             background: radial-gradient(ellipse at center, rgba(201,162,75,.16) 0%, rgba(201,162,75,0) 65%);
             filter: blur(8px);
         }
-
-        /* 本文は光の上に */
         .block-container > div { position: relative; z-index: 2; }
 
-        /* ブランド表札 */
         .login-brand { text-align:center; }
         .login-brand img {
             height: clamp(150px, 34vw, 200px); width:auto;
-            /* 濃紺ロゴを淡いクリームに反転＋金のにじみ */
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
             opacity: .96;
         }
@@ -340,7 +416,6 @@ def _login_css() -> str:
             background: linear-gradient(90deg, transparent, var(--gold-l), transparent);
         }
 
-        /* 入力欄：コンパクト＆ガラス調 */
         [data-testid="stTextInput"] label { display:none; }
         [data-testid="stTextInput"] > div { max-width: 320px; margin: 0 auto; }
         [data-testid="stTextInput"] [data-baseweb="input"],
@@ -359,7 +434,6 @@ def _login_css() -> str:
         [data-testid="stTextInput"] input::placeholder { color: rgba(244,238,223,.4) !important; letter-spacing:.1em;}
         [data-testid="stTextInput"] svg { color: rgba(244,238,223,.6) !important; }
 
-        /* ログインボタン：金 */
         [data-testid="stForm"] {
             border: none !important; padding: 0 !important;
             max-width: 320px; margin: 0 auto;
@@ -373,11 +447,6 @@ def _login_css() -> str:
         }
         [data-testid="stForm"] button[kind="primaryFormSubmit"]:hover {
             filter: brightness(1.06);
-        }
-        .login-foot {
-            text-align:center; color: rgba(244,238,223,.4);
-            font-size:.72rem; letter-spacing:.12em; margin-top: 1.6rem;
-            font-family:'Shippori Mincho',serif;
         }
         </style>
         <div class="login-motes">""" + "".join(motes) + """</div>
@@ -415,8 +484,6 @@ def require_login() -> None:
                 st.rerun()
             else:
                 st.error("パスワードが違います。")
-    st.markdown('<div class="login-foot">ABE FARM since 1724</div>',
-                unsafe_allow_html=True)
     st.stop()
 
 
@@ -442,7 +509,7 @@ def step(n: int, title: str, sub: str = "", done: bool = False, first: bool = Fa
 
 
 def channel_badge(channel: str) -> str:
-    c = CHANNELS.get(channel, {"label": channel, "color": "#777"})
+    c = CHANNELS.get(channel, {"label": channel, "color": "#5a5e7a"})
     return f'<span class="ch-badge" style="background:{c["color"]}">{c["label"]}</span>'
 
 
@@ -465,9 +532,9 @@ def order_card(order, extra_html: str = "") -> str:
     qty = order["qty"] or 1
     kg = (order["weight_kg"] or 0) * qty
     kg_txt = f"（{kg:g}kg）" if order["needs_milling"] and kg else ""
-    note = f'<div class="o-meta">📝 {order["note"]}</div>' if order.get("note") else ""
+    note = f'<div class="o-meta">備考：{order["note"]}</div>' if order.get("note") else ""
     if order.get("tracking_no"):
-        note += f'<div class="o-meta">🚚 伝票番号 {order["tracking_no"]}</div>'
+        note += f'<div class="o-meta">伝票番号　{order["tracking_no"]}</div>'
     return (
         f'<div class="o-card">'
         f'<span class="o-name">{order["customer_name"]} 様</span>　'
@@ -479,17 +546,16 @@ def order_card(order, extra_html: str = "") -> str:
     )
 
 
-VIEWS = ["🏠 ホーム", "📋 注文", "👤 顧客", "⚙ 設定"]
+VIEWS = ["ホーム", "注文", "顧客", "設定"]
 
 
 def render_nav() -> str:
-    """上部タブナビ。選択中のビュー名（絵文字なし）を返す。"""
+    """上部タブナビ。選択中のビュー名を返す。"""
     sel = st.segmented_control(
         "ナビ", VIEWS, default=VIEWS[0], key="nav",
         label_visibility="collapsed",
     )
-    sel = sel or VIEWS[0]
-    return sel.split(" ", 1)[1]
+    return sel or VIEWS[0]
 
 
 def setup_page() -> None:

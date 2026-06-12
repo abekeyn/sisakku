@@ -41,13 +41,13 @@ def _unshipped(orders):
 # ===========================================================================
 # ダイアログ（モーダル）
 # ===========================================================================
-@st.dialog("➕ 注文を追加")
+@st.dialog("注文を追加")
 def dlg_add_order():
     customers = db.list_customers()
     products = db.list_products()
     prod_labels = {p["name"]: p["id"] for p in products}
 
-    tab_old, tab_new = st.tabs(["👤 既存のお客様", "🆕 新規のお客様"])
+    tab_old, tab_new = st.tabs(["既存のお客様", "新規のお客様"])
 
     with tab_old:
         if not customers:
@@ -111,7 +111,7 @@ def dlg_add_order():
                 st.rerun()
 
 
-@st.dialog("✏️ 注文を編集")
+@st.dialog("注文を編集")
 def dlg_edit_order(o):
     st.markdown(f'**{o["customer_name"]} 様**　{o["product_name"]}')
     c1, c2 = st.columns(2)
@@ -137,12 +137,12 @@ def dlg_edit_order(o):
             "note": note,
         })
         st.rerun()
-    if b2.button("🗑 この注文を削除", use_container_width=True):
+    if b2.button("✕ この注文を削除", use_container_width=True):
         db.delete_order(o["id"])
         st.rerun()
 
 
-@st.dialog("👤 お客様情報")
+@st.dialog("お客様情報")
 def dlg_customer(c=None):
     is_new = c is None
     c = c or {}
@@ -170,9 +170,9 @@ def dlg_customer(c=None):
             st.rerun()
 
 
-@st.dialog("📥 CSVから取り込む")
+@st.dialog("CSVから取り込む")
 def dlg_csv_import():
-    tab_b, tab_k = st.tabs(["🟢 BASE", "🟡 コメフル"])
+    tab_b, tab_k = st.tabs(["BASE", "コメフル"])
     with tab_b:
         up = st.file_uploader("BASEの注文CSV", type=["csv"], key="csv_b")
         if up and st.button("取り込む", type="primary", key="btn_b"):
@@ -192,7 +192,7 @@ def dlg_csv_import():
                 st.success(f"追加 {r['added']} 件／既存 {r['skipped']} 件")
 
 
-@st.dialog("🚚 伝票番号を取り込んで出荷完了")
+@st.dialog("伝票番号を取り込んで出荷完了")
 def dlg_confirm_shipment():
     st.caption(
         "ヤマトB2クラウドで送り状を**発行した後**、B2クラウドから「発行済データ」CSVを"
@@ -226,7 +226,7 @@ def dlg_confirm_shipment():
     if not matches:
         return
 
-    if st.button(f"✅ {len(matches)}件を出荷完了にする（BASEにも反映）",
+    if st.button(f"✓ {len(matches)}件を出荷完了にする（BASEにも反映）",
                  type="primary", use_container_width=True):
         result = shipping.confirm_shipments(matches)
         msgs = [f"**{result['shipped']} 件を出荷完了にしました。**"] + result["messages"]
@@ -256,7 +256,7 @@ def view_home():
     ui.step(1, "注文を集める",
             "BASEはボタン1つで自動取込。LINE・コメフルの注文は手で追加します", first=True)
     a1, a2, a3 = st.columns(3)
-    if a1.button("🔄 BASE取込", use_container_width=True):
+    if a1.button("⟳ BASE取込", use_container_width=True):
         cfg = db.get_setting("base_config") or {}
         if not cfg.get("refresh_token"):
             st.warning("設定タブでBASE連携を登録してください。")
@@ -268,9 +268,9 @@ def view_home():
             else:
                 st.toast(f"BASE：未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込", icon="✅")
                 st.rerun(scope="fragment")
-    if a2.button("➕ 注文追加", use_container_width=True):
+    if a2.button("＋ 注文追加", use_container_width=True):
         dlg_add_order()
-    if a3.button("📥 CSV取込", use_container_width=True):
+    if a3.button("CSV取込", use_container_width=True):
         dlg_csv_import()
 
     # ======= STEP 2｜精米する =======
@@ -308,7 +308,7 @@ def view_home():
 
     if not groups and not prep_groups and not checks:
         if unshipped:
-            st.success("精米・用意は完了しています 🎉 次は ③ 送り状づくりへ")
+            st.success("精米・用意は完了しています。次は ❸ 送り状づくりへ")
         else:
             st.caption("注文を取り込むと、ここに精米する量が表示されます。")
     for key, g in sorted(groups.items(), key=lambda x: -x[1]["kg"]):
@@ -320,7 +320,7 @@ def view_home():
         )
         if c2.button("精米完了", key=f'mill{key}', use_container_width=True):
             db.update_order_status(g["ids"], "milled")
-            st.toast(f"{key} を精米済みにしました", icon="🌾")
+            st.toast(f"{key} を精米済みにしました", icon="✅")
             st.rerun(scope="fragment")
     for key, g in sorted(prep_groups.items(), key=lambda x: -x[1]["kg"]):
         kg_txt = f'<b>{g["kg"]:g}kg</b>（×{g["qty"]}）' if g["kg"] else f'×{g["qty"]}'
@@ -356,7 +356,7 @@ def view_home():
             sel_ids.append(o["id"])
         c2.markdown(ui.order_card(o), unsafe_allow_html=True)
         with c3.popover("⋮"):
-            if st.button("✏️ 編集", key=f'e{o["id"]}', use_container_width=True):
+            if st.button("✎ 編集", key=f'e{o["id"]}', use_container_width=True):
                 dlg_edit_order(o)
             if o["status"] == "milled":
                 if st.button("↩ 精米待ちに戻す", key=f'um{o["id"]}', use_container_width=True):
@@ -372,7 +372,7 @@ def view_home():
     if not sender.get("name"):
         st.warning("送り主が未設定です（設定タブで登録してください）")
 
-    if st.button(f"📄 ヤマトCSVを作成する（{len(sel_ids)}件）", type="primary",
+    if st.button(f"ヤマトCSVを作成する（{len(sel_ids)}件）", type="primary",
                  use_container_width=True, disabled=not sel_ids):
         targets = [o for o in unshipped if o["id"] in set(sel_ids)]
         for o in targets:
@@ -394,7 +394,7 @@ def view_home():
 
     if st.session_state.get("csv_data"):
         st.download_button(
-            "⬇️ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
+            "↓ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
             file_name=exporter.make_filename(), mime="text/csv",
             use_container_width=True,
         )
@@ -403,22 +403,22 @@ def view_home():
     ui.step(4, "出荷を確定する",
             "B2クラウドで印刷できたら押すだけ。伝票番号を取り込んで出荷完了にし、BASEにも自動反映します")
 
-    if st.button("🤖 B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
+    if st.button("B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
                  help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
         db.set_setting("b2_fetch_request", datetime.now().isoformat())
         st.toast("PCに自動取得を指示しました（30秒〜1分ほどで完了します）", icon="🤖")
 
     b2res = db.get_setting("b2_fetch_result")
     if b2res:
-        icon = "✅" if b2res.get("ok") else "⚠️"
+        icon = "✓" if b2res.get("ok") else "⚠"
         st.caption(f'{icon} 前回の自動取得（{b2res.get("at","")}）：{b2res.get("summary","")}')
         for m in b2res.get("messages", []):
             st.caption(m)
 
     with st.expander("その他の確定方法（自動取得が使えないとき）"):
-        if st.button("🚚 発行済データCSVを手動で取り込む", use_container_width=True):
+        if st.button("発行済データCSVを手動で取り込む", use_container_width=True):
             dlg_confirm_shipment()
-        if st.button(f"✅ 選択中の{len(sel_ids)}件を伝票番号なしで出荷完了",
+        if st.button(f"✓ 選択中の{len(sel_ids)}件を伝票番号なしで出荷完了",
                      use_container_width=True, disabled=not sel_ids,
                      help="伝票番号は記録されませんが、出荷済みにしてBASEへ発送完了を送ります"):
             targets = [o for o in unshipped if o["id"] in set(sel_ids)]
@@ -426,7 +426,7 @@ def view_home():
             for o in targets:
                 if o["channel"] == "base":
                     ok, msg = base_api.dispatch_order(o)
-                    msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
+                    msgs.append(("✓ " if ok else "⚠ ") + f' {o["customer_name"]}様：{msg}')
                 elif o["channel"] == "komeful":
                     komeful_flag = True
             db.update_order_status(sel_ids, "shipped")
@@ -434,7 +434,7 @@ def view_home():
             for m in msgs:
                 st.write(m)
             if komeful_flag:
-                st.link_button("🛒 コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
+                st.link_button("コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
             st.rerun(scope="fragment")
 
 
@@ -469,16 +469,16 @@ def view_orders():
         c1.markdown(ui.order_card(o, meta), unsafe_allow_html=True)
         with c2.popover("⋮"):
             if o["status"] != "shipped":
-                if st.button("✏️ 編集", key=f'oe{o["id"]}', use_container_width=True):
+                if st.button("✎ 編集", key=f'oe{o["id"]}', use_container_width=True):
                     dlg_edit_order(o)
-                if st.button("✅ 出荷済みにする", key=f'os{o["id"]}', use_container_width=True):
+                if st.button("✓ 出荷済みにする", key=f'os{o["id"]}', use_container_width=True):
                     db.update_order_status([o["id"]], "shipped")
                     st.rerun(scope="fragment")
             else:
                 if st.button("↩ 未出荷に戻す", key=f'ob{o["id"]}', use_container_width=True):
                     db.update_order_status([o["id"]], "pending")
                     st.rerun(scope="fragment")
-            if st.button("🗑 削除", key=f'od{o["id"]}', use_container_width=True):
+            if st.button("✕ 削除", key=f'od{o["id"]}', use_container_width=True):
                 db.delete_order(o["id"])
                 st.rerun(scope="fragment")
     if len(orders) > 80:
@@ -493,7 +493,7 @@ def view_customers():
     c1, c2 = st.columns([3, 1.2])
     q = c1.text_input("検索", placeholder="🔍 名前・住所で検索",
                       key="cq", label_visibility="collapsed")
-    if c2.button("➕ 新規追加", use_container_width=True):
+    if c2.button("＋ 新規追加", use_container_width=True):
         dlg_customer(None)
 
     customers = db.list_customers()
@@ -514,14 +514,14 @@ def view_customers():
         k1.markdown(
             f'<div class="o-card"><span class="o-name">{c["name"]} 様</span>　'
             f'<span class="o-meta">注文 {n} 回</span>'
-            f'<div class="o-meta">〒{c["zip"]}　{c["address"]}{c["address2"] or ""}　📞 {c["tel"]}</div></div>',
+            f'<div class="o-meta">〒{c["zip"]}　{c["address"]}{c["address2"] or ""}　☎ {c["tel"]}</div></div>',
             unsafe_allow_html=True,
         )
         with k2.popover("⋮"):
-            if st.button("✏️ 編集", key=f'ce{c["id"]}', use_container_width=True):
+            if st.button("✎ 編集", key=f'ce{c["id"]}', use_container_width=True):
                 dlg_customer(c)
             if n == 0:
-                if st.button("🗑 削除", key=f'cd{c["id"]}', use_container_width=True):
+                if st.button("✕ 削除", key=f'cd{c["id"]}', use_container_width=True):
                     db.delete_customer(c["id"])
                     st.rerun(scope="fragment")
             else:
@@ -533,7 +533,7 @@ def view_customers():
 # ===========================================================================
 def view_settings():
     tab_sender, tab_prod, tab_base, tab_data = st.tabs(
-        ["📮 送り主", "🍚 商品", "🔗 BASE連携", "🗃 データ"]
+        ["送り主", "商品", "BASE連携", "データ"]
     )
 
     with tab_sender:
@@ -548,7 +548,7 @@ def view_settings():
             c5, c6 = st.columns(2)
             addr2 = c5.text_input("建物名等", s.get("address2", ""))
             tel = c6.text_input("電話番号", s.get("tel", ""))
-            if st.form_submit_button("💾 保存", type="primary"):
+            if st.form_submit_button("保存", type="primary"):
                 db.set_setting("sender", {
                     "name": name, "kana": kana, "tel": tel,
                     "zip": zipc, "address": addr, "address2": addr2,
@@ -572,7 +572,7 @@ def view_settings():
             },
             key="prod_editor",
         )
-        if st.button("💾 商品を保存", type="primary"):
+        if st.button("商品を保存", type="primary"):
             for _, r in edited.iterrows():
                 if not str(r["商品名"]).strip():
                     continue
@@ -590,13 +590,13 @@ def view_settings():
     with tab_base:
         cfg = db.get_setting("base_config") or {}
         if cfg.get("refresh_token"):
-            st.success("✅ BASE連携は設定済みです（自動取込・自動出荷が使えます）")
+            st.success("BASE連携は設定済みです（自動取込・自動出荷が使えます）")
         with st.form("base_form"):
             client_id = st.text_input("Client ID", cfg.get("client_id", ""))
             client_secret = st.text_input("Client Secret", cfg.get("client_secret", ""), type="password")
             redirect_uri = st.text_input("Redirect URI", cfg.get("redirect_uri", ""))
             refresh_token = st.text_input("リフレッシュトークン", cfg.get("refresh_token", ""), type="password")
-            if st.form_submit_button("💾 保存", type="primary"):
+            if st.form_submit_button("保存", type="primary"):
                 db.set_setting("base_config", {
                     "client_id": client_id, "client_secret": client_secret,
                     "redirect_uri": redirect_uri, "refresh_token": refresh_token,
@@ -607,21 +607,21 @@ def view_settings():
         ui.section("顧客データの取込", "ヤマトB2クラウドの発行済データCSVから顧客を登録します")
         up = st.file_uploader("発行済データCSV", type=["csv"], key="reimport")
         hist = st.checkbox("過去の注文も記録する（出荷済み扱い）", value=False)
-        if up is not None and st.button("📥 取り込む"):
+        if up is not None and st.button("取り込む（顧客データ）"):
             r = seed.import_issued_csv(up.getvalue(), import_history=hist)
             db.clear_cache()
             st.success(f"顧客 +{r['customers']} 名／注文 +{r['orders']} 件")
 
         st.divider()
         ui.section("ログアウト")
-        if st.button("🚪 ログアウト"):
+        if st.button("ログアウト"):
             st.session_state.pop("authed", None)
             st.rerun()
 
         st.divider()
         ui.section("全データの初期化", "注文・顧客・設定をすべて消去します（元に戻せません）")
         confirm = st.text_input('「リセット」と入力すると実行できます', "")
-        if st.button("🗑 全データをリセット", disabled=(confirm != "リセット")):
+        if st.button("全データをリセット", disabled=(confirm != "リセット")):
             db.reset_all()
             st.success("初期化しました。再読み込みすると初期状態になります。")
 

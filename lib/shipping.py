@@ -62,11 +62,11 @@ def confirm_shipments(matches) -> dict:
             o2 = dict(o)
             o2["tracking_no"] = r["tracking"]
             ok, msg = base_api.dispatch_order(o2)
-            msgs.append(("✅" if ok else "⚠️") + f' {o["customer_name"]}様：{msg}')
+            msgs.append(("✓ " if ok else "⚠ ") + f' {o["customer_name"]}様：{msg}')
         elif o["channel"] == "komeful":
             komeful_flag = True
     if komeful_flag:
-        msgs.append(f"🛒 コメフルの注文は管理画面で出荷処理してください：{komeful.SELLER_URL}")
+        msgs.append(f"コメフルの注文は管理画面で出荷処理してください：{komeful.SELLER_URL}")
     return {"shipped": len(matches), "messages": msgs, "komeful": komeful_flag}
 
 
