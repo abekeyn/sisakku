@@ -59,6 +59,41 @@ def _check_b2_request() -> bool:
     return False
 
 
+def _run_b2_print() -> None:
+    """B2で送り状を発行し、PDFを既定プリンタへ印刷する。"""
+    import base64
+    from lib import b2_fetch, printing
+    started = datetime.now().isoformat(timespec="seconds")
+    try:
+        b64 = db.get_setting("b2_print_csv")
+        if not b64:
+            raise RuntimeError("印刷するデータがありません")
+        csv_bytes = base64.b64decode(b64)
+        r = b2_fetch.issue_and_print(csv_bytes)
+        msg = r.get("message", "")
+        if r.get("pdf"):
+            ok, pmsg = printing.print_pdf(r["pdf"])
+            msg += "／" + pmsg
+        result = {"ok": bool(r.get("issued")), "at": started, "summary": msg}
+        print("B2発行・印刷:", msg, flush=True)
+    except Exception as e:  # noqa: BLE001
+        result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        print("B2発行・印刷 失敗:", e, flush=True)
+        traceback.print_exc()
+    db.set_setting("b2_print_result", result)
+
+
+def _check_b2_print() -> bool:
+    """アプリからの印刷指示があれば実行する。"""
+    req = db.get_setting("b2_print_request")
+    done = db.get_setting("b2_print_handled")
+    if req and req != done:
+        db.set_setting("b2_print_handled", req)
+        _run_b2_print()
+        return True
+    return False
+
+
 def main() -> None:
     db.init_db()
     if "--b2-test" in sys.argv:
@@ -79,6 +114,7 @@ def main() -> None:
             try:
                 _process_exports()
                 _check_b2_request()
+                _check_b2_print()
             except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
                 print("一時エラー（次回再試行）:", e, flush=True)
             time.sleep(INTERVAL)

@@ -196,32 +196,35 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                     _shot(b2, "pattern_select")
             b2.wait_for_timeout(1500)
 
-            # ファイルをアップロード（フレーム横断で input[type=file] を探す）
+            # ファイルをアップロード（全 input[type=file] に投入し、効いたものを採用）
             tmp = Path(tempfile.gettempdir()) / "abe_yamato_issue.csv"
             tmp.write_bytes(csv_bytes)
             _shot(b2, "issue_before_upload")
-            fin = None
+            file_inputs = []
             for fr in b2.frames:
                 try:
-                    loc = fr.locator('input[type="file"]')
-                    if loc.count() > 0:
-                        fin = loc.first
-                        break
+                    for i in range(fr.locator('input[type="file"]').count()):
+                        file_inputs.append(fr.locator('input[type="file"]').nth(i))
                 except Exception:  # noqa: BLE001
                     continue
-            if fin is None:
+            if not file_inputs:
                 raise B2Error("ファイル選択欄が見つかりません: " + _shot(b2, "no_file_input"))
-            fin.set_input_files(str(tmp), timeout=15000)
-            b2.wait_for_timeout(2500)
+            for fin in file_inputs:
+                try:
+                    fin.set_input_files(str(tmp), timeout=8000)
+                except Exception:  # noqa: BLE001
+                    continue
+            b2.wait_for_timeout(3500)
+            _shot(b2, "after_upload")
 
-            # 「取込み開始」
-            start = _first_visible(b2, [
-                'button:has-text("取込み開始")', 'a:has-text("取込み開始")',
-                'input[value*="取込み開始"]', 'button:has-text("取込開始")',
-            ], 8000)
-            if start is None:
-                raise B2Error("「取込み開始」ボタンが見つかりません: " + _shot(b2, "import_start"))
-            start.click()
+            # 「取込み開始」をクリック（要素種別を問わずテキストで掴む）
+            start = b2.get_by_text(_re.compile(r"取込み?開始")).last
+            if start.count() == 0:
+                raise B2Error("「取込み開始」が見つかりません: " + _shot(b2, "import_start"))
+            try:
+                start.click(timeout=8000)
+            except Exception:  # noqa: BLE001
+                start.click(force=True)
             b2.wait_for_timeout(6000)
             _shot(b2, "import_result")
 

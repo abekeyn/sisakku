@@ -372,8 +372,7 @@ def view_home():
     if not sender.get("name"):
         st.warning("送り主が未設定です（設定タブで登録してください）")
 
-    if st.button(f"ヤマトCSVを作成する（{len(sel_ids)}件）", type="primary",
-                 use_container_width=True, disabled=not sel_ids):
+    def _build_csv_for_selected():
         targets = [o for o in unshipped if o["id"] in set(sel_ids)]
         for o in targets:
             upd = {"ship_date": ship_d.strftime("%Y/%m/%d")}
@@ -381,23 +380,39 @@ def view_home():
                 upd["delivery_time"] = TIME_CODES[time_sel]
             db.update_order(o["id"], upd)
         targets = [o for o in _unshipped(db.list_orders()) if o["id"] in set(sel_ids)]
-        csv_bytes = yamato.export_csv(targets, sender)
-        st.session_state["csv_data"] = csv_bytes
-        res = exporter.save_or_reserve(csv_bytes)
-        if res["mode"] == "saved":
-            st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n📄 {res['path']}\n\n"
-                       "→ B2クラウドの「送り状発行 → 外部データ取込」で読み込んで印刷してください。")
-        else:
-            st.success("CSVを作成しました。下のボタンで保存し、"
-                       "B2クラウドの「送り状発行 → 外部データ取込」で読み込んで印刷してください。"
-                       "（PC起動中なら数秒でデスクトップにも自動保存されます）")
+        return yamato.export_csv(targets, sender)
 
-    if st.session_state.get("csv_data"):
-        st.download_button(
-            "↓ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
-            file_name=exporter.make_filename(), mime="text/csv",
-            use_container_width=True,
-        )
+    # B2で発行して自動印刷（PCの常駐エージェントが実行）
+    if st.button(f"B2で送り状を発行して自動印刷（{len(sel_ids)}件）", type="primary",
+                 use_container_width=True, disabled=not sel_ids,
+                 help="PCの常駐プログラムがB2クラウドに送り状を発行し、PDFを既定プリンタへ自動印刷します（PCとプリンタが起動している必要があります）"):
+        import base64
+        csv_bytes = _build_csv_for_selected()
+        st.session_state["csv_data"] = csv_bytes
+        db.set_setting("b2_print_csv", base64.b64encode(csv_bytes).decode())
+        db.set_setting("b2_print_request", datetime.now().isoformat())
+        st.toast("PCに発行・印刷を指示しました（30秒〜1分ほど）", icon="🖨")
+
+    pr = db.get_setting("b2_print_result")
+    if pr:
+        st.caption(("✓ " if pr.get("ok") else "⚠ ") + f'前回の発行・印刷（{pr.get("at","")}）：{pr.get("summary","")}')
+
+    with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
+        if st.button(f"ヤマトCSVを作成（{len(sel_ids)}件）", use_container_width=True,
+                     disabled=not sel_ids):
+            csv_bytes = _build_csv_for_selected()
+            st.session_state["csv_data"] = csv_bytes
+            res = exporter.save_or_reserve(csv_bytes)
+            if res["mode"] == "saved":
+                st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n{res['path']}")
+            else:
+                st.success("CSVを作成しました。下のボタンで保存できます。")
+        if st.session_state.get("csv_data"):
+            st.download_button(
+                "↓ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
+                file_name=exporter.make_filename(), mime="text/csv",
+                use_container_width=True,
+            )
 
     # ======= STEP 4｜出荷を確定する =======
     ui.step(4, "出荷を確定する",
