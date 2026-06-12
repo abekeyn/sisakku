@@ -245,15 +245,144 @@ def render_header() -> None:
     )
 
 
-def render_login_header() -> None:
-    logo = _logo_b64("阿部農園ロゴ.png")
-    img = f'<img src="data:image/png;base64,{logo}" style="height:90px"/>' if logo else ""
-    st.markdown(
-        f'<div style="text-align:center;padding:14px 0 4px">{img}'
-        f'<div style="font-family:\'Shippori Mincho\',serif;color:{GOLD};'
-        f'letter-spacing:.25em;margin-top:6px">ロ グ イ ン</div>'
-        f'<hr class="brand-rule"/></div>',
-        unsafe_allow_html=True,
+def _login_css() -> str:
+    """ログイン画面専用：濃紺背景＋ゆっくり漂う金色の光（サイトのヒーロー風）。"""
+    # 金色の光の粒（位置・大きさ・速度を散らす）
+    motes = []
+    spots = [
+        (8, 18, 5, 22, 0), (16, 72, 3, 28, 4), (27, 40, 7, 34, 2),
+        (38, 12, 4, 26, 7), (46, 84, 6, 31, 1), (57, 30, 3, 24, 5),
+        (63, 60, 8, 38, 3), (71, 16, 4, 27, 8), (78, 78, 5, 30, 2),
+        (84, 44, 6, 33, 6), (90, 24, 3, 25, 9), (93, 66, 7, 36, 1),
+        (12, 50, 4, 29, 10), (33, 90, 5, 32, 3), (52, 6, 6, 35, 7),
+        (68, 92, 4, 28, 5), (88, 88, 5, 30, 8), (4, 38, 6, 34, 2),
+    ]
+    for left, top, size, dur, delay in spots:
+        motes.append(
+            f'<span class="mote" style="left:{left}%;top:{top}%;'
+            f'width:{size}px;height:{size}px;'
+            f'animation-duration:{dur}s;animation-delay:-{delay}s"></span>'
+        )
+    return (
+        """
+        <style>
+        /* ===== ログイン：濃紺の夜と、金の光 ===== */
+        .stApp {
+            background:
+              radial-gradient(1200px 800px at 50% 18%, #2a2c5a 0%, #1b1d3e 45%, #131228 100%) !important;
+        }
+        /* 上部ツールバー等を目立たなく */
+        header[data-testid="stHeader"] { background: transparent !important; }
+        .block-container, [data-testid="stMainBlockContainer"] {
+            max-width: 440px !important;
+            padding-top: 7vh !important;
+        }
+
+        /* 光の粒レイヤー（背面・操作を邪魔しない） */
+        .login-motes {
+            position: fixed; inset: 0; z-index: 0; overflow: hidden;
+            pointer-events: none;
+        }
+        .login-motes .mote {
+            position: absolute; border-radius: 50%;
+            background: radial-gradient(circle, rgba(233,209,140,.95) 0%, rgba(201,162,75,.5) 40%, rgba(201,162,75,0) 70%);
+            box-shadow: 0 0 8px 2px rgba(201,162,75,.35);
+            opacity: .0;
+            animation-name: moteDrift;
+            animation-iteration-count: infinite;
+            animation-timing-function: ease-in-out;
+        }
+        @keyframes moteDrift {
+            0%   { transform: translate(0,0) scale(.7);     opacity: 0; }
+            20%  { opacity: .9; }
+            50%  { transform: translate(14px,-26px) scale(1.1); opacity: .7; }
+            80%  { opacity: .85; }
+            100% { transform: translate(-10px,-52px) scale(.7); opacity: 0; }
+        }
+        /* やわらかな中央のかがやき */
+        .login-aura {
+            position: fixed; left:50%; top:20%; transform:translateX(-50%);
+            width: min(620px,90vw); height: 420px; z-index:0; pointer-events:none;
+            background: radial-gradient(ellipse at center, rgba(201,162,75,.16) 0%, rgba(201,162,75,0) 65%);
+            filter: blur(8px);
+        }
+
+        /* 本文は光の上に */
+        .block-container > div { position: relative; z-index: 2; }
+
+        /* ブランド表札 */
+        .login-brand { text-align:center; }
+        .login-brand img {
+            height: clamp(150px, 34vw, 200px); width:auto;
+            /* 濃紺ロゴを淡いクリームに反転＋金のにじみ */
+            filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
+            opacity: .96;
+        }
+        .login-eyebrow {
+            margin-top: 10px;
+            font-family: 'Shippori Mincho', serif;
+            color: var(--gold-l); letter-spacing: .42em;
+            font-size: .82rem; text-indent: .42em;
+        }
+        .login-title {
+            font-family: 'Shippori Mincho', serif; font-weight: 700;
+            color: #F4EEDF !important; letter-spacing: .14em;
+            font-size: clamp(1.7rem, 6.5vw, 2.4rem);
+            margin: .35rem 0 .1rem; text-indent: .14em;
+            text-shadow: 0 2px 24px rgba(0,0,0,.35);
+        }
+        .login-sub {
+            color: rgba(244,238,223,.62); font-size:.82rem; letter-spacing:.08em;
+            margin-bottom: 1.8rem;
+        }
+        .login-rule {
+            height:1px; width:74px; margin:14px auto 0; border:0;
+            background: linear-gradient(90deg, transparent, var(--gold-l), transparent);
+        }
+
+        /* 入力欄：コンパクト＆ガラス調 */
+        [data-testid="stTextInput"] label { display:none; }
+        [data-testid="stTextInput"] > div { max-width: 320px; margin: 0 auto; }
+        [data-testid="stTextInput"] [data-baseweb="input"],
+        [data-testid="stTextInput"] [data-baseweb="base-input"],
+        [data-testid="stTextInput"] > div > div {
+            background: rgba(255,255,255,.07) !important;
+            border: 1px solid rgba(201,162,75,.45) !important;
+            border-radius: 11px !important;
+        }
+        [data-testid="stTextInput"] input {
+            background: transparent !important;
+            color: #F4EEDF !important; text-align:center;
+            padding: .5rem .8rem !important; font-size: 1.05rem; letter-spacing:.3em;
+            -webkit-text-fill-color: #F4EEDF !important;
+        }
+        [data-testid="stTextInput"] input::placeholder { color: rgba(244,238,223,.4) !important; letter-spacing:.1em;}
+        [data-testid="stTextInput"] svg { color: rgba(244,238,223,.6) !important; }
+
+        /* ログインボタン：金 */
+        [data-testid="stForm"] {
+            border: none !important; padding: 0 !important;
+            max-width: 320px; margin: 0 auto;
+        }
+        [data-testid="stForm"] .stButton > button,
+        [data-testid="stForm"] button[kind="primaryFormSubmit"] {
+            background: linear-gradient(180deg, #C9A24B, #A9842F) !important;
+            color: #1b1d3e !important; border: none !important;
+            font-weight: 700; letter-spacing: .2em; border-radius: 11px;
+            padding: .6rem 1rem; box-shadow: 0 6px 20px rgba(201,162,75,.28);
+        }
+        [data-testid="stForm"] button[kind="primaryFormSubmit"]:hover {
+            filter: brightness(1.06);
+        }
+        .login-foot {
+            text-align:center; color: rgba(244,238,223,.4);
+            font-size:.72rem; letter-spacing:.12em; margin-top: 1.6rem;
+            font-family:'Shippori Mincho',serif;
+        }
+        </style>
+        <div class="login-motes">""" + "".join(motes) + """</div>
+        <div class="login-aura"></div>
+        """
     )
 
 
@@ -263,16 +392,31 @@ def require_login() -> None:
         return
     if st.session_state.get("authed"):
         return
-    render_login_header()
+
+    st.markdown(_login_css(), unsafe_allow_html=True)
+
+    logo = _logo_b64("阿部農園ロゴ.png")
+    img = f'<img src="data:image/png;base64,{logo}" alt="阿部農園"/>' if logo else ""
+    st.markdown(
+        f'<div class="login-brand">{img}'
+        f'<div class="login-eyebrow">阿 部 農 園</div>'
+        f'<div class="login-title">精米・発送管理</div>'
+        f'<div class="login-sub">Rice, and the time it makes</div>'
+        f'<hr class="login-rule"/></div>',
+        unsafe_allow_html=True,
+    )
+
     with st.form("login_form"):
-        entered = st.text_input("パスワード", type="password")
+        entered = st.text_input("パスワード", type="password",
+                                placeholder="パスワード")
         if st.form_submit_button("ログイン", type="primary", use_container_width=True):
             if entered == str(pw):
                 st.session_state["authed"] = True
                 st.rerun()
             else:
                 st.error("パスワードが違います。")
-    st.caption("阿部農園 精米・発送管理システム")
+    st.markdown('<div class="login-foot">ABE FARM since 1724</div>',
+                unsafe_allow_html=True)
     st.stop()
 
 
