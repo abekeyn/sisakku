@@ -303,7 +303,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             ctx.on("page", lambda pg: pg.on("download", lambda d: holder.__setitem__("d", d)))
 
             issue_btn = None
-            for pat in [r"発行する", r"印刷する", r"^\s*発行\s*$", r"^\s*印刷\s*$", r"登録"]:
+            for pat in [r"発行開始", r"発行する", r"印刷開始", r"^\s*発行\s*$", r"登録"]:
                 loc = b2.get_by_text(_re.compile(pat)).last
                 if loc.count() > 0:
                     issue_btn = loc

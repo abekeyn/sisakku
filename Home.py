@@ -563,10 +563,18 @@ def view_settings():
             c5, c6 = st.columns(2)
             addr2 = c5.text_input("建物名等", s.get("address2", ""))
             tel = c6.text_input("電話番号", s.get("tel", ""))
+            st.markdown("**請求先（ヤマト発払いの運賃請求先）**")
+            st.caption("送り状の発行に必須です。ヤマトの『お客さまコード』と『運賃管理番号』を入れます。")
+            c7, c8 = st.columns(2)
+            ccode = c7.text_input("ご請求先顧客コード", s.get("customer_code", ""),
+                                  help="ヤマトのお客さまコード（例：08060303705）")
+            sno = c8.text_input("運賃管理番号", s.get("shipping_no", ""),
+                                help="通常は 01")
             if st.form_submit_button("保存", type="primary"):
                 db.set_setting("sender", {
                     "name": name, "kana": kana, "tel": tel,
                     "zip": zipc, "address": addr, "address2": addr2,
+                    "customer_code": ccode.strip(), "shipping_no": sno.strip(),
                 })
                 st.success("保存しました。")
 

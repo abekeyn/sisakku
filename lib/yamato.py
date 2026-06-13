@@ -101,6 +101,10 @@ def build_row(order, sender: dict) -> list[str]:
         name = name[:limit]
     put("品名１", name + suffix)
 
+    # 請求先（発払いの運賃請求先）。未設定だとB2で「請求先が設定されていません」になる
+    put("ご請求先顧客コード", sender.get("customer_code", ""))
+    put("運賃管理番号", sender.get("shipping_no", ""))
+
     # 記事
     put("記事", order["note"] or "")
     return row
