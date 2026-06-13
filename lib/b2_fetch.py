@@ -92,6 +92,16 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
 
     pw_input = _first_visible(page, ['input[type="password"]'], 12000)
     if pw_input is None:
+        # ヤマト側のメンテナンス／利用時間外（7:00〜25:00、B2クラウドは4:00〜）を判別
+        try:
+            body = page.inner_text("body", timeout=2000)
+        except Exception:  # noqa: BLE001
+            body = ""
+        if "ご利用時間外" in body or "メンテナンス" in body:
+            raise B2Error(
+                "ヤマトは現在ご利用時間外です（ご利用可能：7:00〜25:00／B2クラウドは4:00〜）。"
+                "時間内にもう一度お試しください。"
+            )
         raise B2Error("ログイン画面が見つかりません: " + _shot(page, "login_not_found"))
     texts = page.locator(
         'input[type="text"]:visible, input[type="tel"]:visible, input:not([type]):visible'
