@@ -646,7 +646,7 @@ def order_card(order, extra_html: str = "") -> str:
     )
 
 
-VIEWS = ["ホーム", "注文", "顧客", "設定"]
+VIEWS = ["ホーム", "注文", "顧客", "分析", "設定"]
 
 
 def render_nav() -> str:

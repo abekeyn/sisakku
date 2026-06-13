@@ -355,11 +355,11 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             browser.close()
 
 
-def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False) -> dict:
-    """B2クラウドから発行済データを取得し、出荷確定まで実行する。
+def _download_issued(days: int = 7, headful: bool = False) -> bytes | None:
+    """B2クラウドにログインし、発行済データCSV(bytes)をダウンロードして返す。
 
-    dry_run=True なら照合結果の確認だけ行い、出荷確定・BASE反映はしない。
-    returns {"rows", "shipped", "unmatched", "messages"} または raises B2Error
+    対象期間は「出荷予定日の開始日 = 今日 - days」に絞る。
+    対象0件なら None を返す。失敗時は B2Error。
     """
     import re as _re
 
@@ -453,9 +453,7 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
             )
             b2.wait_for_timeout(1000)
             if not checked:
-                # 0件＝この期間に発行済データが無い
-                return {"rows": 0, "shipped": 0, "unmatched": 0,
-                        "messages": ["B2クラウドに対象期間の発行済データがありませんでした"]}
+                return None  # 0件＝この期間に発行済データが無い
 
             # ---- 4. 「外部ファイルに出力」→ CSVダウンロード ----
             out_btn = _first_visible(b2, [
@@ -541,24 +539,47 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
                 raise B2Error("ファイル出力のダウンロードが発火しませんでした: " + _shot(b2, "no_download"))
             download = holder["d"]
             tmp = Path(download.path())
-            raw = tmp.read_bytes()
-
-            # ---- 5. 照合・出荷確定 ----
-            if dry_run:
-                from . import db, yamato
-                rows = yamato.parse_issued_for_tracking(raw)
-                unshipped = [o for o in db.list_orders() if o["status"] in ("pending", "milled")]
-                matches, unmatched = shipping.match_tracking(rows, unshipped)
-                return {
-                    "rows": len(rows), "shipped": 0, "unmatched": len(unmatched),
-                    "messages": [f'[テスト] 照合可能: {o["customer_name"]}様 → {r["tracking"]}'
-                                 for r, o in matches],
-                }
-            result = shipping.process_issued_csv(raw)
-            return result
+            return tmp.read_bytes()
         finally:
             ctx.close()
             browser.close()
+
+
+def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False) -> dict:
+    """B2クラウドから発行済データを取得し、出荷確定まで実行する。
+
+    dry_run=True なら照合結果の確認だけ行い、出荷確定・BASE反映はしない。
+    returns {"rows", "shipped", "unmatched", "messages"}
+    """
+    raw = _download_issued(days=days, headful=headful)
+    if raw is None:
+        return {"rows": 0, "shipped": 0, "unmatched": 0,
+                "messages": ["B2クラウドに対象期間の発行済データがありませんでした"]}
+    if dry_run:
+        from . import db, yamato
+        rows = yamato.parse_issued_for_tracking(raw)
+        unshipped = [o for o in db.list_orders() if o["status"] in ("pending", "milled")]
+        matches, unmatched = shipping.match_tracking(rows, unshipped)
+        return {
+            "rows": len(rows), "shipped": 0, "unmatched": len(unmatched),
+            "messages": [f'[テスト] 照合可能: {o["customer_name"]}様 → {r["tracking"]}'
+                         for r, o in matches],
+        }
+    return shipping.process_issued_csv(raw)
+
+
+def fetch_history(days: int = 370, headful: bool = False) -> dict:
+    """B2クラウドから過去の発行済データを取得し、顧客マスタと過去注文を更新する。
+
+    出荷確定やBASE反映はしない（あくまで履歴の取り込み）。
+    同じ伝票番号の注文は重複登録しない。
+    returns {"customers", "orders", "sender"}
+    """
+    from . import seed
+    raw = _download_issued(days=days, headful=headful)
+    if raw is None:
+        return {"customers": 0, "orders": 0, "sender": False}
+    return seed.import_issued_csv(raw, import_history=True)
 
 
 def _dump_page(page, name: str) -> str:

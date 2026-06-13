@@ -58,6 +58,7 @@ products = Table(
     Column("yamato_name", String(255), nullable=False),
     Column("sort_order", Integer, default=0),
     Column("active", Integer, default=1),
+    Column("price", Float, default=0),   # 単価(円)。売上＝単価×個数
 )
 
 orders = Table(
@@ -131,6 +132,10 @@ def init_db() -> None:
     if "tracking_no" not in cols:
         with engine.begin() as c:
             c.execute(text("ALTER TABLE orders ADD COLUMN tracking_no VARCHAR(64) DEFAULT ''"))
+    pcols = [c["name"] for c in _inspect(engine).get_columns("products")]
+    if "price" not in pcols:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE products ADD COLUMN price FLOAT DEFAULT 0"))
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +263,7 @@ def delete_customer(cid: int) -> None:
 # 商品 (products)
 # ---------------------------------------------------------------------------
 _PROD_FIELDS = ("name", "category", "weight_kg", "needs_milling",
-                "yamato_name", "sort_order", "active")
+                "yamato_name", "sort_order", "active", "price")
 
 
 @_cacheable(ttl=120)
@@ -336,7 +341,7 @@ _ORDER_JOIN_SQL = """
     SELECT o.*, c.name AS customer_name, c.tel, c.zip, c.address,
            c.address2, c.company, c.honorific, c.kana,
            p.name AS product_name, p.category, p.weight_kg,
-           p.needs_milling, p.yamato_name
+           p.needs_milling, p.yamato_name, p.price
     FROM orders o
     JOIN customers c ON c.id = o.customer_id
     JOIN products  p ON p.id = o.product_id

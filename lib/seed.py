@@ -64,7 +64,10 @@ def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
 
         if import_history:
             raw_product = g(row, "品名１")
-            if raw_product:
+            tracking = g(row, "伝票番号")
+            # 伝票番号で重複登録を防ぐ（再取得しても増えない）
+            ext = f"yamato:{tracking}" if tracking else ""
+            if raw_product and not (ext and db.order_exists(ext)):
                 pid = logic.match_or_create_product(raw_product)
                 db.add_order({
                     "customer_id": cid,
@@ -78,7 +81,8 @@ def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
                     "milling_kg_override": None,
                     "note": g(row, "記事"),
                     "status": "shipped",   # 過去の発行済データなので出荷済み扱い
-                    "external_id": "",
+                    "external_id": ext,
+                    "tracking_no": tracking,
                 })
                 n_ord += 1
 

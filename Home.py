@@ -24,8 +24,8 @@ def today() -> date:
 def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
-from lib import (base_api, bootstrap, db, exporter, komeful, logic, seed,
-                 shipping, ui, yamato)
+from lib import (analytics, base_api, bootstrap, db, exporter, komeful, logic,
+                 seed, shipping, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -567,6 +567,18 @@ def view_customers():
     if c2.button("＋ 新規追加", use_container_width=True):
         dlg_customer(None)
 
+    with st.expander("ヤマトから過去の発送を取り込む（顧客マスタを自動更新）"):
+        st.caption("B2クラウドの発行済データを取得して、お届け先を顧客マスタに登録し、過去注文として記録します。"
+                   "同じ伝票番号は重複しません。売上・分析の元データになります。")
+        if st.button("過去の発送をまとめて取り込む", type="primary", use_container_width=True,
+                     help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得します（PC起動が必要・ヤマト利用時間 7:00〜25:00）"):
+            db.set_setting("b2_history_request", now_iso())
+            st.toast("PCに過去取得を指示しました（1〜2分ほどかかります）", icon="📥")
+        hres = db.get_setting("b2_history_result")
+        if hres:
+            icon = "✓" if hres.get("ok") else "⚠"
+            st.caption(f'{icon} 前回（{hres.get("at","")}）：{hres.get("summary","")}')
+
     customers = db.list_customers()
     if q.strip():
         key = logic.normalize_text(q)
@@ -635,10 +647,12 @@ def view_settings():
                 st.success("保存しました。")
 
     with tab_prod:
-        st.caption("「精米が必要」の商品だけが精米量に加算されます。『品名(送り状用)』が送り状に印字されます。")
+        st.caption("「精米が必要」の商品だけが精米量に加算されます。『品名(送り状用)』が送り状に印字されます。"
+                   "『単価』は売上ダッシュボード・顧客分析に使います（売上＝単価×個数）。")
         products = db.list_products(active_only=False)
         pdf = pd.DataFrame([{
             "商品名": p["name"], "区分": p["category"], "重量kg": p["weight_kg"],
+            "単価(円)": int(p.get("price") or 0),
             "精米が必要": bool(p["needs_milling"]), "品名(送り状用)": p["yamato_name"],
             "並び順": p["sort_order"], "有効": bool(p["active"]),
         } for p in products])
@@ -646,6 +660,7 @@ def view_settings():
             pdf, use_container_width=True, hide_index=True, num_rows="dynamic",
             column_config={
                 "区分": st.column_config.SelectboxColumn("区分", options=["精米", "玄米", "複合", "その他"]),
+                "単価(円)": st.column_config.NumberColumn("単価(円)", min_value=0, step=100, format="%d"),
                 "精米が必要": st.column_config.CheckboxColumn("精米が必要"),
                 "有効": st.column_config.CheckboxColumn("有効"),
             },
@@ -658,6 +673,7 @@ def view_settings():
                 db.upsert_product({
                     "name": r["商品名"], "category": r["区分"] or "その他",
                     "weight_kg": float(r["重量kg"] or 0),
+                    "price": float(r["単価(円)"] or 0),
                     "needs_milling": 1 if r["精米が必要"] else 0,
                     "yamato_name": r["品名(送り状用)"] or r["商品名"],
                     "sort_order": int(r["並び順"] or 0),
@@ -718,6 +734,78 @@ def view_settings():
 
 
 # ===========================================================================
+# 📊 分析（売上ダッシュボード・顧客分析）
+# ===========================================================================
+def view_analytics():
+    tab_sales, tab_cust = st.tabs(["売上", "顧客"])
+    orders = db.list_orders()
+
+    with tab_sales:
+        if not any(p.get("price") for p in db.list_products(active_only=False)):
+            st.info("売上金額を出すには、設定 → 商品 で各商品の『単価(円)』を入力してください。")
+        months = analytics.monthly_sales(orders)
+        years = analytics.yearly_sales(orders)
+        if not months:
+            st.caption("まだ集計できる注文がありません。")
+        else:
+            this_year = today().year
+            ty = next((y["売上"] for y in years if y["年"] == this_year), 0)
+            total = sum(m["売上"] for m in months)
+            k1, k2, k3 = st.columns(3)
+            k1.metric(f"{this_year}年の売上", f"¥{ty:,.0f}")
+            k2.metric("全期間の売上", f"¥{total:,.0f}")
+            k3.metric("注文件数", f'{sum(m["件数"] for m in months):,} 件')
+
+            # 年の絞り込み
+            yopts = ["すべて"] + [str(y["年"]) for y in years]
+            ysel = st.selectbox("対象期間", yopts, key="an_year")
+            mrows = months if ysel == "すべて" else [m for m in months if m["年月"].startswith(ysel)]
+
+            chart_df = pd.DataFrame(
+                [{"年月": m["年月"], "売上": m["売上"]} for m in sorted(mrows, key=lambda x: x["年月"])]
+            ).set_index("年月")
+            st.bar_chart(chart_df, y="売上", color="#C9A24B", height=260)
+
+            tbl = pd.DataFrame(mrows)
+            tbl["売上"] = tbl["売上"].map(lambda v: f"¥{v:,.0f}")
+            tbl["精米kg"] = tbl["精米kg"].map(lambda v: f"{v:g}")
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+            st.markdown("**商品別の売上**")
+            psales = analytics.product_sales(orders if ysel == "すべて"
+                                              else [o for o in orders
+                                                    if (d := analytics.order_date(o)) and d.year == int(ysel)])
+            pt = pd.DataFrame(psales)
+            if not pt.empty:
+                pt["売上"] = pt["売上"].map(lambda v: f"¥{v:,.0f}")
+                st.dataframe(pt, use_container_width=True, hide_index=True)
+
+    with tab_cust:
+        st.caption("過去の購入実績から顧客の属性を判定し、それぞれに打つべき『次の一手』を提案します。")
+        stats = analytics.customer_stats(orders)
+        if not stats:
+            st.caption("まだ分析できる注文がありません。")
+        else:
+            summary = analytics.segment_summary(stats)
+            cols = st.columns(len(summary)) if summary else []
+            for col, s in zip(cols, summary):
+                col.markdown(
+                    f'<div class="o-card" style="border-color:{s["色"]}66">'
+                    f'<span class="o-name" style="color:{s["色"]}">{s["属性"]}</span>'
+                    f'<div class="o-line">{s["人数"]} 名</div>'
+                    f'<div class="o-meta">{s["次の一手"]}</div></div>',
+                    unsafe_allow_html=True,
+                )
+            segs = ["すべて"] + [s["属性"] for s in summary]
+            seg_sel = st.segmented_control("属性で絞り込み", segs, default="すべて",
+                                           key="an_seg") or "すべて"
+            rows = stats if seg_sel == "すべて" else [s for s in stats if s["属性"] == seg_sel]
+            df = pd.DataFrame(rows)
+            df["累計金額"] = df["累計金額"].map(lambda v: f"¥{v:,.0f}")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ===========================================================================
 # ルーティング
 # ===========================================================================
 view = ui.render_nav()
@@ -727,5 +815,7 @@ elif view == "注文":
     view_orders()
 elif view == "顧客":
     view_customers()
+elif view == "分析":
+    view_analytics()
 else:
     view_settings()

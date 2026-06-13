@@ -97,6 +97,36 @@ def _check_b2_print() -> bool:
     return False
 
 
+def _run_b2_history() -> None:
+    """ヤマトから過去の発行済データを取得し、顧客マスタ・過去注文を更新。"""
+    from lib import b2_fetch
+    started = datetime.now().isoformat(timespec="seconds")
+    days = int(db.get_setting("b2_history_days") or 370)
+    try:
+        r = b2_fetch.fetch_history(days=days)
+        result = {
+            "ok": True, "at": started,
+            "summary": f'顧客 +{r["customers"]}名／過去注文 +{r["orders"]}件 を取り込みました',
+        }
+        print("過去取得:", result["summary"], flush=True)
+    except Exception as e:  # noqa: BLE001
+        result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        print("過去取得 失敗:", e, flush=True)
+        traceback.print_exc()
+    db.set_setting("b2_history_result", result)
+
+
+def _check_b2_history() -> bool:
+    """アプリからの過去取得指示があれば実行する。"""
+    req = db.get_setting("b2_history_request")
+    done = db.get_setting("b2_history_handled")
+    if req and req != done:
+        db.set_setting("b2_history_handled", req)
+        _run_b2_history()
+        return True
+    return False
+
+
 def _run_b2_pickup() -> None:
     """ヤマトの集荷依頼を自動で行う。結果をDBに記録。"""
     from lib import b2_fetch
@@ -156,6 +186,7 @@ def main() -> None:
                 _check_b2_request()
                 _check_b2_print()
                 _check_b2_pickup()
+                _check_b2_history()
             except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
                 print("一時エラー（次回再試行）:", e, flush=True)
             time.sleep(INTERVAL)
