@@ -8,10 +8,21 @@
 - ⚙ 設定   : 送り主・商品・CSV取込・BASE連携・データ管理
 追加・編集はすべてモーダル（ダイアログ）で行い、画面遷移しない。
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
+
+# 日本時間（クラウドのサーバーは米国時間のため、日付は必ずJSTで扱う）
+JST = timezone(timedelta(hours=9))
+
+
+def today() -> date:
+    return datetime.now(JST).date()
+
+
+def now_iso() -> str:
+    return datetime.now(JST).isoformat()
 
 from lib import (base_api, bootstrap, db, exporter, komeful, logic, seed,
                  shipping, ui, yamato)
@@ -31,7 +42,7 @@ def _parse_date(s: str) -> date:
     try:
         return datetime.strptime(str(s), "%Y/%m/%d").date()
     except (ValueError, TypeError):
-        return date.today()
+        return today()
 
 
 def _unshipped(orders):
@@ -60,14 +71,14 @@ def dlg_add_order():
             qty = c2.number_input("数量", min_value=1, value=1)
             c3, c4 = st.columns(2)
             ch = c3.selectbox("経路", list(CHANNEL_OPTS))
-            ship = c4.date_input("出荷予定日", value=date.today())
+            ship = c4.date_input("出荷予定日", value=today())
             mill = st.number_input("複合の精米kg（複合商品のみ・1個あたり）", min_value=0.0, value=0.0, step=1.0)
             note = st.text_input("メモ（任意）")
             if st.button("追加する", type="primary", use_container_width=True):
                 db.add_order({
                     "customer_id": cust_labels[sel], "product_id": prod_labels[prod],
                     "qty": int(qty), "channel": CHANNEL_OPTS[ch],
-                    "order_date": date.today().strftime("%Y/%m/%d"),
+                    "order_date": today().strftime("%Y/%m/%d"),
                     "ship_date": ship.strftime("%Y/%m/%d"),
                     "delivery_date": "", "delivery_time": "",
                     "milling_kg_override": mill if mill > 0 else None,
@@ -90,7 +101,7 @@ def dlg_add_order():
         qty_n = o2.number_input("数量", min_value=1, value=1, key="nq")
         o3, o4 = st.columns(2)
         ch_n = o3.selectbox("経路", list(CHANNEL_OPTS), key="nc")
-        ship_n = o4.date_input("出荷予定日", value=date.today(), key="ns")
+        ship_n = o4.date_input("出荷予定日", value=today(), key="ns")
         if st.button("お客様＋注文を追加", type="primary", use_container_width=True, key="nbtn"):
             if not (name and zipc and addr and tel):
                 st.error("名前・郵便番号・住所・電話番号は必須です。")
@@ -102,7 +113,7 @@ def dlg_add_order():
                 db.add_order({
                     "customer_id": cid, "product_id": prod_labels[prod_n],
                     "qty": int(qty_n), "channel": CHANNEL_OPTS[ch_n],
-                    "order_date": date.today().strftime("%Y/%m/%d"),
+                    "order_date": today().strftime("%Y/%m/%d"),
                     "ship_date": ship_n.strftime("%Y/%m/%d"),
                     "delivery_date": "", "delivery_time": "",
                     "milling_kg_override": None, "note": "",
@@ -365,7 +376,7 @@ def view_home():
 
     # 出荷オプション
     o1, o2 = st.columns(2)
-    ship_d = o1.date_input("出荷日", value=date.today(), key="bulk_ship")
+    ship_d = o1.date_input("出荷日", value=today(), key="bulk_ship")
     time_sel = o2.selectbox("時間帯", ["注文の指定どおり"] + list(TIME_CODES), key="bulk_time")
 
     sender = db.get_setting("sender") or {}
@@ -390,7 +401,7 @@ def view_home():
         csv_bytes = _build_csv_for_selected()
         st.session_state["csv_data"] = csv_bytes
         db.set_setting("b2_print_csv", base64.b64encode(csv_bytes).decode())
-        db.set_setting("b2_print_request", datetime.now().isoformat())
+        db.set_setting("b2_print_request", now_iso())
         st.toast("PCに発行・印刷を指示しました（30秒〜1分ほど）", icon="🖨")
 
     pr = db.get_setting("b2_print_result")
@@ -420,7 +431,7 @@ def view_home():
 
     if st.button("B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
                  help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
-        db.set_setting("b2_fetch_request", datetime.now().isoformat())
+        db.set_setting("b2_fetch_request", now_iso())
         st.toast("PCに自動取得を指示しました（30秒〜1分ほどで完了します）", icon="🤖")
 
     b2res = db.get_setting("b2_fetch_result")
