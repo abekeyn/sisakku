@@ -37,6 +37,17 @@ TIME_CODES = {
 CODE_TO_LABEL = {v: k for k, v in TIME_CODES.items()}
 CHANNEL_OPTS = {"LINE": "line", "コメフル": "komeful", "BASE": "base", "手入力": "manual"}
 
+# BASE発送通知の既定文面（○○ はお客様名に自動置換）
+DEFAULT_DISPATCH_MESSAGE = (
+    "○○様\n\n"
+    "このたびは、ご購入いただきありがとうございます。\n"
+    "発送手配が完了いたしました。\n"
+    "※本通知後24時間以内の出荷となるため\n"
+    "　追跡ができるまでお時間をいただく場合がございます。\n\n"
+    "送り状番号は記載のものをご確認ください。\n\n"
+    "到着まで今しばらくお待ちくださいませ！"
+)
+
 
 def _parse_date(s: str) -> date:
     try:
@@ -635,6 +646,18 @@ def view_settings():
                     "client_id": client_id, "client_secret": client_secret,
                     "redirect_uri": redirect_uri, "refresh_token": refresh_token,
                 })
+                st.success("保存しました。")
+
+        st.divider()
+        ui.section("発送通知メッセージ", "出荷確定でBASEからお客様へ送る発送メールに添える文面です")
+        st.caption("文中の ○○ は自動でお客様のお名前に置き換わります。")
+        with st.form("dispatch_msg_form"):
+            msg = st.text_area(
+                "発送通知の文面", db.get_setting("dispatch_message") or DEFAULT_DISPATCH_MESSAGE,
+                height=240,
+            )
+            if st.form_submit_button("保存", type="primary"):
+                db.set_setting("dispatch_message", msg)
                 st.success("保存しました。")
 
     with tab_data:

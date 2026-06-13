@@ -312,6 +312,13 @@ def dispatch_order(order_row, comment: str = "") -> tuple[bool, str]:
 
     tracking = _re.sub(r"[^0-9A-Za-z]", "", str(order_row.get("tracking_no") or ""))
 
+    # 発送通知メッセージ（設定の定型文の ○○ をお客様名に置換）。未指定なら設定から作る
+    if not comment:
+        tmpl = db.get_setting("dispatch_message") or ""
+        if tmpl:
+            name = (order_row.get("customer_name") or "").strip()
+            comment = tmpl.replace("○○", name)
+
     try:
         token = refresh_access_token(cfg)
         for iid in item_ids:
