@@ -529,11 +529,56 @@ def require_login() -> None:
         if st.form_submit_button("ログイン", type="primary", use_container_width=True):
             if entered == str(pw):
                 st.session_state["authed"] = True
-                st.session_state["_booted"] = False  # ログイン後にもう一度ローディングを出す
                 st.rerun()
             else:
                 st.error("パスワードが違います。")
+    _login_transition()
     st.stop()
+
+
+def _login_transition() -> None:
+    """ログインボタン押下を即座に検知し、再実行の計算中（古い画面が固まる間）を
+    ローディング画面で覆う。Streamlitは再実行中に前のフレームを表示し続けるため、
+    クライアント側JSでクリック直後にオーバーレイを親ページへ差し込む。"""
+    import streamlit.components.v1 as components
+
+    logo = _logo_b64("阿部農園ロゴ.png")
+    img = (f"<img src='data:image/png;base64,{logo}'/>" if logo else "")
+    css = ("#login-ov{position:fixed;inset:0;z-index:2147483647;display:flex;"
+           "flex-direction:column;align-items:center;justify-content:center;gap:20px;"
+           "background:radial-gradient(1200px 800px at 50% 32%,#2a2c5a 0%,#1b1d3e 46%,#131228 100%);"
+           "transition:opacity .5s ease;}"
+           "#login-ov img{height:104px;filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));"
+           "animation:lovP 1.5s ease-in-out infinite;}"
+           "@keyframes lovP{0%,100%{opacity:.82;transform:scale(1)}50%{opacity:1;transform:scale(1.045)}}"
+           "#login-ov .lov-dia{width:11px;height:11px;background:linear-gradient(135deg,#C9A24B,#E9D18C);"
+           "border-radius:2px;box-shadow:0 0 10px rgba(201,162,75,.6);animation:lovT 1.25s ease-in-out infinite;}"
+           "@keyframes lovT{0%{transform:rotate(45deg) scale(1)}50%{transform:rotate(225deg) scale(.7)}"
+           "100%{transform:rotate(405deg) scale(1)}}"
+           "#login-ov .lov-txt{color:rgba(242,237,224,.7);font-size:.82rem;letter-spacing:.35em;padding-left:.35em;}")
+    inner = img + "<span class='lov-dia'></span><div class='lov-txt'>読み込み中…</div>"
+    remover = ("(function(){var t=Date.now();var iv=setInterval(function(){"
+               "var pw=document.querySelector('input[type=password]');"
+               "var er=document.querySelector('[data-testid=stAlert]');"
+               "if(!pw||er||Date.now()-t>12000){var o=document.getElementById('login-ov');"
+               "if(o){o.style.opacity=0;setTimeout(function(){if(o)o.remove();},500);}"
+               "clearInterval(iv);}},150);})();")
+    script = (
+        "<script>(function(){"
+        "var doc=window.parent.document;"
+        "function ensure(){if(doc.getElementById('lov-style'))return;"
+        "var s=doc.createElement('style');s.id='lov-style';s.textContent=" + repr(css) + ";"
+        "doc.head.appendChild(s);}"
+        "function show(){if(doc.getElementById('login-ov'))return;ensure();"
+        "var o=doc.createElement('div');o.id='login-ov';o.innerHTML=" + repr(inner) + ";"
+        "doc.body.appendChild(o);"
+        "var s=doc.createElement('script');s.textContent=" + repr(remover) + ";doc.body.appendChild(s);}"
+        "function attach(){var bs=doc.querySelectorAll('button');for(var i=0;i<bs.length;i++){"
+        "if(bs[i].innerText.trim()==='ログイン'&&!bs[i].__ov){bs[i].__ov=1;bs[i].addEventListener('click',show);}}}"
+        "attach();try{var mo=new MutationObserver(attach);mo.observe(doc.body,{childList:true,subtree:true});}catch(e){}"
+        "})();</script>"
+    )
+    components.html(script, height=0)
 
 
 def section(title: str, sub: str = "") -> None:
@@ -628,20 +673,7 @@ def render_nav() -> str:
     return sel or VIEWS[0]
 
 
-def loading_gate() -> None:
-    """起動直後・ログイン待ちの間に出す全面ローディング画面。
-
-    セッション初回（およびログイン直後）の1回だけ表示する。濃紺の画面に
-    ロゴと織り菱のスピナー、『読み込み中…』を出し、約1秒でとけて消える。
-    最初の一瞬に出るちらつき（赤いコード等）も覆い隠す。
-    """
-    if st.session_state.get("_booted"):
-        return
-    st.session_state["_booted"] = True
-    logo = _logo_b64("阿部農園ロゴ.png")
-    img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
-    st.html(
-        """
+_BOOT_TEMPLATE = """
         <style>
         .boot {
             position: fixed; inset: 0; z-index: 2147483646;
@@ -649,7 +681,7 @@ def loading_gate() -> None:
             align-items: center; justify-content: center; gap: 20px;
             background:
               radial-gradient(1200px 800px at 50% 32%, #2a2c5a 0%, #1b1d3e 46%, #131228 100%);
-            animation: bootFade .55s ease 1.0s forwards;
+            __FADE__
         }
         @keyframes bootFade { to { opacity: 0; visibility: hidden; } }
         .boot img {
@@ -677,12 +709,40 @@ def loading_gate() -> None:
             letter-spacing: .35em; padding-left: .35em;
         }
         </style>
-        <div class="boot">""" + img + """
+        <div class="boot"__DIVSTYLE__>__IMG__
           <span class="dia"></span>
           <div class="txt">読み込み中…</div>
         </div>
         """
-    )
+
+
+def _boot_overlay(fade: bool = True) -> None:
+    """全面ローディング画面を描画する。fade=Trueなら約1秒でとけて消える。
+
+    fade=False は「保持」モード（ログインクリック直後の遷移を覆う用途）。
+    フェードしないよう、最優先のインラインstyle(!important)で固定する。
+    """
+    logo = _logo_b64("阿部農園ロゴ.png")
+    img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
+    fade_rule = "animation: bootFade .55s ease 1.0s forwards;" if fade else ""
+    div_style = ("" if fade else
+                 ' style="animation:none!important;opacity:1!important;visibility:visible!important"')
+    html = (_BOOT_TEMPLATE.replace("__FADE__", fade_rule)
+            .replace("__DIVSTYLE__", div_style).replace("__IMG__", img))
+    st.html(html)
+
+
+def loading_gate() -> None:
+    """起動直後・ログイン待ちの間に出す全面ローディング画面。
+
+    セッション初回（およびログイン直後）の1回だけ表示する。濃紺の画面に
+    ロゴと織り菱のスピナー、『読み込み中…』を出し、約1秒でとけて消える。
+    最初の一瞬に出るちらつき（赤いコード等）も覆い隠す。
+    """
+    if st.session_state.get("_booted"):
+        return
+    st.session_state["_booted"] = True
+    _boot_overlay(fade=True)
 
 
 def setup_page() -> None:
