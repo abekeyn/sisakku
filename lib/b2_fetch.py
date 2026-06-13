@@ -33,6 +33,23 @@ class B2Error(Exception):
     pass
 
 
+def _launch_chromium(pl, headful: bool):
+    """Chromiumを起動。ブラウザ実体が消えていたら自動で入れ直して再試行する
+    （Windowsのディスク掃除でキャッシュが消えても自己修復する）。"""
+    import subprocess
+    import sys as _sys
+    try:
+        return pl.chromium.launch(headless=not headful)
+    except Exception as e:  # noqa: BLE001
+        if "Executable doesn't exist" not in str(e) and "playwright install" not in str(e):
+            raise
+        subprocess.run(
+            [_sys.executable, "-m", "playwright", "install", "chromium", "chromium-headless-shell"],
+            timeout=600, check=False,
+        )
+        return pl.chromium.launch(headless=not headful)
+
+
 def _shot(page, name: str) -> str:
     """デバッグ用スクリーンショットを保存してパスを返す。"""
     try:
@@ -162,7 +179,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pl:
-        browser = pl.chromium.launch(headless=not headful)
+        browser = _launch_chromium(pl, headful)
         ctx = browser.new_context(locale="ja-JP", accept_downloads=True,
                                   viewport={"width": 1366, "height": 1000})
         page = ctx.new_page()
@@ -281,7 +298,7 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pl:
-        browser = pl.chromium.launch(headless=not headful)
+        browser = _launch_chromium(pl, headful)
         ctx = browser.new_context(
             locale="ja-JP",
             accept_downloads=True,
