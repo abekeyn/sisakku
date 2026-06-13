@@ -93,11 +93,13 @@ def build_row(order, sender: dict) -> list[str]:
     put("ご依頼主名", sender.get("name", ""))
     put("ご依頼主略称カナ", sender.get("kana", ""))
 
-    # 品名（数量が2個以上なら品名に個数を併記）
-    name = order["yamato_name"]
-    if (order["qty"] or 1) > 1:
-        name = f'{name}×{order["qty"]}'
-    put("品名１", name)
+    # 品名（数量が2個以上なら個数を併記）。ヤマトの品名1は全角25文字までなので収める。
+    name = order["yamato_name"] or ""
+    suffix = f'×{order["qty"]}' if (order["qty"] or 1) > 1 else ""
+    limit = 25 - len(suffix)
+    if len(name) > limit:
+        name = name[:limit]
+    put("品名１", name + suffix)
 
     # 記事
     put("記事", order["note"] or "")

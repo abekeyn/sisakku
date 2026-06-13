@@ -157,7 +157,8 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
 
 
 def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
-                    headful: bool = False, dry_run: bool = False) -> dict:
+                    headful: bool = False, dry_run: bool = False,
+                    explore: bool = False) -> dict:
     """送り状CSVをB2クラウドの「外部データから発行」に通して送り状を発行する。
 
     手順：① データ取込み（パターン選択・ファイル選択・取込み開始）
@@ -259,24 +260,80 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 return {"issued": False, "pdf": None, "rows": rows,
                         "message": f"[テスト] 取込み確認OK（{rows}件・発行はしていません）"}
 
-            # ③④ 確認 → 発行 → 印刷（PDF取得）
-            for label in ["次へ", "印刷内容の確認", "発行", "印刷"]:
-                btn = _first_visible(b2, [
-                    f'button:has-text("{label}")', f'a:has-text("{label}")',
-                    f'input[value*="{label}"]',
-                ], 4000)
-                if btn:
-                    try:
-                        with b2.expect_download(timeout=8000) as dl:
-                            btn.click()
-                        d = dl.value
-                        return {"issued": True, "pdf": Path(d.path()).read_bytes(),
-                                "rows": rows, "message": f"発行しました（{rows}件）"}
-                    except Exception:  # noqa: BLE001  ダウンロードでなく次画面へ
-                        b2.wait_for_timeout(3000)
-            _shot(b2, "issue_end")
+            # 修正必要があれば中断（住所不備・運賃管理番号など）
+            if _re.search(r"修正必要件数\s*([1-9]\d*)", body):
+                raise B2Error("B2の取込みで修正が必要な行があります（住所・運賃管理番号・品名等）。"
+                              "画面で『No.』の赤いセルを確認してください: " + _shot(b2, "need_fix"))
+
+            # 全行を選択（ヘッダーのチェックボックス／効かなければ行ごと）
+            try:
+                b2.evaluate(
+                    """() => {
+                        const boxes=[...document.querySelectorAll('input[type=checkbox]')];
+                        const all=boxes.find(b=>b.className.includes('allCheck'));
+                        if(all && !all.checked) all.click();
+                        if([...document.querySelectorAll('input[type=checkbox]:checked')].length<=1){
+                            document.querySelectorAll('tbody tr input[type=checkbox]').forEach(b=>{if(!b.checked)b.click();});
+                        }
+                    }"""
+                )
+                b2.wait_for_timeout(1000)
+            except Exception:  # noqa: BLE001
+                pass
+
+            # ② → ③「印刷内容の確認へ」
+            conf = b2.get_by_text(_re.compile("印刷内容の確認")).last
+            if conf.count() == 0:
+                raise B2Error("「印刷内容の確認へ」が見つかりません: " + _shot(b2, "to_confirm"))
+            try:
+                conf.click(timeout=8000)
+            except Exception:  # noqa: BLE001
+                conf.click(force=True)
+            b2.wait_for_timeout(5000)
+            _shot(b2, "confirm_screen")
+
+            if explore:
+                return {"issued": False, "pdf": None, "rows": rows,
+                        "message": f"[探索] 印刷内容の確認まで到達（{rows}件・発行はしていません）"}
+
+            # ③ → ④ 発行（印刷）。PDFダウンロードを待つ
+            holder = {}
+            for pg in ctx.pages:
+                pg.on("download", lambda d: holder.__setitem__("d", d))
+            ctx.on("page", lambda pg: pg.on("download", lambda d: holder.__setitem__("d", d)))
+
+            issue_btn = None
+            for pat in [r"発行する", r"印刷する", r"^\s*発行\s*$", r"^\s*印刷\s*$", r"登録"]:
+                loc = b2.get_by_text(_re.compile(pat)).last
+                if loc.count() > 0:
+                    issue_btn = loc
+                    break
+            if issue_btn is None:
+                raise B2Error("発行ボタンが見つかりません: " + _shot(b2, "issue_btn"))
+            try:
+                issue_btn.click(timeout=8000)
+            except Exception:  # noqa: BLE001
+                issue_btn.click(force=True)
+            b2.wait_for_timeout(4000)
+            # 確認ダイアログ（OK/はい）
+            okb = _first_visible(b2, ['button:has-text("OK")', 'button:has-text("はい")',
+                                      'button:has-text("発行")'], 4000)
+            if okb:
+                try:
+                    okb.click()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            for _ in range(40):
+                if holder.get("d"):
+                    break
+                b2.wait_for_timeout(500)
+            _shot(b2, "issue_done")
+            if holder.get("d"):
+                return {"issued": True, "pdf": Path(holder["d"].path()).read_bytes(),
+                        "rows": rows, "message": f"発行しPDFを取得しました（{rows}件）"}
             return {"issued": True, "pdf": None, "rows": rows,
-                    "message": f"発行操作を実行しました（{rows}件）。PDFは取得できませんでした。"}
+                    "message": f"発行しました（{rows}件）。PDFの自動取得はできませんでした（画面を確認）。"}
         finally:
             ctx.close()
             browser.close()
