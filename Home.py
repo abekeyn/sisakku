@@ -36,6 +36,8 @@ TIME_CODES = {
 }
 CODE_TO_LABEL = {v: k for k, v in TIME_CODES.items()}
 CHANNEL_OPTS = {"LINE": "line", "コメフル": "komeful", "BASE": "base", "手入力": "manual"}
+# 集荷の時間帯（ヤマト集荷依頼の選択肢に合わせる。初回調整後に確定）
+PICKUP_TIMES = ["指定なし", "午前中", "12-14時", "14-16時", "16-18時", "18-21時"]
 
 # BASE発送通知の既定文面（○○ はお客様名に自動置換）
 DEFAULT_DISPATCH_MESSAGE = (
@@ -473,6 +475,38 @@ def view_home():
             if komeful_flag:
                 st.link_button("コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
             st.rerun(scope="fragment")
+
+    # ---- ステップ5：集荷を依頼する ----
+    ui.step(5, "集荷を依頼する",
+            "送り状を貼ったら、ヤマトに集荷を依頼します。日時を選ぶだけ。個数は自動で入ります")
+
+    p1, p2, p3 = st.columns([2, 2, 1])
+    pdate = p1.date_input("集荷希望日", value=today(), key="pickup_date")
+    ptime = p2.selectbox("集荷時間帯", list(PICKUP_TIMES), key="pickup_time")
+    default_cnt = int(db.get_setting("last_shipped_count") or 1)
+    pcnt = p3.number_input("個数", min_value=1, value=max(1, default_cnt), step=1,
+                           key="pickup_count")
+
+    if st.button("集荷を依頼する", type="primary", use_container_width=True,
+                 help="PCの常駐プログラムがヤマトに自動ログインして集荷依頼を送ります（PCが起動している必要があります）"):
+        db.set_setting("b2_pickup_payload", {
+            "date": pdate.strftime("%Y/%m/%d"), "time": ptime,
+            "count": int(pcnt), "dry_run": False, "explore": False,
+        })
+        db.set_setting("b2_pickup_request", now_iso())
+        st.toast("PCに集荷依頼を指示しました（30秒〜1分ほどで完了します）", icon="🚚")
+
+    pres = db.get_setting("b2_pickup_result")
+    if pres:
+        icon = "✓" if pres.get("ok") else "⚠"
+        st.caption(f'{icon} 前回の集荷依頼（{pres.get("at","")}）：{pres.get("summary","")}')
+
+    with st.expander("初回の調整（集荷ページの構造を調べる）"):
+        st.caption("ヤマトの集荷依頼ページは初回だけ構造の確認が必要です。下のボタンで調査用の情報を保存します（依頼は送りません）。")
+        if st.button("集荷ページを調べる（送信しない）", use_container_width=True):
+            db.set_setting("b2_pickup_payload", {"explore": True})
+            db.set_setting("b2_pickup_request", now_iso())
+            st.toast("PCに調査を指示しました", icon="🔎")
 
 
 # ===========================================================================

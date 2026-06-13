@@ -76,8 +76,8 @@ def _first_visible(page, selectors: list[str], timeout_ms: int = 8000):
     return None
 
 
-def _login_and_open_b2(ctx, page, code: str, pw: str):
-    """ヤマトビジネスメンバーズにログインし、B2クラウド本体のページを返す。"""
+def _login_ybm(ctx, page, code: str, pw: str):
+    """ヤマトビジネスメンバーズにログインする（ログイン後のページを返す）。"""
     import re as _re
 
     # ---- ログイン ----
@@ -133,6 +133,12 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
     else:
         raise B2Error("ログインに失敗した可能性があります（コード/パスワードを確認）: " + _shot(page, "login_failed"))
     page.wait_for_timeout(3000)
+    return page
+
+
+def _login_and_open_b2(ctx, page, code: str, pw: str):
+    """ヤマトビジネスメンバーズにログインし、B2クラウド本体のページを返す。"""
+    page = _login_ybm(ctx, page, code, pw)
 
     # ---- B2クラウドを開く ----
     b2_link = _first_visible(page, [
@@ -553,3 +559,188 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
         finally:
             ctx.close()
             browser.close()
+
+
+def _dump_page(page, name: str) -> str:
+    """ページのスクショ＋本文＋入力要素一覧を b2_debug に保存（本番前の構造調査用）。"""
+    shot = _shot(page, name)
+    try:
+        DEBUG_DIR.mkdir(exist_ok=True)
+        info = page.evaluate(
+            """() => {
+                const q = s => [...document.querySelectorAll(s)];
+                const lab = el => (el.getAttribute('aria-label')||el.name||el.id||
+                    el.placeholder||(el.value||'').slice(0,20)||'').trim();
+                const sels = q('select').map(s => ({
+                    label: lab(s),
+                    options: [...s.options].map(o => o.text.trim()).slice(0,40),
+                }));
+                const inputs = q('input').map(i => ({type:i.type, label:lab(i)}));
+                const btns = [...q('button'), ...q('a'), ...q('input[type=button]'),
+                              ...q('input[type=submit]')]
+                    .map(b => (b.value||b.innerText||'').trim()).filter(Boolean).slice(0,60);
+                return {selects: sels, inputs: inputs, buttons: btns};
+            }"""
+        )
+        import json as _json
+        txt = DEBUG_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}.txt"
+        txt.write_text(_json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+        return f"{shot} / {txt}"
+    except Exception:  # noqa: BLE001
+        return shot
+
+
+def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
+                   headful: bool = False, dry_run: bool = False,
+                   explore: bool = False) -> dict:
+    """ヤマトビジネスメンバーズの集荷依頼を自動で行う。
+
+    - count : 集荷してもらう荷物の個数（今日の発行件数を想定）
+    - date_label : 集荷希望日（例 "2026/06/14"）。空なら画面の既定
+    - time_label : 集荷希望時間帯（例 "午前中"）。空なら画面の既定
+    returns {"ok": bool, "message": str}
+    explore=True : 集荷依頼ページの構造を b2_debug にダンプして停止（本番前の調査）
+    dry_run=True : 入力まで行い、最終確定（依頼送信）はしない
+    """
+    import re as _re
+
+    code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
+    pw = config.get_secret("YAMATO_PASSWORD", "")
+    if not (code and pw):
+        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml）")
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pl:
+        browser = _launch_chromium(pl, headful)
+        ctx = browser.new_context(locale="ja-JP",
+                                  viewport={"width": 1366, "height": 1000})
+        page = ctx.new_page()
+        try:
+            page = _login_ybm(ctx, page, code, pw)
+            page.wait_for_timeout(2000)
+
+            # ---- 集荷依頼メニューを開く ----
+            link = _first_visible(page, [
+                'a:has-text("集荷依頼")', 'text="集荷依頼"', 'button:has-text("集荷依頼")',
+                'a:has-text("集荷")', 'img[alt*="集荷"]',
+            ], 12000)
+            if link is None:
+                info = _dump_page(page, "pickup_menu_not_found")
+                raise B2Error("集荷依頼メニューが見つかりません（調査ダンプを保存）: " + info)
+            new_page = page
+            try:
+                with ctx.expect_page(timeout=6000) as pinfo:
+                    link.click()
+                new_page = pinfo.value
+            except Exception:  # noqa: BLE001  同一タブ遷移
+                try:
+                    link.click()
+                except Exception:  # noqa: BLE001
+                    link.click(force=True)
+            page = new_page
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(4000)
+
+            if explore:
+                info = _dump_page(page, "pickup_page")
+                return {"ok": False,
+                        "message": f"[探索] 集荷依頼ページの構造を保存しました: {info}"}
+
+            # ---- 個数を入力（数値入力欄を探して count を入れる） ----
+            try:
+                page.evaluate(
+                    """(n) => {
+                        const cand = [...document.querySelectorAll(
+                            'input[type=number], input[type=text], select')];
+                        for (const el of cand) {
+                            const k = (el.name||el.id||el.getAttribute('aria-label')||'');
+                            if (/個数|個口|数量|口数/.test(k)) {
+                                if (el.tagName==='SELECT') {
+                                    const o = [...el.options].find(o=>o.text.trim()==String(n));
+                                    if (o) el.value=o.value;
+                                } else { el.value=String(n); }
+                                el.dispatchEvent(new Event('input',{bubbles:true}));
+                                el.dispatchEvent(new Event('change',{bubbles:true}));
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""", count)
+            except Exception:  # noqa: BLE001
+                pass
+
+            # ---- 集荷希望日を選択（select のオプションを部分一致） ----
+            if date_label:
+                _select_option_by_text(page, [r"集荷.*日", r"希望.*日", r"日付"], date_label)
+            # ---- 集荷希望時間帯を選択 ----
+            if time_label:
+                _select_option_by_text(page, [r"時間", r"時間帯"], time_label)
+
+            _shot(page, "pickup_filled")
+
+            if dry_run:
+                return {"ok": False,
+                        "message": f"[確認] 個数{count}・{date_label} {time_label} を入力しました"
+                                   "（依頼は送信していません）。画面を確認してください。"}
+
+            # ---- 確認 → 依頼送信 ----
+            for pat in [r"確認", r"次へ", r"進む"]:
+                b = page.get_by_role("button", name=_re.compile(pat))
+                if b.count() == 0:
+                    b = page.get_by_text(_re.compile(r"^\s*" + pat + r"\s*$"))
+                if b.count() > 0:
+                    try:
+                        b.first.click(timeout=5000)
+                    except Exception:  # noqa: BLE001
+                        b.first.click(force=True)
+                    page.wait_for_timeout(3000)
+                    break
+
+            sent = None
+            for pat in [r"集荷を?依頼", r"依頼する", r"申し込む", r"送信", r"確定"]:
+                b = page.get_by_role("button", name=_re.compile(pat))
+                if b.count() == 0:
+                    b = page.get_by_text(_re.compile(pat))
+                if b.count() > 0:
+                    sent = b.first
+                    break
+            if sent is None:
+                raise B2Error("集荷依頼の送信ボタンが見つかりません: " + _dump_page(page, "pickup_submit"))
+            try:
+                sent.click(timeout=6000)
+            except Exception:  # noqa: BLE001
+                sent.click(force=True)
+            page.wait_for_timeout(4000)
+            _shot(page, "pickup_done")
+            return {"ok": True,
+                    "message": f"集荷を依頼しました（個数{count}・{date_label} {time_label}）"}
+        finally:
+            ctx.close()
+            browser.close()
+
+
+def _select_option_by_text(page, label_patterns: list[str], value_text: str) -> bool:
+    """ラベル（name/id/aria）が label_patterns のいずれかに一致する select で、
+    value_text を部分一致するオプションを選ぶ。"""
+    import json as _json
+    try:
+        return bool(page.evaluate(
+            """(args) => {
+                const [pats, val] = args;
+                const res = pats.map(p => new RegExp(p));
+                for (const s of document.querySelectorAll('select')) {
+                    const k = (s.name||s.id||s.getAttribute('aria-label')||'');
+                    if (res.some(r => r.test(k))) {
+                        const o = [...s.options].find(o => o.text.includes(val));
+                        if (o) {
+                            s.value = o.value;
+                            s.dispatchEvent(new Event('change',{bubbles:true}));
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }""", [label_patterns, value_text]))
+    except Exception:  # noqa: BLE001
+        return False

@@ -40,6 +40,9 @@ def _run_b2_fetch() -> None:
             "summary": f'読込{r["rows"]}行／出荷確定{r["shipped"]}件／未照合{r["unmatched"]}行',
             "messages": r["messages"],
         }
+        # 集荷依頼の個数の既定値に使う（今回出荷確定した件数）
+        if r.get("shipped"):
+            db.set_setting("last_shipped_count", r["shipped"])
         print("B2取得 成功:", result["summary"], flush=True)
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "at": started, "summary": f"失敗: {e}", "messages": []}
@@ -94,6 +97,37 @@ def _check_b2_print() -> bool:
     return False
 
 
+def _run_b2_pickup() -> None:
+    """ヤマトの集荷依頼を自動で行う。結果をDBに記録。"""
+    from lib import b2_fetch
+    started = datetime.now().isoformat(timespec="seconds")
+    p = db.get_setting("b2_pickup_payload") or {}
+    try:
+        r = b2_fetch.request_pickup(
+            date_label=p.get("date", ""), time_label=p.get("time", ""),
+            count=int(p.get("count", 1)), dry_run=bool(p.get("dry_run")),
+            explore=bool(p.get("explore")),
+        )
+        result = {"ok": bool(r.get("ok")), "at": started, "summary": r.get("message", "")}
+        print("集荷依頼:", result["summary"], flush=True)
+    except Exception as e:  # noqa: BLE001
+        result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        print("集荷依頼 失敗:", e, flush=True)
+        traceback.print_exc()
+    db.set_setting("b2_pickup_result", result)
+
+
+def _check_b2_pickup() -> bool:
+    """アプリからの集荷依頼指示があれば実行する。"""
+    req = db.get_setting("b2_pickup_request")
+    done = db.get_setting("b2_pickup_handled")
+    if req and req != done:
+        db.set_setting("b2_pickup_handled", req)
+        _run_b2_pickup()
+        return True
+    return False
+
+
 def main() -> None:
     db.init_db()
     if "--b2-test" in sys.argv:
@@ -107,6 +141,12 @@ def main() -> None:
     if "--b2" in sys.argv:
         _run_b2_fetch()
         return
+    if "--pickup-explore" in sys.argv:
+        # 集荷依頼ページの構造を調べる（本番前の調整用）
+        from lib import b2_fetch
+        r = b2_fetch.request_pickup(explore=True, headful="--headful" in sys.argv)
+        print(r.get("message", ""))
+        return
     if "--watch" in sys.argv:
         import time
         print(f"常駐エージェント開始（{INTERVAL}秒ごとに監視）", flush=True)
@@ -115,6 +155,7 @@ def main() -> None:
                 _process_exports()
                 _check_b2_request()
                 _check_b2_print()
+                _check_b2_pickup()
             except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
                 print("一時エラー（次回再試行）:", e, flush=True)
             time.sleep(INTERVAL)
