@@ -36,12 +36,14 @@ def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
     sumatra = _find_sumatra()
     if sumatra:
         try:
+            # monochrome=白黒(モノクロ)印刷を強制。送り状は白黒で十分なのでインク節約
+            mono = ["-print-settings", "monochrome"]
             if printer:
-                args = [sumatra, "-print-to", printer, "-silent", str(tmp)]
+                args = [sumatra, "-print-to", printer, *mono, "-silent", str(tmp)]
             else:
-                args = [sumatra, "-print-to-default", "-silent", str(tmp)]
+                args = [sumatra, "-print-to-default", *mono, "-silent", str(tmp)]
             subprocess.run(args, timeout=60, check=False)
-            return True, "印刷しました（SumatraPDF）"
+            return True, "印刷しました（SumatraPDF・白黒）"
         except Exception as e:  # noqa: BLE001
             pass  # フォールバックへ
 

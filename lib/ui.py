@@ -250,6 +250,12 @@ def inject_css() -> None:
         .o-name {{ font-weight:700; color:#F8F3E6; font-size:1.02rem; }}
         .o-line {{ color: var(--txt); font-size:.92rem; margin-top:1px; }}
         .o-meta {{ color: {TXT_SOFT}; font-size:.8rem; margin-top:1px; }}
+        .o-when {{
+            display:inline-block; margin-top:4px;
+            color:#1B1D3E; background: var(--gold);
+            font-weight:700; font-size:.8rem;
+            padding:1px 9px; border-radius:8px;
+        }}
 
         /* ===== チップ・バッジ ===== */
         .chip {{
@@ -608,6 +614,13 @@ def status_chip(order) -> str:
     return f'<span class="chip" style="color:{fg};background:{bg}">{label}</span>'
 
 
+# ヤマトの時間帯コード→表示ラベル（"0000"=指定なしは表示しない）
+TIME_LABELS = {
+    "0812": "午前中", "1416": "14-16時", "1618": "16-18時",
+    "1820": "18-20時", "1921": "19-21時",
+}
+
+
 def order_card(order, extra_html: str = "") -> str:
     """注文カードのHTML（チェックボックス等は呼び出し側で添える）。"""
     qty = order["qty"] or 1
@@ -616,6 +629,12 @@ def order_card(order, extra_html: str = "") -> str:
     note = f'<div class="o-meta">備考：{order["note"]}</div>' if order.get("note") else ""
     if order.get("tracking_no"):
         note += f'<div class="o-meta">伝票番号　{order["tracking_no"]}</div>'
+    # 配達日時の指定があれば目立つ形で表示
+    ddate = (order.get("delivery_date") or "").strip()
+    tlabel = TIME_LABELS.get((order.get("delivery_time") or "").strip(), "")
+    if ddate or tlabel:
+        when = "　".join(x for x in (ddate, tlabel) if x)
+        note += f'<div class="o-when">配達希望　{when}</div>'
     return (
         f'<div class="o-card">'
         f'<span class="o-name">{order["customer_name"]} 様</span>　'
