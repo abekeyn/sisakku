@@ -114,7 +114,11 @@
       "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe -c ' *)",
       "Bash(./.venv/Scripts/python.exe -m py_compile lib/b2_fetch.py)",
       "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe -c \"print\\(\\)\")",
-      "Bash(./.venv/Scripts/python.exe -m py_compile lib/printing.py lib/ui.py)"
+      "Bash(./.venv/Scripts/python.exe -m py_compile lib/printing.py lib/ui.py)",
+      "Bash(./.venv/Scripts/python.exe -c \"import streamlit as st; print\\('streamlit', st.__version__\\); print\\('has st.html:', hasattr\\(st,'html'\\)\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe -)",
+      "Bash(./.venv/Scripts/python.exe -m py_compile lib/ui.py)",
+      "Bash(./.venv/Scripts/python.exe -m py_compile Home.py agent.py lib/b2_fetch.py lib/db.py lib/ui.py)"
     ]
   }
 }

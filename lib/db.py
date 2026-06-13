@@ -188,6 +188,18 @@ def get_setting(key: str, default=None):
         return raw
 
 
+def get_setting_live(key: str, default=None):
+    """キャッシュを使わず最新値を読む（進捗バーのポーリング用）。"""
+    with get_engine().connect() as c:
+        row = c.execute(select(settings.c.value).where(settings.c.key == key)).first()
+    if row is None:
+        return default
+    try:
+        return json.loads(row[0])
+    except (json.JSONDecodeError, TypeError):
+        return row[0]
+
+
 def set_setting(key: str, value) -> None:
     payload = json.dumps(value, ensure_ascii=False)
     with get_engine().begin() as c:

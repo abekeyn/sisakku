@@ -33,6 +33,15 @@ class B2Error(Exception):
     pass
 
 
+def _emit(progress, pct: int, step: str) -> None:
+    """進捗コールバックを安全に呼ぶ（progressがNoneなら何もしない）。"""
+    if progress:
+        try:
+            progress(pct, step)
+        except Exception:  # noqa: BLE001  進捗通知の失敗で本処理を止めない
+            pass
+
+
 def _launch_chromium(pl, headful: bool):
     """Chromiumを起動。ブラウザ実体が消えていたら自動で入れ直して再試行する
     （Windowsのディスク掃除でキャッシュが消えても自己修復する）。"""
@@ -174,7 +183,7 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
 
 def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                     headful: bool = False, dry_run: bool = False,
-                    explore: bool = False) -> dict:
+                    explore: bool = False, progress=None) -> dict:
     """送り状CSVをB2クラウドの「外部データから発行」に通して送り状を発行する。
 
     手順：① データ取込み（パターン選択・ファイル選択・取込み開始）
@@ -201,7 +210,9 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                                   viewport={"width": 1366, "height": 1000})
         page = ctx.new_page()
         try:
+            _emit(progress, 10, "ヤマトにログイン中")
             b2 = _login_and_open_b2(ctx, page, code, pw)
+            _emit(progress, 30, "発行画面を開いています")
 
             # 「外部データから発行」のメニューカードを開く
             # （部分一致・DOM順で最初＝メニューカード。FAQの長文リンクは後方にある）
@@ -233,6 +244,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             # ファイルをアップロード（全 input[type=file] に投入し、効いたものを採用）
             tmp = Path(tempfile.gettempdir()) / "abe_yamato_issue.csv"
             tmp.write_bytes(csv_bytes)
+            _emit(progress, 45, "送り状データをアップロード中")
             _shot(b2, "issue_before_upload")
             file_inputs = []
             for fr in b2.frames:
@@ -260,6 +272,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             except Exception:  # noqa: BLE001
                 start.click(force=True)
             b2.wait_for_timeout(6000)
+            _emit(progress, 60, "取り込み結果を確認中")
             _shot(b2, "import_result")
 
             body = ""
@@ -312,6 +325,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 return {"issued": False, "pdf": None, "rows": rows,
                         "message": f"[探索] 印刷内容の確認まで到達（{rows}件・発行はしていません）"}
 
+            _emit(progress, 80, "送り状を発行しています")
             # ③ → ④ 発行（印刷）。PDFダウンロードを待つ
             holder = {}
             for pg in ctx.pages:
@@ -340,6 +354,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 except Exception:  # noqa: BLE001
                     pass
 
+            _emit(progress, 92, "PDFを取得しています")
             for _ in range(40):
                 if holder.get("d"):
                     break
@@ -355,7 +370,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             browser.close()
 
 
-def _download_issued(days: int = 7, headful: bool = False) -> bytes | None:
+def _download_issued(days: int = 7, headful: bool = False, progress=None) -> bytes | None:
     """B2クラウドにログインし、発行済データCSV(bytes)をダウンロードして返す。
 
     対象期間は「出荷予定日の開始日 = 今日 - days」に絞る。
@@ -379,7 +394,9 @@ def _download_issued(days: int = 7, headful: bool = False) -> bytes | None:
         )
         page = ctx.new_page()
         try:
+            _emit(progress, 15, "ヤマトにログイン中")
             b2 = _login_and_open_b2(ctx, page, code, pw)
+            _emit(progress, 40, "発行済データを検索中")
 
             # ---- 3. 発行済データの検索 ----
             hist = _first_visible(b2, [
@@ -456,6 +473,7 @@ def _download_issued(days: int = 7, headful: bool = False) -> bytes | None:
                 return None  # 0件＝この期間に発行済データが無い
 
             # ---- 4. 「外部ファイルに出力」→ CSVダウンロード ----
+            _emit(progress, 65, "データをダウンロード中")
             out_btn = _first_visible(b2, [
                 'button:has-text("外部ファイルに出力")', 'a:has-text("外部ファイルに出力")',
                 'input[value*="外部ファイル"]',
@@ -545,13 +563,14 @@ def _download_issued(days: int = 7, headful: bool = False) -> bytes | None:
             browser.close()
 
 
-def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False) -> dict:
+def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False,
+                      progress=None) -> dict:
     """B2クラウドから発行済データを取得し、出荷確定まで実行する。
 
     dry_run=True なら照合結果の確認だけ行い、出荷確定・BASE反映はしない。
     returns {"rows", "shipped", "unmatched", "messages"}
     """
-    raw = _download_issued(days=days, headful=headful)
+    raw = _download_issued(days=days, headful=headful, progress=progress)
     if raw is None:
         return {"rows": 0, "shipped": 0, "unmatched": 0,
                 "messages": ["B2クラウドに対象期間の発行済データがありませんでした"]}
@@ -565,10 +584,11 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
             "messages": [f'[テスト] 照合可能: {o["customer_name"]}様 → {r["tracking"]}'
                          for r, o in matches],
         }
+    _emit(progress, 85, "伝票番号を照合して出荷確定中")
     return shipping.process_issued_csv(raw)
 
 
-def fetch_history(days: int = 370, headful: bool = False) -> dict:
+def fetch_history(days: int = 370, headful: bool = False, progress=None) -> dict:
     """B2クラウドから過去の発行済データを取得し、顧客マスタと過去注文を更新する。
 
     出荷確定やBASE反映はしない（あくまで履歴の取り込み）。
@@ -576,9 +596,10 @@ def fetch_history(days: int = 370, headful: bool = False) -> dict:
     returns {"customers", "orders", "sender"}
     """
     from . import seed
-    raw = _download_issued(days=days, headful=headful)
+    raw = _download_issued(days=days, headful=headful, progress=progress)
     if raw is None:
         return {"customers": 0, "orders": 0, "sender": False}
+    _emit(progress, 85, "顧客マスタを更新中")
     return seed.import_issued_csv(raw, import_history=True)
 
 
@@ -613,7 +634,7 @@ def _dump_page(page, name: str) -> str:
 
 def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                    headful: bool = False, dry_run: bool = False,
-                   explore: bool = False) -> dict:
+                   explore: bool = False, progress=None) -> dict:
     """ヤマトビジネスメンバーズの集荷依頼を自動で行う。
 
     - count : 集荷してもらう荷物の個数（今日の発行件数を想定）
@@ -638,8 +659,10 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                                   viewport={"width": 1366, "height": 1000})
         page = ctx.new_page()
         try:
+            _emit(progress, 20, "ヤマトにログイン中")
             page = _login_ybm(ctx, page, code, pw)
             page.wait_for_timeout(2000)
+            _emit(progress, 50, "集荷依頼ページを開いています")
 
             # ---- 集荷依頼メニューを開く ----
             link = _first_visible(page, [
@@ -698,6 +721,7 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
             if time_label:
                 _select_option_by_text(page, [r"時間", r"時間帯"], time_label)
 
+            _emit(progress, 75, "集荷の日時・個数を入力中")
             _shot(page, "pickup_filled")
 
             if dry_run:

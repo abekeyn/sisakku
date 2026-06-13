@@ -22,6 +22,14 @@ from lib import db, exporter  # noqa: E402
 INTERVAL = 6  # 監視間隔（秒）
 
 
+def _progress(key: str):
+    """進捗をDBに書き込むコールバックを返す（アプリ側がポーリングして表示）。"""
+    def cb(pct: int, step: str) -> None:
+        db.set_setting(key, {"pct": int(pct), "step": step,
+                             "at": datetime.now().isoformat(timespec="seconds")})
+    return cb
+
+
 def _process_exports() -> int:
     written = exporter.process_pending()
     for p in written:
@@ -33,8 +41,10 @@ def _run_b2_fetch() -> None:
     """B2クラウドから発行済データを自動取得して出荷確定。結果をDBに記録。"""
     from lib import b2_fetch
     started = datetime.now().isoformat(timespec="seconds")
+    prog = _progress("b2_fetch_progress")
+    prog(5, "PCで処理を開始しました")
     try:
-        r = b2_fetch.fetch_and_process()
+        r = b2_fetch.fetch_and_process(progress=prog)
         result = {
             "ok": True, "at": started,
             "summary": f'読込{r["rows"]}行／出荷確定{r["shipped"]}件／未照合{r["unmatched"]}行',
@@ -43,9 +53,11 @@ def _run_b2_fetch() -> None:
         # 集荷依頼の個数の既定値に使う（今回出荷確定した件数）
         if r.get("shipped"):
             db.set_setting("last_shipped_count", r["shipped"])
+        prog(100, "完了")
         print("B2取得 成功:", result["summary"], flush=True)
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "at": started, "summary": f"失敗: {e}", "messages": []}
+        prog(100, "失敗")
         print("B2取得 失敗:", e, flush=True)
         traceback.print_exc()
     db.set_setting("b2_fetch_result", result)
@@ -67,20 +79,25 @@ def _run_b2_print() -> None:
     import base64
     from lib import b2_fetch, printing
     started = datetime.now().isoformat(timespec="seconds")
+    prog = _progress("b2_print_progress")
+    prog(5, "PCで処理を開始しました")
     try:
         b64 = db.get_setting("b2_print_csv")
         if not b64:
             raise RuntimeError("印刷するデータがありません")
         csv_bytes = base64.b64decode(b64)
-        r = b2_fetch.issue_and_print(csv_bytes)
+        r = b2_fetch.issue_and_print(csv_bytes, progress=prog)
         msg = r.get("message", "")
         if r.get("pdf"):
+            prog(97, "プリンタへ送信中")
             ok, pmsg = printing.print_pdf(r["pdf"])
             msg += "／" + pmsg
         result = {"ok": bool(r.get("issued")), "at": started, "summary": msg}
+        prog(100, "完了")
         print("B2発行・印刷:", msg, flush=True)
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        prog(100, "失敗")
         print("B2発行・印刷 失敗:", e, flush=True)
         traceback.print_exc()
     db.set_setting("b2_print_result", result)
@@ -102,15 +119,19 @@ def _run_b2_history() -> None:
     from lib import b2_fetch
     started = datetime.now().isoformat(timespec="seconds")
     days = int(db.get_setting("b2_history_days") or 370)
+    prog = _progress("b2_history_progress")
+    prog(5, "PCで処理を開始しました")
     try:
-        r = b2_fetch.fetch_history(days=days)
+        r = b2_fetch.fetch_history(days=days, progress=prog)
         result = {
             "ok": True, "at": started,
             "summary": f'顧客 +{r["customers"]}名／過去注文 +{r["orders"]}件 を取り込みました',
         }
+        prog(100, "完了")
         print("過去取得:", result["summary"], flush=True)
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        prog(100, "失敗")
         print("過去取得 失敗:", e, flush=True)
         traceback.print_exc()
     db.set_setting("b2_history_result", result)
@@ -132,16 +153,20 @@ def _run_b2_pickup() -> None:
     from lib import b2_fetch
     started = datetime.now().isoformat(timespec="seconds")
     p = db.get_setting("b2_pickup_payload") or {}
+    prog = _progress("b2_pickup_progress")
+    prog(5, "PCで処理を開始しました")
     try:
         r = b2_fetch.request_pickup(
             date_label=p.get("date", ""), time_label=p.get("time", ""),
             count=int(p.get("count", 1)), dry_run=bool(p.get("dry_run")),
-            explore=bool(p.get("explore")),
+            explore=bool(p.get("explore")), progress=prog,
         )
         result = {"ok": bool(r.get("ok")), "at": started, "summary": r.get("message", "")}
+        prog(100, "完了")
         print("集荷依頼:", result["summary"], flush=True)
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        prog(100, "失敗")
         print("集荷依頼 失敗:", e, flush=True)
         traceback.print_exc()
     db.set_setting("b2_pickup_result", result)

@@ -275,6 +275,8 @@ def inject_css() -> None:
         .kpi-sub {{ color: {TXT_SOFT}; font-size:.76rem; margin-top:4px; }}
         .kpi-sub .up {{ color:#5BC08A; font-weight:700; }}
         .kpi-sub .down {{ color:#E07A7A; font-weight:700; }}
+        .prog-title {{ color:#F8F3E6; font-weight:700; font-size:.96rem;
+                       margin:2px 0 4px; letter-spacing:.02em; }}
 
         /* ===== チップ・バッジ ===== */
         .chip {{
@@ -527,70 +529,11 @@ def require_login() -> None:
         if st.form_submit_button("ログイン", type="primary", use_container_width=True):
             if entered == str(pw):
                 st.session_state["authed"] = True
-                st.session_state["just_logged_in"] = True
+                st.session_state["_booted"] = False  # ログイン後にもう一度ローディングを出す
                 st.rerun()
             else:
                 st.error("パスワードが違います。")
     st.stop()
-
-
-def _render_splash() -> None:
-    """ログイン直後のローディング演出。
-
-    濃紺のスプラッシュ（ロゴが静かに脈打つ）が約1秒かかった後にとけて消え、
-    管理画面がふわっと浮かび上がる。すべてCSSアニメーション（追加の待ち時間なし）。
-    """
-    logo = _logo_b64("阿部農園ロゴ.png")
-    img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
-    st.markdown(
-        """
-        <style>
-        .splash {
-            position: fixed; inset: 0; z-index: 999999;
-            display: flex; flex-direction: column;
-            align-items: center; justify-content: center; gap: 18px;
-            background:
-              radial-gradient(1200px 800px at 50% 30%, #2a2c5a 0%, #1b1d3e 45%, #131228 100%);
-            animation: splashFade .8s ease 1.05s forwards;
-            pointer-events: none;
-        }
-        @keyframes splashFade {
-            to { opacity: 0; visibility: hidden; }
-        }
-        .splash img {
-            height: 110px;
-            filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
-            animation: splashPulse 1.5s ease-in-out infinite;
-        }
-        @keyframes splashPulse {
-            0%, 100% { opacity: .82; transform: scale(1); }
-            50%      { opacity: 1;   transform: scale(1.04); }
-        }
-        .splash .dia {
-            width: 10px; height: 10px;
-            background: linear-gradient(135deg, #C9A24B, #E9D18C);
-            border-radius: 2px;
-            box-shadow: 0 0 10px rgba(201,162,75,.6);
-            animation: diaTurn 1.3s ease-in-out infinite;
-        }
-        @keyframes diaTurn {
-            0%   { transform: rotate(45deg)  scale(1); }
-            50%  { transform: rotate(225deg) scale(.75); }
-            100% { transform: rotate(405deg) scale(1); }
-        }
-        /* 管理画面はふわっと浮かび上がる */
-        .block-container, [data-testid="stMainBlockContainer"] {
-            animation: appRise 1.2s ease .95s both;
-        }
-        @keyframes appRise {
-            from { opacity: 0; transform: translateY(14px); }
-            to   { opacity: 1; transform: none; }
-        }
-        </style>
-        <div class="splash">""" + img + """<span class="dia"></span></div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def section(title: str, sub: str = "") -> None:
@@ -685,6 +628,63 @@ def render_nav() -> str:
     return sel or VIEWS[0]
 
 
+def loading_gate() -> None:
+    """起動直後・ログイン待ちの間に出す全面ローディング画面。
+
+    セッション初回（およびログイン直後）の1回だけ表示する。濃紺の画面に
+    ロゴと織り菱のスピナー、『読み込み中…』を出し、約1秒でとけて消える。
+    最初の一瞬に出るちらつき（赤いコード等）も覆い隠す。
+    """
+    if st.session_state.get("_booted"):
+        return
+    st.session_state["_booted"] = True
+    logo = _logo_b64("阿部農園ロゴ.png")
+    img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
+    st.html(
+        """
+        <style>
+        .boot {
+            position: fixed; inset: 0; z-index: 2147483646;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 20px;
+            background:
+              radial-gradient(1200px 800px at 50% 32%, #2a2c5a 0%, #1b1d3e 46%, #131228 100%);
+            animation: bootFade .55s ease 1.0s forwards;
+        }
+        @keyframes bootFade { to { opacity: 0; visibility: hidden; } }
+        .boot img {
+            height: 104px;
+            filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
+            animation: bootPulse 1.5s ease-in-out infinite;
+        }
+        @keyframes bootPulse {
+            0%,100% { opacity: .82; transform: scale(1); }
+            50%     { opacity: 1;   transform: scale(1.045); }
+        }
+        .boot .dia {
+            width: 11px; height: 11px;
+            background: linear-gradient(135deg, #C9A24B, #E9D18C);
+            border-radius: 2px; box-shadow: 0 0 10px rgba(201,162,75,.6);
+            animation: bootTurn 1.25s ease-in-out infinite;
+        }
+        @keyframes bootTurn {
+            0%   { transform: rotate(45deg)  scale(1); }
+            50%  { transform: rotate(225deg) scale(.7); }
+            100% { transform: rotate(405deg) scale(1); }
+        }
+        .boot .txt {
+            color: rgba(242,237,224,.7); font-size: .82rem;
+            letter-spacing: .35em; padding-left: .35em;
+        }
+        </style>
+        <div class="boot">""" + img + """
+          <span class="dia"></span>
+          <div class="txt">読み込み中…</div>
+        </div>
+        """
+    )
+
+
 def setup_page() -> None:
     st.set_page_config(
         page_title="精米・発送管理｜阿部農園",
@@ -692,7 +692,6 @@ def setup_page() -> None:
         initial_sidebar_state="collapsed",
     )
     inject_css()
+    loading_gate()
     require_login()
-    if st.session_state.pop("just_logged_in", False):
-        _render_splash()
     render_header()

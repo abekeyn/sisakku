@@ -262,6 +262,43 @@ def dlg_confirm_shipment():
 # ===========================================================================
 # 🏠 ホーム（今日やること）
 # ===========================================================================
+def _start_agent(req_key, prog_key, res_key, title, payload_key=None, payload=None):
+    """PC常駐エージェントに作業を指示し、進捗バーの監視を開始する。"""
+    db.set_setting(res_key, {"pending": True})
+    db.set_setting(prog_key, {"pct": 1, "step": "PCに指示を送信しました"})
+    if payload_key is not None:
+        db.set_setting(payload_key, payload)
+    db.set_setting(req_key, now_iso())
+    st.session_state.pop("agent_last", None)
+    st.session_state["agent_watch"] = {"prog": prog_key, "res": res_key, "title": title}
+    st.rerun()
+
+
+@st.fragment(run_every=2)
+def _agent_progress():
+    """実行中はライブ進捗バー、完了後は結果を表示する（2秒ごとに自動更新）。"""
+    w = st.session_state.get("agent_watch")
+    if w:
+        res = db.get_setting_live(w["res"])
+        if res and not res.get("pending"):
+            st.session_state["agent_last"] = {"title": w["title"], "res": res}
+            st.session_state.pop("agent_watch", None)
+        else:
+            prog = db.get_setting_live(w["prog"]) or {}
+            pct = max(1, min(99, int(prog.get("pct", 1))))
+            st.markdown(f'<div class="prog-title">{w["title"]}</div>',
+                        unsafe_allow_html=True)
+            st.progress(pct / 100, text=f'{prog.get("step", "準備中")}（{pct}%）')
+            st.caption("PCで自動処理中です。完了まで数十秒〜1分ほどお待ちください。")
+            return
+    last = st.session_state.get("agent_last")
+    if last:
+        res = last["res"]
+        ok = res.get("ok")
+        box = st.success if ok else st.warning
+        box(("✅ " if ok else "⚠️ ") + f'{last["title"]}：{res.get("summary") or ""}')
+
+
 @st.fragment
 def view_home():
     orders_all = db.list_orders()
@@ -415,11 +452,11 @@ def view_home():
         csv_bytes = _build_csv_for_selected()
         st.session_state["csv_data"] = csv_bytes
         db.set_setting("b2_print_csv", base64.b64encode(csv_bytes).decode())
-        db.set_setting("b2_print_request", now_iso())
-        st.toast("PCに発行・印刷を指示しました（30秒〜1分ほど）", icon="🖨")
+        _start_agent("b2_print_request", "b2_print_progress", "b2_print_result",
+                     "送り状の発行・自動印刷")
 
     pr = db.get_setting("b2_print_result")
-    if pr:
+    if pr and not pr.get("pending"):
         st.caption(("✓ " if pr.get("ok") else "⚠ ") + f'前回の発行・印刷（{pr.get("at","")}）：{pr.get("summary","")}')
 
     with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
@@ -445,11 +482,11 @@ def view_home():
 
     if st.button("B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
                  help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
-        db.set_setting("b2_fetch_request", now_iso())
-        st.toast("PCに自動取得を指示しました（30秒〜1分ほどで完了します）", icon="🤖")
+        _start_agent("b2_fetch_request", "b2_fetch_progress", "b2_fetch_result",
+                     "伝票番号の取得・出荷確定")
 
     b2res = db.get_setting("b2_fetch_result")
-    if b2res:
+    if b2res and not b2res.get("pending"):
         icon = "✓" if b2res.get("ok") else "⚠"
         st.caption(f'{icon} 前回の自動取得（{b2res.get("at","")}）：{b2res.get("summary","")}')
         for m in b2res.get("messages", []):
@@ -490,24 +527,23 @@ def view_home():
 
     if st.button("集荷を依頼する", type="primary", use_container_width=True,
                  help="PCの常駐プログラムがヤマトに自動ログインして集荷依頼を送ります（PCが起動している必要があります）"):
-        db.set_setting("b2_pickup_payload", {
-            "date": pdate.strftime("%Y/%m/%d"), "time": ptime,
-            "count": int(pcnt), "dry_run": False, "explore": False,
-        })
-        db.set_setting("b2_pickup_request", now_iso())
-        st.toast("PCに集荷依頼を指示しました（30秒〜1分ほどで完了します）", icon="🚚")
+        _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
+                     "集荷依頼", payload_key="b2_pickup_payload", payload={
+                         "date": pdate.strftime("%Y/%m/%d"), "time": ptime,
+                         "count": int(pcnt), "dry_run": False, "explore": False,
+                     })
 
     pres = db.get_setting("b2_pickup_result")
-    if pres:
+    if pres and not pres.get("pending"):
         icon = "✓" if pres.get("ok") else "⚠"
         st.caption(f'{icon} 前回の集荷依頼（{pres.get("at","")}）：{pres.get("summary","")}')
 
     with st.expander("初回の調整（集荷ページの構造を調べる）"):
         st.caption("ヤマトの集荷依頼ページは初回だけ構造の確認が必要です。下のボタンで調査用の情報を保存します（依頼は送りません）。")
         if st.button("集荷ページを調べる（送信しない）", use_container_width=True):
-            db.set_setting("b2_pickup_payload", {"explore": True})
-            db.set_setting("b2_pickup_request", now_iso())
-            st.toast("PCに調査を指示しました", icon="🔎")
+            _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
+                         "集荷ページの調査", payload_key="b2_pickup_payload",
+                         payload={"explore": True})
 
 
 # ===========================================================================
@@ -573,10 +609,10 @@ def view_customers():
                    "同じ伝票番号は重複しません。売上・分析の元データになります。")
         if st.button("過去の発送をまとめて取り込む", type="primary", use_container_width=True,
                      help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得します（PC起動が必要・ヤマト利用時間 7:00〜25:00）"):
-            db.set_setting("b2_history_request", now_iso())
-            st.toast("PCに過去取得を指示しました（1〜2分ほどかかります）", icon="📥")
+            _start_agent("b2_history_request", "b2_history_progress", "b2_history_result",
+                         "過去の発送の取り込み")
         hres = db.get_setting("b2_history_result")
-        if hres:
+        if hres and not hres.get("pending"):
             icon = "✓" if hres.get("ok") else "⚠"
             st.caption(f'{icon} 前回（{hres.get("at","")}）：{hres.get("summary","")}')
 
@@ -970,6 +1006,7 @@ def view_analytics():
 # ルーティング
 # ===========================================================================
 view = ui.render_nav()
+_agent_progress()
 if view == "ホーム":
     view_home()
 elif view == "注文":
