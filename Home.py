@@ -809,6 +809,56 @@ def _product_bar_chart(psales):
             .configure_axis(grid=False))
 
 
+def _segment_bar_chart(summary):
+    """属性別の人数を、属性ごとの色で横棒表示する。"""
+    df = pd.DataFrame([{"属性": s["属性"], "人数": s["人数"]} for s in summary])
+    domain = [s["属性"] for s in summary]
+    rng = [s["色"] for s in summary]
+    maxv = max([1, *df["人数"]])
+    base = alt.Chart(df)
+    bars = base.mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6).encode(
+        y=alt.Y("属性:N", sort=domain, scale=alt.Scale(paddingInner=0.4),
+                axis=alt.Axis(title=None, labelColor="#EAE5D6", labelFontSize=13,
+                              domainColor=_AX_LINE, tickColor=_AX_LINE)),
+        x=alt.X("人数:Q", axis=None, scale=alt.Scale(domain=[0, maxv * 1.2])),
+        color=alt.Color("属性:N", scale=alt.Scale(domain=domain, range=rng), legend=None),
+        tooltip=[alt.Tooltip("属性:N", title="属性"), alt.Tooltip("人数:Q", title="人数")],
+    )
+    labels = base.mark_text(align="left", dx=6, color="#F2EDE0", fontSize=12,
+                            fontWeight="bold").encode(
+        y=alt.Y("属性:N", sort=domain), x="人数:Q", text=alt.Text("人数:Q", format="d"))
+    return ((bars + labels).properties(height=max(150, len(df) * 48))
+            .configure_view(stroke=None)
+            .configure(background="rgba(0,0,0,0)")
+            .configure_axis(grid=False))
+
+
+def _top_customers_chart(stats, n: int = 8):
+    """累計購入額の多い顧客 上位nを横棒で表示する。"""
+    rows = sorted(stats, key=lambda x: x["累計金額"], reverse=True)[:n]
+    df = pd.DataFrame([{"顧客": r["顧客"], "累計金額": float(r["累計金額"]),
+                        "回数": r["回数"], "表示": _man(r["累計金額"])} for r in rows])
+    maxv = max([1.0, *df["累計金額"]])
+    base = alt.Chart(df)
+    bars = base.mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6,
+                         color=_gold_gradient(horizontal=True)).encode(
+        y=alt.Y("顧客:N", sort="-x", scale=alt.Scale(paddingInner=0.35),
+                axis=alt.Axis(title=None, labelColor="#EAE5D6", labelFontSize=12,
+                              domainColor=_AX_LINE, tickColor=_AX_LINE, labelLimit=160)),
+        x=alt.X("累計金額:Q", axis=None, scale=alt.Scale(domain=[0, maxv * 1.18])),
+        tooltip=[alt.Tooltip("顧客:N", title="顧客"),
+                 alt.Tooltip("累計金額:Q", title="累計金額", format=",.0f"),
+                 alt.Tooltip("回数:Q", title="回数")],
+    )
+    labels = base.mark_text(align="left", dx=6, color="#F2EDE0", fontSize=12,
+                            fontWeight="bold").encode(
+        y=alt.Y("顧客:N", sort="-x"), x="累計金額:Q", text="表示:N")
+    return ((bars + labels).properties(height=max(130, len(df) * 40))
+            .configure_view(stroke=None)
+            .configure(background="rgba(0,0,0,0)")
+            .configure_axis(grid=False))
+
+
 def view_analytics():
     tab_sales, tab_cust = st.tabs(["売上", "顧客"])
     orders = db.list_orders()
@@ -876,15 +926,37 @@ def view_analytics():
             st.caption("まだ分析できる注文がありません。")
         else:
             summary = analytics.segment_summary(stats)
-            cols = st.columns(len(summary)) if summary else []
-            for col, s in zip(cols, summary):
-                col.markdown(
-                    f'<div class="o-card" style="border-color:{s["色"]}66">'
+            total = len(stats)
+            repeat = sum(1 for s in stats if s["回数"] >= 2)
+            followup = sum(1 for s in stats if s["属性"] in ("離脱注意", "休眠客"))
+
+            k1, k2, k3 = st.columns(3)
+            k1.markdown(ui.kpi("顧客数", f"{total:,}", "登録のべ人数"),
+                        unsafe_allow_html=True)
+            k2.markdown(ui.kpi("リピーター率", f"{repeat / total * 100:.0f}%",
+                               f"2回以上 {repeat:,} 名"), unsafe_allow_html=True)
+            k3.markdown(ui.kpi("要フォロー", f"{followup:,}", "離脱注意＋休眠"),
+                        unsafe_allow_html=True)
+
+            st.write("")
+            ui.section("顧客の構成", "属性ごとの人数")
+            st.altair_chart(_segment_bar_chart(summary), use_container_width=True)
+
+            ui.section("属性ごとの『次の一手』")
+            for s in summary:
+                st.markdown(
+                    f'<div class="o-card" style="border-left:4px solid {s["色"]}">'
                     f'<span class="o-name" style="color:{s["色"]}">{s["属性"]}</span>'
-                    f'<div class="o-line">{s["人数"]} 名</div>'
-                    f'<div class="o-meta">{s["次の一手"]}</div></div>',
+                    f'　<span class="o-meta">{s["人数"]} 名</span>'
+                    f'<div class="o-line">{s["次の一手"]}</div></div>',
                     unsafe_allow_html=True,
                 )
+
+            if any(s["累計金額"] for s in stats):
+                ui.section("お得意様 上位", "累計購入額の多い順")
+                st.altair_chart(_top_customers_chart(stats), use_container_width=True)
+
+            ui.section("顧客一覧")
             segs = ["すべて"] + [s["属性"] for s in summary]
             seg_sel = st.segmented_control("属性で絞り込み", segs, default="すべて",
                                            key="an_seg") or "すべて"
