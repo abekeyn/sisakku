@@ -257,6 +257,25 @@ def inject_css() -> None:
             padding:1px 9px; border-radius:8px;
         }}
 
+        /* ===== KPIカード（ダッシュボード） ===== */
+        .kpi {{
+            background: linear-gradient(160deg, rgba(201,162,75,.10), rgba(38,41,73,.55));
+            border: 1px solid rgba(201,162,75,.28);
+            border-radius: 16px; padding: 14px 18px; height: 100%;
+            box-shadow: 0 4px 18px rgba(0,0,0,.25);
+        }}
+        .kpi-lbl {{ color: {TXT_SOFT}; font-size:.78rem; letter-spacing:.04em; }}
+        .kpi-val {{
+            color:#F8F3E6; font-weight:800; font-size:1.7rem;
+            line-height:1.2; margin-top:4px;
+            font-variant-numeric: tabular-nums;
+        }}
+        .kpi-val .yen {{ color: var(--gold); font-size:1.05rem; font-weight:700;
+                         margin-right:2px; }}
+        .kpi-sub {{ color: {TXT_SOFT}; font-size:.76rem; margin-top:4px; }}
+        .kpi-sub .up {{ color:#5BC08A; font-weight:700; }}
+        .kpi-sub .down {{ color:#E07A7A; font-weight:700; }}
+
         /* ===== チップ・バッジ ===== */
         .chip {{
             display:inline-block; font-size:.7rem; font-weight:700;
@@ -644,6 +663,14 @@ def order_card(order, extra_html: str = "") -> str:
         f'{note}{extra_html}'
         f'</div>'
     )
+
+
+def kpi(label: str, value: str, sub: str = "", yen: bool = False) -> str:
+    """ダッシュボード用KPIカードのHTML。yen=Trueで先頭に金色の¥を付ける。"""
+    head = '<span class="yen">¥</span>' if yen else ""
+    sub_html = f'<div class="kpi-sub">{sub}</div>' if sub else ""
+    return (f'<div class="kpi"><div class="kpi-lbl">{label}</div>'
+            f'<div class="kpi-val">{head}{value}</div>{sub_html}</div>')
 
 
 VIEWS = ["ホーム", "注文", "顧客", "分析", "設定"]

@@ -10,6 +10,7 @@
 """
 from datetime import date, datetime, timedelta, timezone
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -736,6 +737,78 @@ def view_settings():
 # ===========================================================================
 # 📊 分析（売上ダッシュボード・顧客分析）
 # ===========================================================================
+def _man(v: float) -> str:
+    """金額を万単位の短い表記に（1万円以上は『16.8万』、未満はカンマ区切り）。"""
+    return f"{v / 10000:.1f}万" if v >= 10000 else f"{v:,.0f}"
+
+
+def _gold_gradient(horizontal: bool = False):
+    """金色の線形グラデーション（縦棒は上明→下暗、横棒は左明→右暗）。"""
+    coords = dict(x1=0, x2=1, y1=0, y2=0) if horizontal else dict(x1=0, x2=0, y1=0, y2=1)
+    return alt.Gradient(
+        gradient="linear",
+        stops=[alt.GradientStop(color="#EBCC72", offset=0.0),
+               alt.GradientStop(color="#B5862B", offset=1.0)],
+        **coords,
+    )
+
+
+_AX_LBL = "#CFCBDD"
+_AX_LINE = "#3A3D63"
+
+
+def _sales_bar_chart(mrows):
+    """月別売上の縦棒グラフ（金グラデ・角丸・値ラベル付き）。"""
+    df = pd.DataFrame([{"年月": m["年月"], "売上": float(m["売上"]),
+                        "件数": m["件数"], "表示": _man(m["売上"])} for m in mrows])
+    maxv = max([1.0, *df["売上"]])
+    base = alt.Chart(df)
+    bars = base.mark_bar(cornerRadiusTopLeft=7, cornerRadiusTopRight=7,
+                         color=_gold_gradient()).encode(
+        x=alt.X("年月:N", sort=None,
+                scale=alt.Scale(paddingInner=0.45, paddingOuter=0.25),
+                axis=alt.Axis(title=None, labelAngle=0, labelColor=_AX_LBL,
+                              domainColor=_AX_LINE, tickColor=_AX_LINE,
+                              labelFontSize=12, labelPadding=8)),
+        y=alt.Y("売上:Q", axis=None, scale=alt.Scale(domain=[0, maxv * 1.18])),
+        tooltip=[alt.Tooltip("年月:N", title="年月"),
+                 alt.Tooltip("売上:Q", title="売上", format=",.0f"),
+                 alt.Tooltip("件数:Q", title="件数")],
+    )
+    labels = base.mark_text(dy=-9, color="#F2EDE0", fontSize=12,
+                            fontWeight="bold").encode(
+        x=alt.X("年月:N", sort=None), y="売上:Q", text="表示:N")
+    return ((bars + labels).properties(height=300)
+            .configure_view(stroke=None)
+            .configure(background="rgba(0,0,0,0)")
+            .configure_axis(grid=False))
+
+
+def _product_bar_chart(psales):
+    """商品別売上の横棒グラフ（売上の多い順・値ラベル付き）。"""
+    df = pd.DataFrame([{"商品": p["商品"], "売上": float(p["売上"]),
+                        "個数": p["個数"], "表示": _man(p["売上"])} for p in psales])
+    maxv = max([1.0, *df["売上"]])
+    base = alt.Chart(df)
+    bars = base.mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6,
+                         color=_gold_gradient(horizontal=True)).encode(
+        y=alt.Y("商品:N", sort="-x",
+                axis=alt.Axis(title=None, labelColor="#EAE5D6", labelFontSize=12,
+                              domainColor=_AX_LINE, tickColor=_AX_LINE, labelLimit=180)),
+        x=alt.X("売上:Q", axis=None, scale=alt.Scale(domain=[0, maxv * 1.18])),
+        tooltip=[alt.Tooltip("商品:N", title="商品"),
+                 alt.Tooltip("売上:Q", title="売上", format=",.0f"),
+                 alt.Tooltip("個数:Q", title="個数")],
+    )
+    labels = base.mark_text(align="left", dx=6, color="#F2EDE0", fontSize=12,
+                            fontWeight="bold").encode(
+        y=alt.Y("商品:N", sort="-x"), x="売上:Q", text="表示:N")
+    return ((bars + labels).properties(height=max(130, len(df) * 44))
+            .configure_view(stroke=None)
+            .configure(background="rgba(0,0,0,0)")
+            .configure_axis(grid=False))
+
+
 def view_analytics():
     tab_sales, tab_cust = st.tabs(["売上", "顧客"])
     orders = db.list_orders()
@@ -750,35 +823,51 @@ def view_analytics():
         else:
             this_year = today().year
             ty = next((y["売上"] for y in years if y["年"] == this_year), 0)
+            ly = next((y["売上"] for y in years if y["年"] == this_year - 1), 0)
             total = sum(m["売上"] for m in months)
-            k1, k2, k3 = st.columns(3)
-            k1.metric(f"{this_year}年の売上", f"¥{ty:,.0f}")
-            k2.metric("全期間の売上", f"¥{total:,.0f}")
-            k3.metric("注文件数", f'{sum(m["件数"] for m in months):,} 件')
+            ocount = sum(m["件数"] for m in months)
+            avg = total / ocount if ocount else 0
 
+            # 前年比
+            if ly:
+                rate = (ty - ly) / ly * 100
+                cls = "up" if rate >= 0 else "down"
+                yoy = f'前年比 <span class="{cls}">{rate:+.0f}%</span>'
+            else:
+                yoy = "前年データなし"
+
+            k1, k2, k3 = st.columns(3)
+            k1.markdown(ui.kpi(f"{this_year}年の売上", f"{ty:,.0f}", yoy, yen=True),
+                        unsafe_allow_html=True)
+            k2.markdown(ui.kpi("全期間の売上", f"{total:,.0f}", f"累計 {ocount:,} 件", yen=True),
+                        unsafe_allow_html=True)
+            k3.markdown(ui.kpi("平均購入額", f"{avg:,.0f}", "1注文あたり", yen=True),
+                        unsafe_allow_html=True)
+
+            st.write("")
             # 年の絞り込み
             yopts = ["すべて"] + [str(y["年"]) for y in years]
             ysel = st.selectbox("対象期間", yopts, key="an_year")
-            mrows = months if ysel == "すべて" else [m for m in months if m["年月"].startswith(ysel)]
+            mrows = sorted(
+                months if ysel == "すべて" else [m for m in months if m["年月"].startswith(ysel)],
+                key=lambda x: x["年月"],
+            )
 
-            chart_df = pd.DataFrame(
-                [{"年月": m["年月"], "売上": m["売上"]} for m in sorted(mrows, key=lambda x: x["年月"])]
-            ).set_index("年月")
-            st.bar_chart(chart_df, y="売上", color="#C9A24B", height=260)
+            ui.section("月別の売上")
+            st.altair_chart(_sales_bar_chart(mrows), use_container_width=True)
 
-            tbl = pd.DataFrame(mrows)
-            tbl["売上"] = tbl["売上"].map(lambda v: f"¥{v:,.0f}")
-            tbl["精米kg"] = tbl["精米kg"].map(lambda v: f"{v:g}")
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
+            with st.expander("月別の明細を表で見る"):
+                tbl = pd.DataFrame(mrows)
+                tbl["売上"] = tbl["売上"].map(lambda v: f"¥{v:,.0f}")
+                tbl["精米kg"] = tbl["精米kg"].map(lambda v: f"{v:g}")
+                st.dataframe(tbl, use_container_width=True, hide_index=True)
 
-            st.markdown("**商品別の売上**")
+            ui.section("商品別の売上")
             psales = analytics.product_sales(orders if ysel == "すべて"
                                               else [o for o in orders
                                                     if (d := analytics.order_date(o)) and d.year == int(ysel)])
-            pt = pd.DataFrame(psales)
-            if not pt.empty:
-                pt["売上"] = pt["売上"].map(lambda v: f"¥{v:,.0f}")
-                st.dataframe(pt, use_container_width=True, hide_index=True)
+            if psales:
+                st.altair_chart(_product_bar_chart(psales), use_container_width=True)
 
     with tab_cust:
         st.caption("過去の購入実績から顧客の属性を判定し、それぞれに打つべき『次の一手』を提案します。")
