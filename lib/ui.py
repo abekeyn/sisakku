@@ -537,48 +537,47 @@ def require_login() -> None:
 
 
 def _login_transition() -> None:
-    """ログインボタン押下を即座に検知し、再実行の計算中（古い画面が固まる間）を
-    ローディング画面で覆う。Streamlitは再実行中に前のフレームを表示し続けるため、
-    クライアント側JSでクリック直後にオーバーレイを親ページへ差し込む。"""
-    import streamlit.components.v1 as components
+    """ログイン押下〜画面切替の間（Streamlitが前のフレーム＝固まったログイン画面を
+    表示し続ける時間）をローディング画面で覆う。
 
+    実行中だけ現れる stStatusWidget を CSS の :has() で検知してオーバーレイを表示する。
+    iframe・JS不要なのでクラウドのサンドボックスにも左右されず確実に動く。
+    """
     logo = _logo_b64("阿部農園ロゴ.png")
-    img = (f"<img src='data:image/png;base64,{logo}'/>" if logo else "")
-    css = ("#login-ov{position:fixed;inset:0;z-index:2147483647;display:flex;"
-           "flex-direction:column;align-items:center;justify-content:center;gap:20px;"
-           "background:radial-gradient(1200px 800px at 50% 32%,#2a2c5a 0%,#1b1d3e 46%,#131228 100%);"
-           "transition:opacity .5s ease;}"
-           "#login-ov img{height:104px;filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));"
-           "animation:lovP 1.5s ease-in-out infinite;}"
-           "@keyframes lovP{0%,100%{opacity:.82;transform:scale(1)}50%{opacity:1;transform:scale(1.045)}}"
-           "#login-ov .lov-dia{width:11px;height:11px;background:linear-gradient(135deg,#C9A24B,#E9D18C);"
-           "border-radius:2px;box-shadow:0 0 10px rgba(201,162,75,.6);animation:lovT 1.25s ease-in-out infinite;}"
-           "@keyframes lovT{0%{transform:rotate(45deg) scale(1)}50%{transform:rotate(225deg) scale(.7)}"
-           "100%{transform:rotate(405deg) scale(1)}}"
-           "#login-ov .lov-txt{color:rgba(242,237,224,.7);font-size:.82rem;letter-spacing:.35em;padding-left:.35em;}")
-    inner = img + "<span class='lov-dia'></span><div class='lov-txt'>読み込み中…</div>"
-    remover = ("(function(){var t=Date.now();var iv=setInterval(function(){"
-               "var pw=document.querySelector('input[type=password]');"
-               "var er=document.querySelector('[data-testid=stAlert]');"
-               "if(!pw||er||Date.now()-t>12000){var o=document.getElementById('login-ov');"
-               "if(o){o.style.opacity=0;setTimeout(function(){if(o)o.remove();},500);}"
-               "clearInterval(iv);}},150);})();")
-    script = (
-        "<script>(function(){"
-        "var doc=window.parent.document;"
-        "function ensure(){if(doc.getElementById('lov-style'))return;"
-        "var s=doc.createElement('style');s.id='lov-style';s.textContent=" + repr(css) + ";"
-        "doc.head.appendChild(s);}"
-        "function show(){if(doc.getElementById('login-ov'))return;ensure();"
-        "var o=doc.createElement('div');o.id='login-ov';o.innerHTML=" + repr(inner) + ";"
-        "doc.body.appendChild(o);"
-        "var s=doc.createElement('script');s.textContent=" + repr(remover) + ";doc.body.appendChild(s);}"
-        "function attach(){var bs=doc.querySelectorAll('button');for(var i=0;i<bs.length;i++){"
-        "if(bs[i].innerText.trim()==='ログイン'&&!bs[i].__ov){bs[i].__ov=1;bs[i].addEventListener('click',show);}}}"
-        "attach();try{var mo=new MutationObserver(attach);mo.observe(doc.body,{childList:true,subtree:true});}catch(e){}"
-        "})();</script>"
+    img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
+    st.html(
+        """
+        <style>
+        #login-ov {
+            position: fixed; inset: 0; z-index: 2147483647;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 20px;
+            background: radial-gradient(1200px 800px at 50% 32%, #2a2c5a 0%, #1b1d3e 46%, #131228 100%);
+            opacity: 0; visibility: hidden; transition: opacity .45s ease;
+        }
+        /* Streamlitが実行中（再実行の計算中）だけオーバーレイを出す */
+        body:has([data-testid="stStatusWidget"]) #login-ov { opacity: 1; visibility: visible; }
+        #login-ov img {
+            height: 104px;
+            filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
+            animation: lovP 1.5s ease-in-out infinite;
+        }
+        @keyframes lovP { 0%,100%{opacity:.82;transform:scale(1)} 50%{opacity:1;transform:scale(1.045)} }
+        #login-ov .dia {
+            width: 11px; height: 11px;
+            background: linear-gradient(135deg, #C9A24B, #E9D18C);
+            border-radius: 2px; box-shadow: 0 0 10px rgba(201,162,75,.6);
+            animation: lovT 1.25s ease-in-out infinite;
+        }
+        @keyframes lovT { 0%{transform:rotate(45deg) scale(1)} 50%{transform:rotate(225deg) scale(.7)} 100%{transform:rotate(405deg) scale(1)} }
+        #login-ov .txt { color: rgba(242,237,224,.7); font-size: .82rem; letter-spacing: .35em; padding-left: .35em; }
+        </style>
+        <div id="login-ov">""" + img + """
+          <span class="dia"></span>
+          <div class="txt">読み込み中…</div>
+        </div>
+        """
     )
-    components.html(script, height=0)
 
 
 def section(title: str, sub: str = "") -> None:
