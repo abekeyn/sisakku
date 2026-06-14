@@ -86,6 +86,13 @@ def inject_css() -> None:
             background-attachment: fixed !important;
         }}
         header[data-testid="stHeader"] {{ background: transparent !important; }}
+        /* Streamlitの操作系チップ（Running/Stop・Deploy・上部の虹バー・メニュー）は
+           利用者には不要なので隠す。stStatusWidgetはDOMに残すので :has() 判定は効く。 */
+        [data-testid="stToolbar"], [data-testid="stToolbarActions"],
+        [data-testid="stStatusWidget"], [data-testid="stStatusWidgetContainer"],
+        [data-testid="stDecoration"], [data-testid="stAppDeployButton"],
+        #MainMenu {{ visibility: hidden !important; opacity: 0 !important;
+                     pointer-events: none !important; }}
         html, body, [class*="css"] {{
             font-family: 'Noto Sans JP', sans-serif;
             color: var(--txt);
