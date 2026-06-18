@@ -665,104 +665,190 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
             _emit(progress, 50, "集荷依頼ページを開いています")
 
             # ---- 集荷依頼メニューを開く ----
-            link = _first_visible(page, [
-                'a:has-text("集荷依頼")', 'text="集荷依頼"', 'button:has-text("集荷依頼")',
-                'a:has-text("集荷")', 'img[alt*="集荷"]',
-            ], 12000)
-            if link is None:
+            # 集荷依頼は ybmCommonJs.useService(...) で起動する隠れたリンク。
+            # 非表示でも発火できるよう DOM の click() を evaluate で直接呼ぶ。
+            link = page.locator('a:has-text("集荷依頼")').first
+            if link.count() == 0:
+                link = page.locator('a:has-text("集荷")').first
+            if link.count() == 0:
                 info = _dump_page(page, "pickup_menu_not_found")
                 raise B2Error("集荷依頼メニューが見つかりません（調査ダンプを保存）: " + info)
             new_page = page
             try:
-                with ctx.expect_page(timeout=6000) as pinfo:
-                    link.click()
+                with ctx.expect_page(timeout=8000) as pinfo:
+                    link.evaluate("el => el.click()")  # DOMクリックでonclick発火
                 new_page = pinfo.value
-            except Exception:  # noqa: BLE001  同一タブ遷移
-                try:
-                    link.click()
-                except Exception:  # noqa: BLE001
-                    link.click(force=True)
+            except Exception:  # noqa: BLE001  同一タブ遷移（新規ページが開かない）
+                pass
             page = new_page
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(4000)
 
-            if explore:
-                info = _dump_page(page, "pickup_page")
-                return {"ok": False,
-                        "message": f"[探索] 集荷依頼ページの構造を保存しました: {info}"}
+            # 集荷依頼の案内ページ → 「このサービスを利用する」で実フォームへ
+            use_btn = _first_visible(page, [
+                'a:has-text("このサービスを利用する")',
+                'button:has-text("このサービスを利用する")',
+                'input[value*="このサービスを利用する"]',
+            ], 8000)
+            if use_btn is not None:
+                np2 = page
+                try:
+                    with ctx.expect_page(timeout=8000) as pinfo2:
+                        use_btn.click()
+                    np2 = pinfo2.value
+                except Exception:  # noqa: BLE001  同一タブ遷移
+                    try:
+                        use_btn.click()
+                    except Exception:  # noqa: BLE001
+                        use_btn.evaluate("el => el.click()")
+                page = np2
+                page.wait_for_load_state("domcontentloaded")
+                page.wait_for_timeout(4000)
 
-            # ---- 個数を入力（数値入力欄を探して count を入れる） ----
-            try:
-                page.evaluate(
-                    """(n) => {
-                        const cand = [...document.querySelectorAll(
-                            'input[type=number], input[type=text], select')];
-                        for (const el of cand) {
-                            const k = (el.name||el.id||el.getAttribute('aria-label')||'');
-                            if (/個数|個口|数量|口数/.test(k)) {
-                                if (el.tagName==='SELECT') {
-                                    const o = [...el.options].find(o=>o.text.trim()==String(n));
-                                    if (o) el.value=o.value;
-                                } else { el.value=String(n); }
-                                el.dispatchEvent(new Event('input',{bubbles:true}));
-                                el.dispatchEvent(new Event('change',{bubbles:true}));
-                                return true;
-                            }
-                        }
-                        return false;
-                    }""", count)
-            except Exception:  # noqa: BLE001
-                pass
-
-            # ---- 集荷希望日を選択（select のオプションを部分一致） ----
+            # ====== ステップ1: 集荷の日時・個数を入力 ======
+            # 探索モードは妥当な既定値（最初の候補日・指定なし・1個）で埋めてから進める
+            jp_date = ""
             if date_label:
-                _select_option_by_text(page, [r"集荷.*日", r"希望.*日", r"日付"], date_label)
-            # ---- 集荷希望時間帯を選択 ----
-            if time_label:
-                _select_option_by_text(page, [r"時間", r"時間帯"], time_label)
+                m = _re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", date_label)
+                if m:
+                    y, mo, d = (int(x) for x in m.groups())
+                    jp_date = f"{y}年{mo}月{d}日"
+
+            if jp_date:
+                if not _select_by_name_text(page, "shukaYmd", jp_date):
+                    avail = _select_options(page, "shukaYmd")
+                    raise B2Error(f"集荷希望日 {jp_date} は選べません（候補: {avail}）。"
+                                  "別の日を選んでください: " + _shot(page, "pickup_nodate"))
+            elif explore:
+                _select_first_real(page, "shukaYmd")
+
+            tlabel = time_label or ("指定なし" if explore else "")
+            if tlabel:
+                _select_by_name_text(page, "shukaTimeAll", tlabel)
+
+            page.evaluate(
+                """(n) => { const el=document.querySelector('input[name=nimotsuTakkyu]');
+                   if(el){ el.value=String(n);
+                     el.dispatchEvent(new Event('input',{bubbles:true}));
+                     el.dispatchEvent(new Event('change',{bubbles:true})); } }""",
+                int(count) or 1)
 
             _emit(progress, 75, "集荷の日時・個数を入力中")
+            page.wait_for_timeout(800)
             _shot(page, "pickup_filled")
+
+            if explore:
+                # 「次へ」だけで 確認(step3) まで進めて各画面をダンプ（最終確定はしない）
+                _dump_page(page, "pickup_step1")
+                _click_named(page, "action:ShukaDataInputAction_doNext")
+                page.wait_for_timeout(3500)
+                info2 = _dump_page(page, "pickup_step2")
+                _click_named(page, "action:ShukaDataInputAction_doNext")
+                page.wait_for_timeout(3500)
+                info3 = _dump_page(page, "pickup_step3")
+                return {"ok": False,
+                        "message": f"[探索] step2={info2} / step3={info3}（確定はしていません）"}
 
             if dry_run:
                 return {"ok": False,
-                        "message": f"[確認] 個数{count}・{date_label} {time_label} を入力しました"
+                        "message": f"[確認] 個数{count}・{jp_date} {tlabel} を入力しました"
                                    "（依頼は送信していません）。画面を確認してください。"}
 
-            # ---- 確認 → 依頼送信 ----
-            for pat in [r"確認", r"次へ", r"進む"]:
-                b = page.get_by_role("button", name=_re.compile(pat))
-                if b.count() == 0:
-                    b = page.get_by_text(_re.compile(r"^\s*" + pat + r"\s*$"))
-                if b.count() > 0:
-                    try:
-                        b.first.click(timeout=5000)
-                    except Exception:  # noqa: BLE001
-                        b.first.click(force=True)
-                    page.wait_for_timeout(3000)
-                    break
+            # ====== ステップ1→2→3→確定 ======
+            if not _click_named(page, "action:ShukaDataInputAction_doNext"):
+                raise B2Error("「次へ」が見つかりません: " + _dump_page(page, "pickup_next1"))
+            page.wait_for_timeout(3500)
+            _shot(page, "pickup_step2")
+            # 住所選択ステップにも「次へ」があれば進む
+            _click_named(page, "action:ShukaDataInputAction_doNext")
+            page.wait_for_timeout(3500)
+            _shot(page, "pickup_step3")
 
-            sent = None
-            for pat in [r"集荷を?依頼", r"依頼する", r"申し込む", r"送信", r"確定"]:
-                b = page.get_by_role("button", name=_re.compile(pat))
-                if b.count() == 0:
-                    b = page.get_by_text(_re.compile(pat))
-                if b.count() > 0:
-                    sent = b.first
-                    break
-            if sent is None:
-                raise B2Error("集荷依頼の送信ボタンが見つかりません: " + _dump_page(page, "pickup_submit"))
-            try:
-                sent.click(timeout=6000)
-            except Exception:  # noqa: BLE001
-                sent.click(force=True)
+            # 確認画面 → 集荷依頼を確定（最終送信）
+            if not _click_pickup_confirm(page):
+                raise B2Error("集荷依頼の確定ボタンが見つかりません: " + _dump_page(page, "pickup_confirm"))
             page.wait_for_timeout(4000)
             _shot(page, "pickup_done")
             return {"ok": True,
-                    "message": f"集荷を依頼しました（個数{count}・{date_label} {time_label}）"}
+                    "message": f"集荷を依頼しました（宅急便{count}個・{jp_date} {tlabel}）"}
         finally:
             ctx.close()
             browser.close()
+
+
+def _select_by_name_text(page, name: str, text: str) -> bool:
+    """select[name=NAME] で、テキストに text を含むオプションを選ぶ。"""
+    try:
+        return bool(page.evaluate(
+            """(a) => { const [n,v]=a;
+                const s=document.querySelector("select[name='"+n+"']");
+                if(!s) return false;
+                const o=[...s.options].find(o=>o.text.includes(v));
+                if(o){ s.value=o.value; s.dispatchEvent(new Event('change',{bubbles:true})); return true; }
+                return false; }""", [name, text]))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _select_first_real(page, name: str) -> bool:
+    """select[name=NAME] の最初の実オプション(index1)を選ぶ。"""
+    try:
+        return bool(page.evaluate(
+            """(n) => { const s=document.querySelector("select[name='"+n+"']");
+                if(!s||s.options.length<2) return false;
+                s.selectedIndex=1; s.dispatchEvent(new Event('change',{bubbles:true})); return true; }""",
+            name))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _select_options(page, name: str) -> list:
+    """select[name=NAME] のオプション文字列一覧（エラーメッセージ用）。"""
+    try:
+        return page.evaluate(
+            """(n) => { const s=document.querySelector("select[name='"+n+"']");
+                return s ? [...s.options].map(o=>o.text.trim()) : []; }""", name)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _click_named(page, name: str) -> bool:
+    """name属性が完全一致する要素（image/submit/button等）をクリックする。"""
+    loc = page.locator("[name=\"" + name + "\"]").first
+    if loc.count() == 0:
+        return False
+    try:
+        loc.click(timeout=6000)
+    except Exception:  # noqa: BLE001
+        try:
+            loc.evaluate("el => el.click()")
+        except Exception:  # noqa: BLE001
+            return False
+    return True
+
+
+def _click_pickup_confirm(page) -> bool:
+    """確認画面で最終確定ボタン（確定）を押す。
+
+    実画面で確認したaction名 ShukaDataConfirmAction_doDecision を優先。
+    """
+    import re as _re
+    for nm in ['action:ShukaDataConfirmAction_doDecision',
+               'action:ShukaConfirmAction_doRegist',
+               'action:ShukaConfirmAction_doComplete']:
+        if page.locator("[name=\"" + nm + "\"]").count() > 0:
+            return _click_named(page, nm)
+    for pat in [r"この内容で.*依頼", r"集荷を依頼", r"依頼を確定", r"依頼する", r"^\s*確定\s*$", r"登録"]:
+        b = page.get_by_role("button", name=_re.compile(pat))
+        if b.count() == 0:
+            b = page.get_by_text(_re.compile(pat))
+        if b.count() > 0:
+            try:
+                b.first.click(timeout=6000)
+            except Exception:  # noqa: BLE001
+                b.first.click(force=True)
+            return True
+    return False
 
 
 def _select_option_by_text(page, label_patterns: list[str], value_text: str) -> bool:

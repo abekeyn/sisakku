@@ -37,8 +37,9 @@ TIME_CODES = {
 }
 CODE_TO_LABEL = {v: k for k, v in TIME_CODES.items()}
 CHANNEL_OPTS = {"LINE": "line", "コメフル": "komeful", "BASE": "base", "手入力": "manual"}
-# 集荷の時間帯（ヤマト集荷依頼の選択肢に合わせる。初回調整後に確定）
-PICKUP_TIMES = ["指定なし", "午前中", "12-14時", "14-16時", "16-18時", "18-21時"]
+# 集荷の時間帯（ヤマト集荷依頼ページの実オプションに一致させる）
+PICKUP_TIMES = ["指定なし", "13時まで", "14時から16時まで",
+                "16時から18時まで", "17時から18時30分まで"]
 
 # BASE発送通知の既定文面（○○ はお客様名に自動置換）
 DEFAULT_DISPATCH_MESSAGE = (
@@ -519,7 +520,10 @@ def view_home():
             "送り状を貼ったら、ヤマトに集荷を依頼します。日時を選ぶだけ。個数は自動で入ります")
 
     p1, p2, p3 = st.columns([2, 2, 1])
-    pdate = p1.date_input("集荷希望日", value=today(), key="pickup_date")
+    # ヤマトの集荷依頼は翌日以降（当日集荷は不可）。翌日を既定に、約1週間先まで
+    _tomorrow = today() + timedelta(days=1)
+    pdate = p1.date_input("集荷希望日", value=_tomorrow, min_value=_tomorrow,
+                          max_value=today() + timedelta(days=7), key="pickup_date")
     ptime = p2.selectbox("集荷時間帯", list(PICKUP_TIMES), key="pickup_time")
     default_cnt = int(db.get_setting("last_shipped_count") or 1)
     pcnt = p3.number_input("個数", min_value=1, value=max(1, default_cnt), step=1,
