@@ -275,6 +275,46 @@ def _start_agent(req_key, prog_key, res_key, title, payload_key=None, payload=No
     st.rerun()
 
 
+def _cloud_issue_and_print(csv_bytes: bytes) -> None:
+    """PC不要ルート：クラウドでB2発行→PDF取得→プリンタへメール送信して印刷。"""
+    from lib import b2_fetch, mailer
+    ok, why = mailer.is_configured()
+    if not ok:
+        st.error(f"メール印刷の設定が未完了です（{why}）。設定 → 印刷 で登録してください。")
+        return
+    with st.status("クラウドで発行・印刷しています…", expanded=True) as status:
+        bar = st.progress(0)
+
+        def cb(p, s):
+            try:
+                bar.progress(min(int(p), 100) / 100, text=s)
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            r = b2_fetch.issue_and_print(csv_bytes, progress=cb)
+        except Exception as e:  # noqa: BLE001
+            status.update(label="送り状の発行に失敗", state="error")
+            st.error(f"発行に失敗しました：{e}")
+            return
+        if not r.get("pdf"):
+            status.update(label="PDFを取得できませんでした", state="error")
+            st.warning((r.get("message", "") or "") + " PDFが取得できませんでした。")
+            return
+        cb(97, "プリンタへPDFを送信中")
+        mok, mmsg = mailer.send_pdf_to_printer(r["pdf"], filename="soujou.pdf")
+        if mok:
+            cb(100, "完了")
+            status.update(label="完了：プリンタへ送信しました", state="complete")
+            st.success(f"{r.get('message','')} ／ {mmsg}")
+        else:
+            status.update(label="メール送信に失敗", state="error")
+            st.error(mmsg)
+            st.download_button("送り状PDFをダウンロード", data=r["pdf"],
+                               file_name="soujou.pdf", mime="application/pdf",
+                               use_container_width=True)
+
+
 @st.fragment(run_every=2)
 def _agent_progress():
     """実行中はライブ進捗バー、完了後は結果を表示する（2秒ごとに自動更新）。"""
@@ -459,6 +499,12 @@ def view_home():
     pr = db.get_setting("b2_print_result")
     if pr and not pr.get("pending"):
         st.caption(("✓ " if pr.get("ok") else "⚠ ") + f'前回の発行・印刷（{pr.get("at","")}）：{pr.get("summary","")}')
+
+    # ☁ クラウドで発行して印刷（PC不要・Epsonメールプリント）
+    if st.button(f"☁ クラウドで発行して印刷（PC不要・{len(sel_ids)}件）",
+                 use_container_width=True, disabled=not sel_ids,
+                 help="このアプリ（クラウド）がB2で送り状を発行し、PDFをプリンタへメール送信して印刷します。PCは不要。EP-810AのEpson Connectメールプリント設定と、設定→印刷 の宛先登録が必要です。"):
+        _cloud_issue_and_print(_build_csv_for_selected())
 
     with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
         if st.button(f"ヤマトCSVを作成（{len(sel_ids)}件）", use_container_width=True,
@@ -656,8 +702,8 @@ def view_customers():
 # ⚙ 設定
 # ===========================================================================
 def view_settings():
-    tab_sender, tab_prod, tab_base, tab_data = st.tabs(
-        ["送り主", "商品", "BASE連携", "データ"]
+    tab_sender, tab_prod, tab_base, tab_print, tab_data = st.tabs(
+        ["送り主", "商品", "BASE連携", "印刷", "データ"]
     )
 
     with tab_sender:
@@ -750,6 +796,51 @@ def view_settings():
             if st.form_submit_button("保存", type="primary"):
                 db.set_setting("dispatch_message", msg)
                 st.success("保存しました。")
+
+    with tab_print:
+        from lib import mailer
+        ui.section("クラウド印刷（PC不要）",
+                   "送り状をクラウドで発行し、PDFをプリンタへメール送信して印刷します")
+        st.caption("EP-810A など Epson Connect『メールプリント』対応機が必要です。"
+                   "プリンタのメールプリント宛先を登録してください。")
+        cur = db.get_setting("print_email") or ""
+        pe = st.text_input("プリンタのメールプリント宛先",
+                           value=cur, placeholder="xxxxxxxx@print.epsonconnect.com")
+        if st.button("宛先を保存", type="primary"):
+            db.set_setting("print_email", pe.strip())
+            st.success("保存しました。")
+
+        ok, why = mailer.is_configured()
+        if ok:
+            st.success("メール印刷の設定はそろっています。")
+        else:
+            st.warning(f"あと少し：{why}")
+            st.caption("SMTP_HOST / SMTP_USER / SMTP_PASS は Streamlit Cloud の "
+                       "Secrets に登録してください（下の手順を参照）。")
+
+        if st.button("メール設定をテスト（自分宛に送信）"):
+            tok, tmsg = mailer.send_test()
+            (st.success if tok else st.error)(tmsg)
+
+        with st.expander("セットアップ手順（初回のみ）"):
+            st.markdown(
+                "1. **プリンタ側（Epson Connect）**：EP-810Aを Epson Connect に登録し、"
+                "『メールプリント』を有効化 → プリンタ専用アドレスを取得。"
+                "『受信を許可するアドレス』に送信元（例: Gmail）を追加。\n"
+                "2. **送信用メール**：Gmail等でアプリパスワードを発行。\n"
+                "3. **Streamlit Cloud の Secrets** に登録：\n"
+                "```\n"
+                "YAMATO_CUSTOMER_CODE = \"お客さまコード\"\n"
+                "YAMATO_PASSWORD = \"B2パスワード\"\n"
+                "SMTP_HOST = \"smtp.gmail.com\"\n"
+                "SMTP_PORT = \"587\"\n"
+                "SMTP_USER = \"あなたのGmail\"\n"
+                "SMTP_PASS = \"アプリパスワード\"\n"
+                "MAIL_FROM = \"あなたのGmail\"\n"
+                "```\n"
+                "4. 上の欄に**プリンタのメールプリント宛先**を入れて保存。\n"
+                "5. ホームのステップ3『☁ クラウドで発行して印刷』で実行。"
+            )
 
     with tab_data:
         ui.section("顧客データの取込", "ヤマトB2クラウドの発行済データCSVから顧客を登録します")
