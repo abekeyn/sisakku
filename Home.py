@@ -802,44 +802,50 @@ def view_settings():
         ui.section("クラウド印刷（PC不要）",
                    "送り状をクラウドで発行し、PDFをプリンタへメール送信して印刷します")
         st.caption("EP-810A など Epson Connect『メールプリント』対応機が必要です。"
-                   "プリンタのメールプリント宛先を登録してください。")
-        cur = db.get_setting("print_email") or ""
-        pe = st.text_input("プリンタのメールプリント宛先",
-                           value=cur, placeholder="xxxxxxxx@print.epsonconnect.com")
-        if st.button("宛先を保存", type="primary"):
-            db.set_setting("print_email", pe.strip())
-            st.success("保存しました。")
+                   "下の項目を入れて保存するだけ（Streamlit Cloudの設定は不要）。")
+
+        mc = db.get_setting("mail_config") or {}
+        with st.form("mail_form"):
+            pe = st.text_input("① プリンタのメールプリント宛先",
+                               value=db.get_setting("print_email") or "",
+                               placeholder="xxxxxxxx@print.epsonconnect.com")
+            muser = st.text_input("② 送信元メールアドレス（Gmail）",
+                                  value=mc.get("user", ""), placeholder="abekeyn@gmail.com")
+            mpass = st.text_input("③ アプリパスワード（Gmailで発行した16桁）",
+                                  value=mc.get("password", ""), type="password",
+                                  help="Googleアカウント→セキュリティ→アプリパスワードで作成")
+            with st.expander("詳細（通常は変更不要）"):
+                mhost = st.text_input("SMTPサーバー", value=mc.get("host", "smtp.gmail.com"))
+                mport = st.text_input("ポート", value=str(mc.get("port", "587")))
+                mfrom = st.text_input("差出人（空なら送信元と同じ）", value=mc.get("from", ""))
+            if st.form_submit_button("保存", type="primary"):
+                db.set_setting("print_email", pe.strip())
+                db.set_setting("mail_config", {
+                    "host": (mhost or "smtp.gmail.com").strip(),
+                    "port": (mport or "587").strip(),
+                    "user": muser.strip(), "password": mpass.strip(),
+                    "from": (mfrom or muser).strip(),
+                })
+                st.success("保存しました。")
 
         ok, why = mailer.is_configured()
         if ok:
-            st.success("メール印刷の設定はそろっています。")
+            st.success("✅ メール印刷の設定はそろっています。")
         else:
             st.warning(f"あと少し：{why}")
-            st.caption("SMTP_HOST / SMTP_USER / SMTP_PASS は Streamlit Cloud の "
-                       "Secrets に登録してください（下の手順を参照）。")
 
         if st.button("メール設定をテスト（自分宛に送信）"):
             tok, tmsg = mailer.send_test()
             (st.success if tok else st.error)(tmsg)
 
-        with st.expander("セットアップ手順（初回のみ）"):
+        with st.expander("Gmailアプリパスワードの作り方"):
             st.markdown(
-                "1. **プリンタ側（Epson Connect）**：EP-810Aを Epson Connect に登録し、"
-                "『メールプリント』を有効化 → プリンタ専用アドレスを取得。"
-                "『受信を許可するアドレス』に送信元（例: Gmail）を追加。\n"
-                "2. **送信用メール**：Gmail等でアプリパスワードを発行。\n"
-                "3. **Streamlit Cloud の Secrets** に登録：\n"
-                "```\n"
-                "YAMATO_CUSTOMER_CODE = \"お客さまコード\"\n"
-                "YAMATO_PASSWORD = \"B2パスワード\"\n"
-                "SMTP_HOST = \"smtp.gmail.com\"\n"
-                "SMTP_PORT = \"587\"\n"
-                "SMTP_USER = \"あなたのGmail\"\n"
-                "SMTP_PASS = \"アプリパスワード\"\n"
-                "MAIL_FROM = \"あなたのGmail\"\n"
-                "```\n"
-                "4. 上の欄に**プリンタのメールプリント宛先**を入れて保存。\n"
-                "5. ホームのステップ3『☁ クラウドで発行して印刷』で実行。"
+                "1. **2段階認証プロセスをオン**にする（Googleアカウント→セキュリティ）\n"
+                "2. **https://myaccount.google.com/apppasswords** を開く\n"
+                "3. 名前（例：kome-print）を入れて**作成** → 表示された**16桁**をコピー\n"
+                "4. 上の③に貼り付けて保存\n\n"
+                "※プリンタ側（Epson Connect）の『受信を許可するアドレス』に、"
+                "この②のGmailを必ず追加してください。"
             )
 
     with tab_data:

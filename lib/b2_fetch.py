@@ -21,12 +21,24 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import config, shipping
+from . import config, db, shipping
 
 ROOT = Path(__file__).resolve().parent.parent
 DEBUG_DIR = ROOT / "b2_debug"
 
 YBM_URL = "https://bmypage.kuronekoyamato.co.jp/"
+
+
+def _yamato_creds() -> tuple[str, str]:
+    """ヤマトのログイン情報を取得。設定(DB)を優先し、無ければ secrets.toml。
+
+    クラウドではsecrets.tomlが無いのでDB(yamato_config)から読む。
+    PCではsecrets.tomlがあるのでそちらを使える（DB未設定でも動く）。
+    """
+    cfg = db.get_setting("yamato_config") or {}
+    code = (cfg.get("code") or config.get_secret("YAMATO_CUSTOMER_CODE", "") or "").strip()
+    pw = (cfg.get("password") or config.get_secret("YAMATO_PASSWORD", "") or "").strip()
+    return code, pw
 
 
 class B2Error(Exception):
@@ -196,10 +208,9 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
     import re as _re
     import tempfile
 
-    code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
-    pw = config.get_secret("YAMATO_PASSWORD", "")
+    code, pw = _yamato_creds()
     if not (code and pw):
-        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml）")
+        raise B2Error("ヤマトのログイン情報が未設定です（設定→印刷 か secrets.toml）")
     pattern = pattern or config.get_secret("B2_IMPORT_PATTERN", "") or "基本レイアウト(csv,xls,xlsx)"
 
     from playwright.sync_api import sync_playwright
@@ -378,10 +389,9 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
     """
     import re as _re
 
-    code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
-    pw = config.get_secret("YAMATO_PASSWORD", "")
+    code, pw = _yamato_creds()
     if not (code and pw):
-        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml に YAMATO_CUSTOMER_CODE / YAMATO_PASSWORD を設定）")
+        raise B2Error("ヤマトのログイン情報が未設定です（設定→印刷 か secrets.toml）")
 
     from playwright.sync_api import sync_playwright
 
@@ -646,10 +656,9 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
     """
     import re as _re
 
-    code = config.get_secret("YAMATO_CUSTOMER_CODE", "")
-    pw = config.get_secret("YAMATO_PASSWORD", "")
+    code, pw = _yamato_creds()
     if not (code and pw):
-        raise B2Error("ヤマトのログイン情報が未設定です（secrets.toml）")
+        raise B2Error("ヤマトのログイン情報が未設定です（設定→印刷 か secrets.toml）")
 
     from playwright.sync_api import sync_playwright
 

@@ -21,7 +21,15 @@ from email.message import EmailMessage
 from . import config, db
 
 
+# DBの mail_config（設定画面で入力）優先、無ければ secrets を使う
+_DB_KEYMAP = {"SMTP_HOST": "host", "SMTP_PORT": "port", "SMTP_USER": "user",
+              "SMTP_PASS": "password", "MAIL_FROM": "from"}
+
+
 def _cfg(key: str, default: str = "") -> str:
+    mc = db.get_setting("mail_config") or {}
+    if key in _DB_KEYMAP and mc.get(_DB_KEYMAP[key]):
+        return str(mc[_DB_KEYMAP[key]]).strip()
     v = config.get_secret(key, default)
     return v.strip() if isinstance(v, str) else (v or default)
 
