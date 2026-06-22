@@ -500,11 +500,13 @@ def view_home():
     if pr and not pr.get("pending"):
         st.caption(("✓ " if pr.get("ok") else "⚠ ") + f'前回の発行・印刷（{pr.get("at","")}）：{pr.get("summary","")}')
 
-    # ☁ クラウドで発行して印刷（PC不要・Epsonメールプリント）
-    if st.button(f"☁ クラウドで発行して印刷（PC不要・{len(sel_ids)}件）",
-                 use_container_width=True, disabled=not sel_ids,
-                 help="このアプリ（クラウド）がB2で送り状を発行し、PDFをプリンタへメール送信して印刷します。PCは不要。EP-810AのEpson Connectメールプリント設定と、設定→印刷 の宛先登録が必要です。"):
-        _cloud_issue_and_print(_build_csv_for_selected())
+    # ☁ クラウドで発行して印刷（PC不要）：メール印刷の設定が済んでいる時だけ表示
+    from lib import mailer as _mailer
+    if _mailer.is_configured()[0]:
+        if st.button(f"☁ クラウドで発行して印刷（PC不要・{len(sel_ids)}件）",
+                     use_container_width=True, disabled=not sel_ids,
+                     help="このアプリ（クラウド）がB2で送り状を発行し、PDFをプリンタへメール送信して印刷します。PCは不要。"):
+            _cloud_issue_and_print(_build_csv_for_selected())
 
     with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
         if st.button(f"ヤマトCSVを作成（{len(sel_ids)}件）", use_container_width=True,
