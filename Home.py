@@ -325,6 +325,16 @@ def _agent_progress():
             st.session_state["agent_last"] = {"title": w["title"], "res": res}
             st.session_state.pop("agent_watch", None)
         else:
+            # 開始直後の1回だけ最上部へスクロールして進捗バーを見せる
+            if st.session_state.get("_scrolled_for") != w.get("res"):
+                st.session_state["_scrolled_for"] = w.get("res")
+                import streamlit.components.v1 as _components
+                _components.html(
+                    "<script>try{var d=window.parent.document;"
+                    "var m=d.querySelector('[data-testid=stMain]')||d.querySelector('section.main');"
+                    "if(m){m.scrollTo({top:0,behavior:'smooth'});}"
+                    "else{window.parent.scrollTo({top:0,behavior:'smooth'});}}"
+                    "catch(e){}</script>", height=0)
             prog = db.get_setting_live(w["prog"]) or {}
             pct = max(1, min(99, int(prog.get("pct", 1))))
             st.markdown(f'<div class="prog-title">{w["title"]}</div>',
