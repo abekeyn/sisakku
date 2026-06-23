@@ -14,6 +14,24 @@ from .yamato_header import YAMATO_HEADER
 # よく使う列のインデックス（YAMATO_HEADER の並び）
 COL = {name: i for i, name in enumerate(YAMATO_HEADER)}
 
+# 全角カタカナ → 半角カタカナ（B2の『略称カナ』は半角カナ必須）
+_KANA_Z = ("ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ"
+           "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホ"
+           "マミムメモヤユヨラリルレロワヲンァィゥェォャュョッー、。・「」゛゜　")
+_KANA_H = (["ｶﾞ", "ｷﾞ", "ｸﾞ", "ｹﾞ", "ｺﾞ", "ｻﾞ", "ｼﾞ", "ｽﾞ", "ｾﾞ", "ｿﾞ", "ﾀﾞ", "ﾁﾞ",
+            "ﾂﾞ", "ﾃﾞ", "ﾄﾞ", "ﾊﾞ", "ﾋﾞ", "ﾌﾞ", "ﾍﾞ", "ﾎﾞ", "ﾊﾟ", "ﾋﾟ", "ﾌﾟ",
+            "ﾍﾟ", "ﾎﾟ", "ｳﾞ"]
+           + list("ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎ"
+                  "ﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜｦﾝｧｨｩｪｫｬｭｮｯｰ､｡･｢｣ﾞﾟ "))
+_KANA_MAP = dict(zip(_KANA_Z, _KANA_H))
+
+
+def to_hankaku_kana(s: str) -> str:
+    """全角カタカナ・全角スペースを半角カナへ変換（B2の略称カナ欄用）。"""
+    if not s:
+        return ""
+    return "".join(_KANA_MAP.get(c, c) for c in s)
+
 
 def read_issued_csv(path_or_bytes) -> tuple[list[str], list[list[str]]]:
     """発行済データCSV(CP932)を読み、(header, rows) を返す。"""
@@ -82,7 +100,7 @@ def build_row(order, sender: dict) -> list[str]:
     put("お届け先住所（アパートマンション名）", order["address2"])
     put("お届け先会社・部門名１", order["company"])
     put("お届け先名", order["customer_name"])
-    put("お届け先名略称カナ", order["kana"])
+    put("お届け先名略称カナ", to_hankaku_kana(order["kana"]))
     put("敬称", order["honorific"] or "様")
 
     # ご依頼主（送り主）
@@ -91,7 +109,7 @@ def build_row(order, sender: dict) -> list[str]:
     put("ご依頼主住所", sender.get("address", ""))
     put("ご依頼主住所（アパートマンション名）", sender.get("address2", ""))
     put("ご依頼主名", sender.get("name", ""))
-    put("ご依頼主略称カナ", sender.get("kana", ""))
+    put("ご依頼主略称カナ", to_hankaku_kana(sender.get("kana", "")))
 
     # 品名（数量が2個以上なら個数を併記）。ヤマトの品名1は全角25文字までなので収める。
     name = order["yamato_name"] or ""

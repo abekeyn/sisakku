@@ -45,6 +45,58 @@ class B2Error(Exception):
     pass
 
 
+_FIX_KEYS = ("ください", "正しく", "必要です", "できない", "できません",
+             "超え", "範囲", "設定されて", "確認して", "指定して",
+             "入力して", "全角", "半角", "桁", "不正")
+
+
+def _read_b2_fix_reason(page) -> str:
+    """『編集』を押して編集画面に入り、赤字のエラー文（○○が正しくありません等）を読む。"""
+    # 全フレームから赤文字の短いテキストを集める（エラーメッセージは赤字で出る）
+    red_js = """() => {
+        const out=[];
+        document.querySelectorAll('*').forEach(el=>{
+            if(el.children.length>0) return;
+            const t=(el.textContent||'').trim();
+            if(t.length<4 || t.length>80) return;
+            const m=getComputedStyle(el).color.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+            if(m && +m[1]>=180 && +m[2]<=90 && +m[3]<=90 && !out.includes(t)) out.push(t);
+        });
+        return out.join('\\n');
+    }"""
+    try:
+        ebtn = page.locator(
+            'a:has-text("編集"), button:has-text("編集"), '
+            'input[type="button"][value*="編集"], input[type="image"][alt*="編集"]'
+        ).first
+        target = page
+        try:
+            with page.context.expect_page(timeout=6000) as pinfo:
+                ebtn.click(timeout=5000)
+            target = pinfo.value
+        except Exception:  # noqa: BLE001  同一タブ遷移 or クリック失敗
+            try:
+                ebtn.click(force=True)
+            except Exception:  # noqa: BLE001
+                ebtn.evaluate("el => el.click()")
+        target.wait_for_load_state("domcontentloaded")
+        target.wait_for_timeout(3000)
+        _shot(target, "fix_edit")
+        reds = []
+        for fr in target.frames:
+            try:
+                rt = fr.evaluate(red_js)
+            except Exception:  # noqa: BLE001
+                continue
+            for s in (rt or "").splitlines():
+                s = s.strip()
+                if s and s not in reds and any(k in s for k in _FIX_KEYS):
+                    reds.append(s)
+        return " / ".join(reds[:5])[:400]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _emit(progress, pct: int, step: str) -> None:
     """進捗コールバックを安全に呼ぶ（progressがNoneなら何もしない）。"""
     if progress:
@@ -296,14 +348,17 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             if "エラー" in body and "0" in (m.group(1) if m else "0"):
                 raise B2Error("取込みでエラーが出ました（パターン/列の対応を確認）: " + _shot(b2, "import_error"))
 
+            # 修正必要があれば中断（住所不備・運賃管理番号など）。dry_runより前に判定。
+            if _re.search(r"修正必要件数\s*([1-9]\d*)", body):
+                detail = _read_b2_fix_reason(b2)
+                raise B2Error(
+                    "B2取込みで修正が必要な行があります"
+                    + (f"：{detail}" if detail else "（住所・運賃管理番号・品名等）")
+                    + " " + _shot(b2, "need_fix"))
+
             if dry_run:
                 return {"issued": False, "pdf": None, "rows": rows,
                         "message": f"[テスト] 取込み確認OK（{rows}件・発行はしていません）"}
-
-            # 修正必要があれば中断（住所不備・運賃管理番号など）
-            if _re.search(r"修正必要件数\s*([1-9]\d*)", body):
-                raise B2Error("B2の取込みで修正が必要な行があります（住所・運賃管理番号・品名等）。"
-                              "画面で『No.』の赤いセルを確認してください: " + _shot(b2, "need_fix"))
 
             # 全行を選択（ヘッダーのチェックボックス／効かなければ行ごと）
             try:
