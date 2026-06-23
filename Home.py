@@ -476,13 +476,13 @@ def view_home():
         st.caption("送り状が必要な注文はありません（手渡しのみ）。")
     sel_ids = []
     for o in ship_orders:
-        c1, c2, c3 = st.columns([0.5, 5.2, 0.8])
+        c1, c2, c3 = st.columns([0.5, 4.7, 1.1])
         checked = c1.checkbox(" ", value=True, key=f'sel{o["id"]}',
                               label_visibility="collapsed")
         if checked:
             sel_ids.append(o["id"])
         c2.markdown(ui.order_card(o), unsafe_allow_html=True)
-        with c3.popover("⋮"):
+        with c3.popover("操作", use_container_width=True):
             if st.button("✎ 編集", key=f'e{o["id"]}', use_container_width=True):
                 dlg_edit_order(o)
             if o["status"] == "milled":
@@ -554,9 +554,9 @@ def view_home():
         ui.section("手渡しの注文（送り状なし）",
                    "直接お渡しする注文です。送り状の作成・印刷・配送はありません")
         for o in hand_orders:
-            h1, h2 = st.columns([6, 0.8])
+            h1, h2 = st.columns([6, 1.1])
             h1.markdown(ui.order_card(o), unsafe_allow_html=True)
-            with h2.popover("⋮"):
+            with h2.popover("操作", use_container_width=True):
                 if st.button("✎ 編集", key=f'he{o["id"]}', use_container_width=True):
                     dlg_edit_order(o)
                 if o["status"] == "milled":
@@ -663,13 +663,15 @@ def view_home():
 # ===========================================================================
 @st.fragment
 def view_orders():
-    f1, f2 = st.columns([2, 3])
-    flt = f1.segmented_control(
+    top1, top2 = st.columns([4, 1.3])
+    q = top1.text_input("検索", placeholder="🔍 お客様名・商品名で検索",
+                        key="oq", label_visibility="collapsed")
+    if top2.button("＋ 注文追加", use_container_width=True, type="primary"):
+        dlg_add_order()
+    flt = st.segmented_control(
         "状態", ["未出荷", "出荷済み", "すべて"], default="未出荷",
         key="oflt", label_visibility="collapsed",
     ) or "未出荷"
-    q = f2.text_input("検索", placeholder="🔍 お客様名・商品名で検索",
-                      key="oq", label_visibility="collapsed")
 
     orders = db.list_orders()
     if flt == "未出荷":
@@ -684,13 +686,31 @@ def view_orders():
 
     st.caption(f"{len(orders)} 件")
     for o in orders[:80]:
-        c1, c2 = st.columns([6, 0.8])
+        # 削除確認中はこの行を確認表示に置き換える
+        if st.session_state.get("del_order") == o["id"]:
+            st.markdown(
+                f'<div class="o-card" style="border-color:#E07A7A66">'
+                f'<span class="o-name">{o["customer_name"]} 様</span> の注文'
+                f'（{o["product_name"]} ×{o["qty"] or 1}）を削除しますか？</div>',
+                unsafe_allow_html=True)
+            d1, d2 = st.columns(2)
+            if d1.button("🗑 削除する", key=f'dy{o["id"]}', type="primary",
+                         use_container_width=True):
+                db.delete_order(o["id"])
+                st.session_state.pop("del_order", None)
+                st.rerun(scope="fragment")
+            if d2.button("やめる", key=f'dn{o["id"]}', use_container_width=True):
+                st.session_state.pop("del_order", None)
+                st.rerun(scope="fragment")
+            continue
+
+        c1, c2 = st.columns([6, 1])
         meta = f'<div class="o-meta">注文日 {o["order_date"] or "-"}／出荷予定 {o["ship_date"] or "-"}</div>'
         c1.markdown(ui.order_card(o, meta), unsafe_allow_html=True)
-        with c2.popover("⋮"):
+        with c2.popover("操作", use_container_width=True):
+            if st.button("✎ 編集", key=f'oe{o["id"]}', use_container_width=True):
+                dlg_edit_order(o)
             if o["status"] != "shipped":
-                if st.button("✎ 編集", key=f'oe{o["id"]}', use_container_width=True):
-                    dlg_edit_order(o)
                 if st.button("✓ 出荷済みにする", key=f'os{o["id"]}', use_container_width=True):
                     db.update_order_status([o["id"]], "shipped")
                     st.rerun(scope="fragment")
@@ -698,8 +718,8 @@ def view_orders():
                 if st.button("↩ 未出荷に戻す", key=f'ob{o["id"]}', use_container_width=True):
                     db.update_order_status([o["id"]], "pending")
                     st.rerun(scope="fragment")
-            if st.button("✕ 削除", key=f'od{o["id"]}', use_container_width=True):
-                db.delete_order(o["id"])
+            if st.button("🗑 削除", key=f'od{o["id"]}', use_container_width=True):
+                st.session_state["del_order"] = o["id"]
                 st.rerun(scope="fragment")
     if len(orders) > 80:
         st.caption(f"…ほか {len(orders)-80} 件（検索で絞り込めます）")
@@ -741,20 +761,35 @@ def view_customers():
 
     st.caption(f"{len(customers)} 名")
     for c in customers:
-        k1, k2 = st.columns([6, 0.8])
         n = order_counts.get(c["id"], 0)
+        if st.session_state.get("del_cust") == c["id"]:
+            st.markdown(
+                f'<div class="o-card" style="border-color:#E07A7A66">'
+                f'<span class="o-name">{c["name"]} 様</span> を削除しますか？</div>',
+                unsafe_allow_html=True)
+            d1, d2 = st.columns(2)
+            if d1.button("🗑 削除する", key=f'cdy{c["id"]}', type="primary",
+                         use_container_width=True):
+                db.delete_customer(c["id"])
+                st.session_state.pop("del_cust", None)
+                st.rerun(scope="fragment")
+            if d2.button("やめる", key=f'cdn{c["id"]}', use_container_width=True):
+                st.session_state.pop("del_cust", None)
+                st.rerun(scope="fragment")
+            continue
+        k1, k2 = st.columns([6, 1])
         k1.markdown(
             f'<div class="o-card"><span class="o-name">{c["name"]} 様</span>　'
             f'<span class="o-meta">注文 {n} 回</span>'
             f'<div class="o-meta">〒{c["zip"]}　{c["address"]}{c["address2"] or ""}　☎ {c["tel"]}</div></div>',
             unsafe_allow_html=True,
         )
-        with k2.popover("⋮"):
+        with k2.popover("操作", use_container_width=True):
             if st.button("✎ 編集", key=f'ce{c["id"]}', use_container_width=True):
                 dlg_customer(c)
             if n == 0:
-                if st.button("✕ 削除", key=f'cd{c["id"]}', use_container_width=True):
-                    db.delete_customer(c["id"])
+                if st.button("🗑 削除", key=f'cd{c["id"]}', use_container_width=True):
+                    st.session_state["del_cust"] = c["id"]
                     st.rerun(scope="fragment")
             else:
                 st.caption("注文履歴があるため削除不可")
