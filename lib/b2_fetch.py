@@ -780,15 +780,37 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
 
             if jp_date:
                 if not _select_by_name_text(page, "shukaYmd", jp_date):
-                    avail = _select_options(page, "shukaYmd")
-                    raise B2Error(f"集荷希望日 {jp_date} は選べません（候補: {avail}）。"
-                                  "別の日を選んでください: " + _shot(page, "pickup_nodate"))
+                    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                    avail = [o for o in _select_options(page, "shukaYmd")
+                             if "選択し" not in o and o.strip()]
+                    av = "、".join(avail) or "—"
+                    d0 = _dt.now(_tz(_td(hours=9))).date()
+                    today_jp = f"{d0.year}年{d0.month}月{d0.day}日"
+                    _shot(page, "pickup_nodate")
+                    if jp_date == today_jp:
+                        raise B2Error(
+                            f"本日（{jp_date}）の集荷は受付締切を過ぎているため指定できません。"
+                            f"翌日以降を選んでください。集荷可能日：{av}")
+                    raise B2Error(
+                        f"集荷希望日 {jp_date} は選べません。集荷可能日：{av}")
             elif explore:
                 _select_first_real(page, "shukaYmd")
 
             tlabel = time_label or ("指定なし" if explore else "")
             if tlabel:
-                _select_by_name_text(page, "shukaTimeAll", tlabel)
+                # 当日は時間帯が締切で絞られる。shukaTimeAll/Today の両方を試す
+                ok_t = (_select_by_name_text(page, "shukaTimeAll", tlabel)
+                        or _select_by_name_text(page, "shukaTimeToday", tlabel))
+                if not ok_t and not explore:
+                    bands, seen = [], set()
+                    for nm in ("shukaTimeAll", "shukaTimeToday"):
+                        for o in _select_options(page, nm):
+                            if "選択し" not in o and o.strip() and o not in seen:
+                                seen.add(o)
+                                bands.append(o)
+                    raise B2Error(
+                        f"集荷時間帯「{tlabel}」は選べません（受付締切を過ぎている可能性）。"
+                        f"選べる時間帯：{'、'.join(bands) or '—'}")
 
             page.evaluate(
                 """(n) => { const el=document.querySelector('input[name=nimotsuTakkyu]');

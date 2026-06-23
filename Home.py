@@ -578,14 +578,16 @@ def view_home():
             "送り状を貼ったら、ヤマトに集荷を依頼します。日時を選ぶだけ。個数は自動で入ります")
 
     p1, p2, p3 = st.columns([2, 2, 1])
-    # ヤマトの集荷依頼は翌日以降（当日集荷は不可）。翌日を既定に、約1週間先まで
-    _tomorrow = today() + timedelta(days=1)
-    pdate = p1.date_input("集荷希望日", value=_tomorrow, min_value=_tomorrow,
+    # 当日も選べる。実際に当日が可能かは時間帯の締切しだい（ヤマト側で判定）
+    pdate = p1.date_input("集荷希望日", value=today(), min_value=today(),
                           max_value=today() + timedelta(days=7), key="pickup_date")
     ptime = p2.selectbox("集荷時間帯", list(PICKUP_TIMES), key="pickup_time")
     default_cnt = int(db.get_setting("last_shipped_count") or 1)
     pcnt = p3.number_input("個数", min_value=1, value=max(1, default_cnt), step=1,
                            key="pickup_count")
+    if pdate == today():
+        st.caption("※当日の集荷は地域ごとの受付締切時刻まで。締切を過ぎていると当日は選べず、"
+                   "その場合は『翌日以降を選んでください』と表示されます（ヤマトの締切に従います）。")
 
     if st.button("集荷を依頼する", type="primary", use_container_width=True,
                  help="PCの常駐プログラムがヤマトに自動ログインして集荷依頼を送ります（PCが起動している必要があります）"):
