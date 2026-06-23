@@ -648,10 +648,12 @@ def order_card(order, extra_html: str = "") -> str:
     if ddate or tlabel:
         when = "　".join(x for x in (ddate, tlabel) if x)
         note += f'<div class="o-when">配達希望　{when}</div>'
+    hand = ('<span class="ch-badge" style="background:#7A5BBE">手渡し</span>'
+            if order.get("handover") else "")
     return (
         f'<div class="o-card">'
         f'<span class="o-name">{order["customer_name"]} 様</span>　'
-        f'{status_chip(order)} {channel_badge(order["channel"])}'
+        f'{status_chip(order)} {channel_badge(order["channel"])} {hand}'
         f'<div class="o-line">{order["product_name"]} × {qty} {kg_txt}</div>'
         f'<div class="o-meta">〒{order["zip"]}　{order["address"]}{order["address2"] or ""}</div>'
         f'{note}{extra_html}'

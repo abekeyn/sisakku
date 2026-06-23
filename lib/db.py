@@ -78,6 +78,7 @@ orders = Table(
     Column("external_id", String(128), default=""),
     Column("dispatch_ref", Text, default=""),
     Column("tracking_no", String(64), default=""),   # ヤマト伝票番号
+    Column("handover", Integer, default=0),           # 1=手渡し（送り状不要）
     Column("created_at", String(64)),
 )
 
@@ -132,6 +133,9 @@ def init_db() -> None:
     if "tracking_no" not in cols:
         with engine.begin() as c:
             c.execute(text("ALTER TABLE orders ADD COLUMN tracking_no VARCHAR(64) DEFAULT ''"))
+    if "handover" not in cols:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE orders ADD COLUMN handover INTEGER DEFAULT 0"))
     pcols = [c["name"] for c in _inspect(engine).get_columns("products")]
     if "price" not in pcols:
         with engine.begin() as c:
@@ -316,7 +320,7 @@ def upsert_product(data: dict) -> int:
 _ORDER_FIELDS = ("customer_id", "product_id", "qty", "channel", "order_date",
                  "ship_date", "delivery_date", "delivery_time",
                  "milling_kg_override", "note", "status", "external_id",
-                 "dispatch_ref", "tracking_no")
+                 "dispatch_ref", "tracking_no", "handover")
 
 
 def add_order(data: dict) -> int:
@@ -382,7 +386,7 @@ def update_order_status(order_ids: list[int], status: str) -> None:
 
 def update_order(order_id: int, data: dict) -> None:
     allowed = ("qty", "ship_date", "delivery_date", "delivery_time",
-               "milling_kg_override", "note", "status", "tracking_no")
+               "milling_kg_override", "note", "status", "tracking_no", "handover")
     vals = {f: data[f] for f in data if f in allowed}
     if not vals:
         return

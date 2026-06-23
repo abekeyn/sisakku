@@ -89,6 +89,8 @@ def dlg_add_order():
             ship = c4.date_input("出荷予定日", value=today())
             mill = st.number_input("複合の精米kg（複合商品のみ・1個あたり）", min_value=0.0, value=0.0, step=1.0)
             note = st.text_input("メモ（任意）")
+            handover = st.checkbox("手渡し（送り状・配送なし）", value=False,
+                                   help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
             if st.button("追加する", type="primary", use_container_width=True):
                 db.add_order({
                     "customer_id": cust_labels[sel], "product_id": prod_labels[prod],
@@ -98,6 +100,7 @@ def dlg_add_order():
                     "delivery_date": "", "delivery_time": "",
                     "milling_kg_override": mill if mill > 0 else None,
                     "note": note, "status": "pending", "external_id": "", "dispatch_ref": "",
+                    "handover": 1 if handover else 0,
                 })
                 st.rerun()
 
@@ -117,6 +120,8 @@ def dlg_add_order():
         o3, o4 = st.columns(2)
         ch_n = o3.selectbox("経路", list(CHANNEL_OPTS), key="nc")
         ship_n = o4.date_input("出荷予定日", value=today(), key="ns")
+        handover_n = st.checkbox("手渡し（送り状・配送なし）", value=False, key="nh",
+                                 help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
         if st.button("お客様＋注文を追加", type="primary", use_container_width=True, key="nbtn"):
             if not (name and zipc and addr and tel):
                 st.error("名前・郵便番号・住所・電話番号は必須です。")
@@ -133,6 +138,7 @@ def dlg_add_order():
                     "delivery_date": "", "delivery_time": "",
                     "milling_kg_override": None, "note": "",
                     "status": "pending", "external_id": "", "dispatch_ref": "",
+                    "handover": 1 if handover_n else 0,
                 })
                 st.rerun()
 
@@ -154,13 +160,15 @@ def dlg_edit_order(o):
         help="複合商品のとき、1個あたり何kg精米するか。入力すると精米量に反映されます。",
     ) if o["category"] == "複合" else None
     note = st.text_input("メモ", o["note"] or "")
+    handover = st.checkbox("手渡し（送り状・配送なし）", value=bool(o.get("handover")),
+                           help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
     b1, b2 = st.columns(2)
     if b1.button("保存", type="primary", use_container_width=True):
         db.update_order(o["id"], {
             "qty": int(qty), "ship_date": ship.strftime("%Y/%m/%d"),
             "delivery_date": ddate.strip(), "delivery_time": TIME_CODES[dtime],
             "milling_kg_override": (mill if (mill and mill > 0) else None) if o["category"] == "複合" else o["milling_kg_override"],
-            "note": note,
+            "note": note, "handover": 1 if handover else 0,
         })
         st.rerun()
     if b2.button("✕ この注文を削除", use_container_width=True):
@@ -459,9 +467,15 @@ def view_home():
         st.caption("発送待ちの注文はありません。")
         return
 
-    st.caption("出荷する注文（チェックを外すと今回の送り状から除外されます）")
+    ship_orders = [o for o in unshipped if not o.get("handover")]
+    hand_orders = [o for o in unshipped if o.get("handover")]
+
+    if ship_orders:
+        st.caption("出荷する注文（チェックを外すと今回の送り状から除外されます）")
+    else:
+        st.caption("送り状が必要な注文はありません（手渡しのみ）。")
     sel_ids = []
-    for o in unshipped:
+    for o in ship_orders:
         c1, c2, c3 = st.columns([0.5, 5.2, 0.8])
         checked = c1.checkbox(" ", value=True, key=f'sel{o["id"]}',
                               label_visibility="collapsed")
@@ -534,6 +548,40 @@ def view_home():
                 file_name=exporter.make_filename(), mime="text/csv",
                 use_container_width=True,
             )
+
+    # ===== 手渡しの注文（送り状なし）=====
+    if hand_orders:
+        ui.section("手渡しの注文（送り状なし）",
+                   "直接お渡しする注文です。送り状の作成・印刷・配送はありません")
+        for o in hand_orders:
+            h1, h2 = st.columns([6, 0.8])
+            h1.markdown(ui.order_card(o), unsafe_allow_html=True)
+            with h2.popover("⋮"):
+                if st.button("✎ 編集", key=f'he{o["id"]}', use_container_width=True):
+                    dlg_edit_order(o)
+                if o["status"] == "milled":
+                    if st.button("↩ 精米待ちに戻す", key=f'hum{o["id"]}',
+                                 use_container_width=True):
+                        db.update_order_status([o["id"]], "pending")
+                        st.rerun(scope="fragment")
+        if st.button(f"🤝 手渡しで完了にする（{len(hand_orders)}件）",
+                     use_container_width=True,
+                     help="送り状なしで出荷済みにします。BASEの注文は発送完了も送ります。"):
+            msgs, komeful_flag = [], False
+            for o in hand_orders:
+                if o["channel"] == "base":
+                    ok, msg = base_api.dispatch_order(o)
+                    msgs.append(("✓ " if ok else "⚠ ") + f'{o["customer_name"]}様：{msg}')
+                elif o["channel"] == "komeful":
+                    komeful_flag = True
+            db.update_order_status([o["id"] for o in hand_orders], "shipped")
+            st.success(f"{len(hand_orders)} 件を手渡し完了（出荷済み）にしました。")
+            for m in msgs:
+                st.write(m)
+            if komeful_flag:
+                st.link_button("コメフルの出荷処理を開く", komeful.SELLER_URL,
+                               use_container_width=True)
+            st.rerun(scope="fragment")
 
     # ======= STEP 4｜出荷を確定する =======
     ui.step(4, "出荷を確定する",
