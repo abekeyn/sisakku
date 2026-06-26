@@ -2,17 +2,26 @@
 """初期データ取込：ヤマト発行済データCSV → 顧客マスタ・送り主・過去注文。"""
 from __future__ import annotations
 
-from datetime import date
+import re
 
 from . import db, logic, yamato
+
+
+def _ship_key(s: str):
+    """出荷予定日を並べ替え用のタプルに（古い順ソート用）。"""
+    m = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", s or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
 
 
 def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
     """発行済データCSVを取り込む。
 
-    - お届け先 → 顧客マスタ（name+address で重複排除）
+    - お届け先 → 顧客マスタ（**お名前で照合し、同一名は最新の住所に更新**）
     - ご依頼主 → 送り主設定（最初の1件を採用）
     - 各行 → 過去注文（status=shipped）として記録（import_history=True時）
+
+    出荷予定日の古い順に処理するので、同じお名前の発送が複数あると
+    最後（＝最新）の住所・連絡先で顧客マスタが上書きされる。
 
     returns {"customers": n, "orders": n, "sender": bool}
     """
@@ -22,6 +31,14 @@ def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
 
     def g(row, name):
         return yamato.col(row, header, name).strip()
+
+    # 古い順に処理 → 同一名は最新の住所で上書きされる
+    rows = sorted(rows, key=lambda r: _ship_key(yamato.col(r, header, "出荷予定日")))
+
+    # 既存顧客を「正規化したお名前」で索引（名前で照合するため）
+    by_name = {}
+    for c in db.list_customers():
+        by_name.setdefault(logic.normalize_text(c["name"]), c["id"])
 
     sender_set = False
     n_cust = 0
@@ -57,9 +74,14 @@ def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
             "company": g(row, "お届け先会社・部門名１"),
             "honorific": g(row, "敬称") or "様",
         }
-        existed = db.find_customer(name, address) is not None
-        cid = db.upsert_customer(cust)
-        if not existed:
+        norm = logic.normalize_text(name)
+        if norm in by_name:
+            cid = by_name[norm]
+            # 同一名は最新の住所等で更新（空欄では既存を消さない）
+            db.update_customer(cid, {k: v for k, v in cust.items() if v})
+        else:
+            cid = db.upsert_customer(cust)
+            by_name[norm] = cid
             n_cust += 1
 
         if import_history:

@@ -323,6 +323,24 @@ def _cloud_issue_and_print(csv_bytes: bytes) -> None:
                                use_container_width=True)
 
 
+def _auto_sync_history():
+    """ログイン後、1日1回だけヤマト発送履歴の自動取り込みをPCに指示する。
+
+    実際の取得はPC常駐エージェントが行う（PC起動＋ヤマト利用時間が必要）。
+    重い処理なので1日1回に制限。結果は顧客タブ等で確認できる。
+    """
+    if st.session_state.get("_hist_auto_done"):
+        return
+    st.session_state["_hist_auto_done"] = True
+    if db.get_setting("b2_history_auto_date") == today().isoformat():
+        return  # 今日はもう自動取得を指示済み
+    db.set_setting("b2_history_auto_date", today().isoformat())
+    db.set_setting("b2_history_result", {"pending": True})
+    db.set_setting("b2_history_progress", {"pct": 1, "step": "ログイン時の自動取得"})
+    db.set_setting("b2_history_request", now_iso())
+    st.toast("発送履歴をヤマトから自動取得します（PC起動時・数分で顧客に反映）", icon="📥")
+
+
 @st.fragment(run_every=2)
 def _agent_progress():
     """実行中はライブ進捗バー、完了後は結果を表示する（2秒ごとに自動更新）。"""
@@ -1204,6 +1222,7 @@ def view_analytics():
 # ルーティング
 # ===========================================================================
 view = ui.render_nav()
+_auto_sync_history()
 _agent_progress()
 if view == "ホーム":
     view_home()
