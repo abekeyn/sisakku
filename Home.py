@@ -969,6 +969,22 @@ def view_settings():
             )
 
     with tab_data:
+        ui.section("ホーム画面に追加（アプリのように使う）",
+                   "スマホのホーム画面に置くと、専用アイコンから全画面で起動できます")
+        with st.expander("追加のしかた（iPhone / Android）"):
+            st.markdown(
+                "**iPhone（Safari）**\n"
+                "1. このページを **Safari** で開く（Chrome等では不可）\n"
+                "2. 下の **共有ボタン（□に↑）** をタップ\n"
+                "3. **「ホーム画面に追加」** を選ぶ → 右上の **追加**\n\n"
+                "**Android（Chrome）**\n"
+                "1. このページを **Chrome** で開く\n"
+                "2. 右上の **︙（メニュー）** をタップ\n"
+                "3. **「ホーム画面に追加」／「アプリをインストール」** を選ぶ\n\n"
+                "追加後はアイコンから起動すると、アドレスバーのない全画面（濃紺）で開きます。"
+            )
+
+        st.divider()
         ui.section("顧客データの取込", "ヤマトB2クラウドの発行済データCSVから顧客を登録します")
         up = st.file_uploader("発行済データCSV", type=["csv"], key="reimport")
         hist = st.checkbox("過去の注文も記録する（出荷済み扱い）", value=False)

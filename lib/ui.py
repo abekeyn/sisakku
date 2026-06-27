@@ -9,10 +9,12 @@
 from __future__ import annotations
 
 import base64
+import json
 from functools import lru_cache
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from . import config
 
@@ -342,6 +344,118 @@ def inject_css() -> None:
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+# ===========================================================================
+# PWA（ホーム画面に追加でアプリのように使う）
+# ---------------------------------------------------------------------------
+# Streamlit Community Cloud は配信HTMLの <head> を差し替えられず、ルート直下に
+# manifest.json / service-worker.js も置けない。そこで「同一オリジンの極小
+# コンポーネントiframe」からJSで window.parent.document.head に必要なタグ
+# （manifest〔data URI〕・apple-touch-icon・各metaカラー）を流し込む。
+# st.markdown / st.html の本文HTMLはサニタイズで <link rel=manifest> や
+# onerror が落ちることがあるため、確実に実行できるコンポーネント経由にした。
+# Service Worker（オフライン/プッシュ）は現ホスティングでは不可（DEPLOY.md参照）。
+# ===========================================================================
+PWA_NAME = "精米・発送管理｜阿部農園"
+PWA_SHORT = "精米・発送"
+
+
+@lru_cache(maxsize=1)
+def _pwa_config() -> str:
+    """注入用の設定（アイコン・manifest雛形・metaタグ）をJSON文字列で返す。
+
+    start_url / scope は配信先URLが起動時まで不明なので、ここでは入れず
+    クライアント側JSで実ページの絶対URLから補う（Android Chromeの
+    インストール要件＝同一オリジンのstart_urlを満たすため）。
+    """
+    icon = _logo_b64("icon.png")
+    if not icon:
+        return ""
+    icon_uri = f"data:image/png;base64,{icon}"
+    cfg = {
+        "icon": icon_uri,
+        "manifest": {
+            "name": PWA_NAME,
+            "short_name": PWA_SHORT,
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": NAVY_DEEP,
+            "theme_color": NAVY,
+            "icons": [
+                {"src": icon_uri, "sizes": "192x192", "type": "image/png",
+                 "purpose": "any maskable"},
+                {"src": icon_uri, "sizes": "512x512", "type": "image/png",
+                 "purpose": "any maskable"},
+            ],
+        },
+        "meta": [
+            ["apple-mobile-web-app-capable", "yes"],
+            ["mobile-web-app-capable", "yes"],
+            ["apple-mobile-web-app-status-bar-style", "black-translucent"],
+            ["apple-mobile-web-app-title", PWA_SHORT],
+            ["application-name", PWA_SHORT],
+            ["theme-color", NAVY],
+        ],
+    }
+    return json.dumps(cfg, ensure_ascii=False)
+
+
+def _inject_pwa() -> None:
+    """ホーム画面追加用のmeta/manifest/アイコンを親ドキュメントの<head>へ注入。"""
+    cfg = _pwa_config()
+    if not cfg:
+        return
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            var win = window.parent || window;
+            var doc = win.document || document;
+            var loc = win.location || window.location;
+            var head = doc.head || doc.getElementsByTagName('head')[0];
+            if (!head || head.querySelector('[data-pwa="1"]')) return;
+            var cfg = __CFG__;
+            function add(tag, attrs) {
+              var el = doc.createElement(tag);
+              for (var k in attrs) {
+                if (attrs.hasOwnProperty(k)) el.setAttribute(k, attrs[k]);
+              }
+              el.setAttribute('data-pwa', '1');
+              head.appendChild(el);
+            }
+            // manifestは親オリジンのblobとして配信し、start_url/scopeは
+            // 実ページの絶対URLにする（data:URIだと相対解決が壊れるため）。
+            var m = cfg.manifest;
+            var base = loc.origin + loc.pathname;
+            m.start_url = base;
+            m.scope = base;
+            var href;
+            try {
+              var BlobC = win.Blob || Blob;
+              var URLC = win.URL || URL;
+              var blob = new BlobC([JSON.stringify(m)],
+                                   {type: 'application/manifest+json'});
+              href = URLC.createObjectURL(blob);
+            } catch (e2) {
+              // blob不可の環境ではdata:URIにフォールバック
+              href = 'data:application/manifest+json;charset=utf-8,' +
+                     encodeURIComponent(JSON.stringify(m));
+            }
+            add('link', {rel: 'manifest', href: href});
+            add('link', {rel: 'apple-touch-icon', href: cfg.icon});
+            add('link', {rel: 'icon', type: 'image/png', href: cfg.icon});
+            cfg.meta.forEach(function (p) {
+              add('meta', {name: p[0], content: p[1]});
+            });
+          } catch (e) { /* クロスオリジン等で失敗しても本体には影響させない */ }
+        })();
+        </script>
+        """.replace("__CFG__", cfg),
+        height=0,
+        width=0,
     )
 
 
@@ -760,6 +874,7 @@ def setup_page() -> None:
         initial_sidebar_state="collapsed",
     )
     inject_css()
+    _inject_pwa()
     loading_gate()
     require_login()
     render_header()
