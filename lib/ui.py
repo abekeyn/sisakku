@@ -370,7 +370,8 @@ def _pwa_config() -> str:
     クライアント側JSで実ページの絶対URLから補う（Android Chromeの
     インストール要件＝同一オリジンのstart_urlを満たすため）。
     """
-    icon = _logo_b64("icon.png")
+    # 濃紺背景に白ロゴの専用アイコン（app_icon.png）。無ければicon.pngに退避。
+    icon = _logo_b64("app_icon.png") or _logo_b64("icon.png")
     if not icon:
         return ""
     icon_uri = f"data:image/png;base64,{icon}"
@@ -383,11 +384,13 @@ def _pwa_config() -> str:
             "orientation": "portrait",
             "background_color": NAVY_DEEP,
             "theme_color": NAVY,
+            # 横長ロゴ（郡山/福島の文字が端にある）が円形マスクで切れないよう
+            # maskableは付けず "any" のみにする。
             "icons": [
                 {"src": icon_uri, "sizes": "192x192", "type": "image/png",
-                 "purpose": "any maskable"},
+                 "purpose": "any"},
                 {"src": icon_uri, "sizes": "512x512", "type": "image/png",
-                 "purpose": "any maskable"},
+                 "purpose": "any"},
             ],
         },
         "meta": [
