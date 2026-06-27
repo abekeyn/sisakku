@@ -418,6 +418,23 @@ def _inject_pwa() -> None:
             var head = doc.head || doc.getElementsByTagName('head')[0];
             if (!head || head.querySelector('[data-pwa="1"]')) return;
             var cfg = __CFG__;
+            // Streamlit が標準で持つ manifest / アイコン / テーマ色を撤去する。
+            // manifest は仕様上「最初の1枚」だけが採用されるため、Streamlit製を
+            // 残すとアプリ名が "streamlit"・アイコンも純正のままになる。
+            var kill = 'link[rel="manifest"],link[rel~="icon"],' +
+                       'link[rel="apple-touch-icon"],' +
+                       'link[rel="apple-touch-icon-precomposed"],' +
+                       'link[rel="shortcut icon"],meta[name="theme-color"],' +
+                       'meta[name="apple-mobile-web-app-title"],' +
+                       'meta[name="apple-mobile-web-app-capable"],' +
+                       'meta[name="mobile-web-app-capable"],' +
+                       'meta[name="application-name"]';
+            var old = doc.querySelectorAll(kill);
+            for (var i = 0; i < old.length; i++) {
+              if (!old[i].hasAttribute('data-pwa')) {
+                old[i].parentNode.removeChild(old[i]);
+              }
+            }
             function add(tag, attrs) {
               var el = doc.createElement(tag);
               for (var k in attrs) {
