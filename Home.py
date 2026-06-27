@@ -508,13 +508,14 @@ def view_home():
                     db.update_order_status([o["id"]], "pending")
                     st.rerun(scope="fragment")
 
-    # 出荷オプション（通常はそのままでOK。必要なときだけ変更）
-    with st.expander("出荷日・お届け時間帯を変更（通常は変更不要）"):
-        st.caption("「出荷日」＝送り状の出荷予定日（ヤマトに必須）。"
-                   "「お届け時間帯」＝お客様への配達指定で送り状に印字されます"
+    # お届け日時の指定（任意）。出荷予定日は自動で今日になる
+    with st.expander("お届け日時を指定する（任意・配達日時の指定）"):
+        st.caption("お客様への配達希望日・時間帯です（送り状に印字）。"
+                   "指定しなければ各注文の設定のまま。出荷予定日は自動で今日になります"
                    "（※ステップ5の“集荷時間帯＝ヤマトが取りに来る時間”とは別物です）。")
         o1, o2 = st.columns(2)
-        ship_d = o1.date_input("出荷日（送り状の出荷予定日）", value=today(), key="bulk_ship")
+        deliv_d = o1.date_input("お届け日（配達指定日）", value=None,
+                                min_value=today(), key="bulk_deliv")
         time_sel = o2.selectbox("お届け時間帯（配達指定）",
                                 ["注文の指定どおり"] + list(TIME_CODES), key="bulk_time")
 
@@ -525,7 +526,9 @@ def view_home():
     def _build_csv_for_selected():
         targets = [o for o in unshipped if o["id"] in set(sel_ids)]
         for o in targets:
-            upd = {"ship_date": ship_d.strftime("%Y/%m/%d")}
+            upd = {"ship_date": today().strftime("%Y/%m/%d")}  # 出荷予定日は今日
+            if deliv_d:
+                upd["delivery_date"] = deliv_d.strftime("%Y/%m/%d")
             if time_sel != "注文の指定どおり":
                 upd["delivery_time"] = TIME_CODES[time_sel]
             db.update_order(o["id"], upd)
