@@ -508,10 +508,15 @@ def view_home():
                     db.update_order_status([o["id"]], "pending")
                     st.rerun(scope="fragment")
 
-    # 出荷オプション
-    o1, o2 = st.columns(2)
-    ship_d = o1.date_input("出荷日", value=today(), key="bulk_ship")
-    time_sel = o2.selectbox("時間帯", ["注文の指定どおり"] + list(TIME_CODES), key="bulk_time")
+    # 出荷オプション（通常はそのままでOK。必要なときだけ変更）
+    with st.expander("出荷日・お届け時間帯を変更（通常は変更不要）"):
+        st.caption("「出荷日」＝送り状の出荷予定日（ヤマトに必須）。"
+                   "「お届け時間帯」＝お客様への配達指定で送り状に印字されます"
+                   "（※ステップ5の“集荷時間帯＝ヤマトが取りに来る時間”とは別物です）。")
+        o1, o2 = st.columns(2)
+        ship_d = o1.date_input("出荷日（送り状の出荷予定日）", value=today(), key="bulk_ship")
+        time_sel = o2.selectbox("お届け時間帯（配達指定）",
+                                ["注文の指定どおり"] + list(TIME_CODES), key="bulk_time")
 
     sender = db.get_setting("sender") or {}
     if not sender.get("name"):
