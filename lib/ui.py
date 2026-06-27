@@ -412,7 +412,14 @@ def _inject_pwa() -> None:
         <script>
         (function () {
           try {
-            var win = window.parent || window;
+            // Streamlit Community Cloud では本体アプリ自体が入れ子iframe
+            // （title="streamlitApp"）の中で動く。Chromeがmanifestを読むのは
+            // 最上位のページなので、同一オリジンで辿れる限り上位へ登る。
+            var win = window;
+            while (win.parent && win.parent !== win) {
+              try { void win.parent.document; win = win.parent; }
+              catch (e) { break; }  // クロスオリジンで上がれなくなったら止める
+            }
             var doc = win.document || document;
             var loc = win.location || window.location;
             var head = doc.head || doc.getElementsByTagName('head')[0];
