@@ -680,13 +680,6 @@ def view_home():
         icon = "✓" if pres.get("ok") else "⚠"
         st.caption(f'{icon} 前回の集荷依頼（{pres.get("at","")}）：{pres.get("summary","")}')
 
-    with st.expander("初回の調整（集荷ページの構造を調べる）"):
-        st.caption("ヤマトの集荷依頼ページは初回だけ構造の確認が必要です。下のボタンで調査用の情報を保存します（依頼は送りません）。")
-        if st.button("集荷ページを調べる（送信しない）", use_container_width=True):
-            _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
-                         "集荷ページの調査", payload_key="b2_pickup_payload",
-                         payload={"explore": True})
-
 
 # ===========================================================================
 # 📋 注文（一覧・検索・編集）
