@@ -158,7 +158,8 @@ def _run_b2_pickup() -> None:
     try:
         r = b2_fetch.request_pickup(
             date_label=p.get("date", ""), time_label=p.get("time", ""),
-            count=int(p.get("count", 1)), dry_run=bool(p.get("dry_run")),
+            count=int(p.get("count", 1)), note=p.get("note", ""),
+            dry_run=bool(p.get("dry_run")),
             explore=bool(p.get("explore")), progress=prog,
         )
         result = {"ok": bool(r.get("ok")), "at": started, "summary": r.get("message", "")}

@@ -683,10 +683,12 @@ def _dump_page(page, name: str) -> str:
                     options: [...s.options].map(o => o.text.trim()).slice(0,40),
                 }));
                 const inputs = q('input').map(i => ({type:i.type, label:lab(i)}));
+                const tareas = q('textarea').map(t => ({label: lab(t),
+                    maxlength: t.getAttribute('maxlength')||''}));
                 const btns = [...q('button'), ...q('a'), ...q('input[type=button]'),
                               ...q('input[type=submit]')]
                     .map(b => (b.value||b.innerText||'').trim()).filter(Boolean).slice(0,60);
-                return {selects: sels, inputs: inputs, buttons: btns};
+                return {selects: sels, inputs: inputs, textareas: tareas, buttons: btns};
             }"""
         )
         import json as _json
@@ -698,7 +700,7 @@ def _dump_page(page, name: str) -> str:
 
 
 def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
-                   headful: bool = False, dry_run: bool = False,
+                   note: str = "", headful: bool = False, dry_run: bool = False,
                    explore: bool = False, progress=None) -> dict:
     """ヤマトビジネスメンバーズの集荷依頼を自動で行う。
 
@@ -818,6 +820,15 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                      el.dispatchEvent(new Event('input',{bubbles:true}));
                      el.dispatchEvent(new Event('change',{bubbles:true})); } }""",
                 int(count) or 1)
+
+            # 集荷依頼に関するご要望（任意）
+            if note:
+                page.evaluate(
+                    """(t) => { const el=document.querySelector('textarea[name=shukaComment]');
+                       if(el){ el.value=t;
+                         el.dispatchEvent(new Event('input',{bubbles:true}));
+                         el.dispatchEvent(new Event('change',{bubbles:true})); } }""",
+                    note)
 
             _emit(progress, 75, "集荷の日時・個数を入力中")
             page.wait_for_timeout(800)

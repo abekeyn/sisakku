@@ -662,13 +662,17 @@ def view_home():
     if pdate == today():
         st.caption("※当日の集荷は地域ごとの受付締切時刻まで。締切を過ぎていると当日は選べず、"
                    "その場合は『翌日以降を選んでください』と表示されます（ヤマトの締切に従います）。")
+    pnote = st.text_input("集荷依頼に関するご要望（任意）", key="pickup_note",
+                          placeholder="例：インターホンで2階を呼んでください",
+                          help="ヤマトの集荷依頼フォームの『ご要望』欄にそのまま入力されます")
 
     if st.button("集荷を依頼する", type="primary", use_container_width=True,
                  help="PCの常駐プログラムがヤマトに自動ログインして集荷依頼を送ります（PCが起動している必要があります）"):
         _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
                      "集荷依頼", payload_key="b2_pickup_payload", payload={
                          "date": pdate.strftime("%Y/%m/%d"), "time": ptime,
-                         "count": int(pcnt), "dry_run": False, "explore": False,
+                         "count": int(pcnt), "note": pnote.strip(),
+                         "dry_run": False, "explore": False,
                      })
 
     pres = db.get_setting("b2_pickup_result")
