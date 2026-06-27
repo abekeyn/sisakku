@@ -382,7 +382,9 @@ def _pwa_config() -> str:
             "short_name": PWA_SHORT,
             "display": "standalone",
             "orientation": "portrait",
-            "background_color": NAVY_DEEP,
+            # 起動時スプラッシュの背景色。アイコン画像の紺(#1B1D3E)と完全に
+            # 揃え、ロゴ周りの四角い色ムラを消して「紺に白ロゴが浮かぶ」絵にする。
+            "background_color": NAVY,
             "theme_color": NAVY,
             # 横長ロゴ（郡山/福島の文字が端にある）が円形マスクで切れないよう
             # maskableは付けず "any" のみにする。
