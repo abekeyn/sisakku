@@ -676,21 +676,26 @@ def _login_transition() -> None:
             display: flex; flex-direction: column;
             align-items: center; justify-content: center; gap: 20px;
             background: radial-gradient(1200px 800px at 50% 32%, #2a2c5a 0%, #1b1d3e 46%, #131228 100%);
-            opacity: 0; visibility: hidden; transition: opacity .45s ease;
+            opacity: 0; visibility: hidden;
+            /* 消えるときだけゆっくり（ホームがふわっと出る）。出るときは即時で
+               全面を覆い、ログイン画面が背後に透けないようにする。 */
+            transition: opacity .35s ease, visibility 0s linear .35s;
         }
-        /* Streamlitが実行中（再実行の計算中）だけオーバーレイを出す */
-        body:has([data-testid="stStatusWidget"]) #login-ov { opacity: 1; visibility: visible; }
+        /* Streamlitが実行中（再実行の計算中）だけオーバーレイを出す。即・不透明で覆う */
+        body:has([data-testid="stStatusWidget"]) #login-ov {
+            opacity: 1; visibility: visible; transition: none;
+        }
         #login-ov img {
             height: 104px;
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
-            animation: lovP 1.5s ease-in-out infinite;
+            animation: lovP 1.15s ease-in-out infinite;
         }
         @keyframes lovP { 0%,100%{opacity:.82;transform:scale(1)} 50%{opacity:1;transform:scale(1.045)} }
         #login-ov .dia {
             width: 11px; height: 11px;
             background: linear-gradient(135deg, #C9A24B, #E9D18C);
             border-radius: 2px; box-shadow: 0 0 10px rgba(201,162,75,.6);
-            animation: lovT 1.25s ease-in-out infinite;
+            animation: lovT 0.9s ease-in-out infinite;
         }
         @keyframes lovT { 0%{transform:rotate(45deg) scale(1)} 50%{transform:rotate(225deg) scale(.7)} 100%{transform:rotate(405deg) scale(1)} }
         #login-ov .txt { color: rgba(242,237,224,.7); font-size: .82rem; letter-spacing: .35em; padding-left: .35em; }
@@ -811,7 +816,7 @@ _BOOT_TEMPLATE = """
         .boot img {
             height: 104px;
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
-            animation: bootPulse 1.5s ease-in-out infinite;
+            animation: bootPulse 1.15s ease-in-out infinite;
         }
         @keyframes bootPulse {
             0%,100% { opacity: .82; transform: scale(1); }
@@ -821,7 +826,7 @@ _BOOT_TEMPLATE = """
             width: 11px; height: 11px;
             background: linear-gradient(135deg, #C9A24B, #E9D18C);
             border-radius: 2px; box-shadow: 0 0 10px rgba(201,162,75,.6);
-            animation: bootTurn 1.25s ease-in-out infinite;
+            animation: bootTurn 0.9s ease-in-out infinite;
         }
         @keyframes bootTurn {
             0%   { transform: rotate(45deg)  scale(1); }
