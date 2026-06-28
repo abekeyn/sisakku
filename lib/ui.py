@@ -95,6 +95,9 @@ def inject_css() -> None:
         [data-testid="stDecoration"], [data-testid="stAppDeployButton"],
         #MainMenu {{ visibility: hidden !important; opacity: 0 !important;
                      pointer-events: none !important; }}
+        /* 読み込み中に出るスケルトン（薄い箱）は世界観に合わないので隠す。
+           再実行時に中身がうっすら箱状に見えるのを防ぐ。 */
+        [data-testid="stSkeleton"] {{ display: none !important; }}
         html, body, [class*="css"] {{
             font-family: 'Noto Sans JP', sans-serif;
             color: var(--txt);
@@ -845,7 +848,9 @@ def _boot_overlay(fade: bool = True) -> None:
     """
     logo = _logo_b64("阿部農園ロゴ.png")
     img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
-    fade_rule = "animation: bootFade .55s ease 1.0s forwards;" if fade else ""
+    # ロゴを不透明のまましっかり見せ、最後にサッと消す（ゆっくり溶けると
+    # 背後のログイン画面がうっすら透けて見えるため、重なりを最小化する）。
+    fade_rule = "animation: bootFade .2s ease 1.4s forwards;" if fade else ""
     div_style = ("" if fade else
                  ' style="animation:none!important;opacity:1!important;visibility:visible!important"')
     html = (_BOOT_TEMPLATE.replace("__FADE__", fade_rule)
