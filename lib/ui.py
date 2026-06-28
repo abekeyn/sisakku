@@ -512,59 +512,30 @@ def render_header() -> None:
 
 
 def _login_css() -> str:
-    """ログイン画面専用：濃紺背景＋ゆっくり漂う金色の光（サイトのヒーロー風）。"""
-    motes = []
-    spots = [
-        (8, 18, 5, 22, 0), (16, 72, 3, 28, 4), (27, 40, 7, 34, 2),
-        (38, 12, 4, 26, 7), (46, 84, 6, 31, 1), (57, 30, 3, 24, 5),
-        (63, 60, 8, 38, 3), (71, 16, 4, 27, 8), (78, 78, 5, 30, 2),
-        (84, 44, 6, 33, 6), (90, 24, 3, 25, 9), (93, 66, 7, 36, 1),
-        (12, 50, 4, 29, 10), (33, 90, 5, 32, 3), (52, 6, 6, 35, 7),
-        (68, 92, 4, 28, 5), (88, 88, 5, 30, 8), (4, 38, 6, 34, 2),
-    ]
-    for left, top, size, dur, delay in spots:
-        motes.append(
-            f'<span class="mote" style="left:{left}%;top:{top}%;'
-            f'width:{size}px;height:{size}px;'
-            f'animation-duration:{dur}s;animation-delay:-{delay}s"></span>'
-        )
+    """ログイン画面専用：濃紺のなめらかなグラデーション＋ロゴ背後の静かな光。
+
+    余計な装飾（漂う金の粒）は置かず、無地に近い上質な暗紺で見せる。
+    """
     return (
         """
         <style>
         .stApp {
             background:
-              radial-gradient(1200px 800px at 50% 18%, #2a2c5a 0%, #1b1d3e 45%, #131228 100%) !important;
+              radial-gradient(1100px 760px at 50% 16%,
+                #262a52 0%, #1b1d3e 46%, #14152c 78%, #0f1024 100%) !important;
         }
         header[data-testid="stHeader"] { background: transparent !important; }
         .block-container, [data-testid="stMainBlockContainer"] {
             max-width: 440px !important;
             padding-top: 7vh !important;
         }
-        .login-motes {
-            position: fixed; inset: 0; z-index: 0; overflow: hidden;
-            pointer-events: none;
-        }
-        .login-motes .mote {
-            position: absolute; border-radius: 50%;
-            background: radial-gradient(circle, rgba(233,209,140,.95) 0%, rgba(201,162,75,.5) 40%, rgba(201,162,75,0) 70%);
-            box-shadow: 0 0 8px 2px rgba(201,162,75,.35);
-            opacity: .0;
-            animation-name: moteDrift;
-            animation-iteration-count: infinite;
-            animation-timing-function: ease-in-out;
-        }
-        @keyframes moteDrift {
-            0%   { transform: translate(0,0) scale(.7);     opacity: 0; }
-            20%  { opacity: .9; }
-            50%  { transform: translate(14px,-26px) scale(1.1); opacity: .7; }
-            80%  { opacity: .85; }
-            100% { transform: translate(-10px,-52px) scale(.7); opacity: 0; }
-        }
+        /* ロゴの背後だけにそっと置く、にじむ金の光（粒は使わない） */
         .login-aura {
-            position: fixed; left:50%; top:20%; transform:translateX(-50%);
-            width: min(620px,90vw); height: 420px; z-index:0; pointer-events:none;
-            background: radial-gradient(ellipse at center, rgba(201,162,75,.16) 0%, rgba(201,162,75,0) 65%);
-            filter: blur(8px);
+            position: fixed; left:50%; top:18%; transform:translateX(-50%);
+            width: min(560px,86vw); height: 380px; z-index:0; pointer-events:none;
+            background: radial-gradient(ellipse at center,
+                rgba(201,162,75,.13) 0%, rgba(201,162,75,0) 62%);
+            filter: blur(10px);
         }
         .block-container > div { position: relative; z-index: 2; }
 
@@ -647,7 +618,6 @@ def _login_css() -> str:
             filter: brightness(1.06);
         }
         </style>
-        <div class="login-motes">""" + "".join(motes) + """</div>
         <div class="login-aura"></div>
         """
     )
