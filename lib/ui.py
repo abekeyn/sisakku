@@ -494,10 +494,11 @@ def _inject_pwa() -> None:
 def render_header() -> None:
     """ブランドヘッダー＋背景の光（控えめな粒）。"""
     motes = []
+    # (left%, top%, サイズpx, 漂う周期s, 開始ずらしs)。周期を短くすると速く動く。
     spots = [
-        (10, 22, 4, 30, 0), (24, 70, 3, 36, 5), (40, 14, 5, 32, 2),
-        (58, 80, 4, 38, 7), (74, 30, 3, 34, 3), (88, 64, 5, 40, 1),
-        (6, 56, 3, 35, 8), (93, 12, 4, 33, 4),
+        (10, 22, 4, 20, 0), (24, 70, 3, 24, 5), (40, 14, 5, 21, 2),
+        (58, 80, 4, 25, 7), (74, 30, 3, 23, 3), (88, 64, 5, 26, 1),
+        (6, 56, 3, 23, 8), (93, 12, 4, 22, 4),
     ]
     for left, top, size, dur, delay in spots:
         motes.append(
@@ -688,14 +689,14 @@ def _login_transition() -> None:
         #login-ov img {
             height: 104px;
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
-            animation: lovP 1.15s ease-in-out infinite;
+            animation: lovP 1.5s ease-in-out infinite;
         }
         @keyframes lovP { 0%,100%{opacity:.82;transform:scale(1)} 50%{opacity:1;transform:scale(1.045)} }
         #login-ov .dia {
             width: 11px; height: 11px;
             background: linear-gradient(135deg, #C9A24B, #E9D18C);
             border-radius: 2px; box-shadow: 0 0 10px rgba(201,162,75,.6);
-            animation: lovT 0.9s ease-in-out infinite;
+            animation: lovT 1.25s ease-in-out infinite;
         }
         @keyframes lovT { 0%{transform:rotate(45deg) scale(1)} 50%{transform:rotate(225deg) scale(.7)} 100%{transform:rotate(405deg) scale(1)} }
         #login-ov .txt { color: rgba(242,237,224,.7); font-size: .82rem; letter-spacing: .35em; padding-left: .35em; }
@@ -816,7 +817,7 @@ _BOOT_TEMPLATE = """
         .boot img {
             height: 104px;
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
-            animation: bootPulse 1.15s ease-in-out infinite;
+            animation: bootPulse 1.5s ease-in-out infinite;
         }
         @keyframes bootPulse {
             0%,100% { opacity: .82; transform: scale(1); }
@@ -826,7 +827,7 @@ _BOOT_TEMPLATE = """
             width: 11px; height: 11px;
             background: linear-gradient(135deg, #C9A24B, #E9D18C);
             border-radius: 2px; box-shadow: 0 0 10px rgba(201,162,75,.6);
-            animation: bootTurn 0.9s ease-in-out infinite;
+            animation: bootTurn 1.25s ease-in-out infinite;
         }
         @keyframes bootTurn {
             0%   { transform: rotate(45deg)  scale(1); }
