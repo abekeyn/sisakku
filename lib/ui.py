@@ -516,10 +516,26 @@ def render_header() -> None:
 
 
 def _login_css() -> str:
-    """ログイン画面専用：濃紺のなめらかなグラデーション＋ロゴ背後の静かな光。
-
-    余計な装飾（漂う金の粒）は置かず、無地に近い上質な暗紺で見せる。
-    """
+    """ログイン画面専用：濃紺のなめらかなグラデーション＋ロゴ背後の静かな光に、
+    蛍のようにふわっと点滅しながら漂う無数の光の粒を重ねる。"""
+    motes = []
+    # (left%, top%, サイズpx, 漂う周期s, 開始ずらしs)。小さめ・多めで蛍らしく散らす
+    spots = [
+        (6, 16, 3, 16, 0), (13, 64, 2, 20, 4), (19, 36, 4, 18, 2),
+        (26, 84, 3, 22, 7), (33, 12, 2, 17, 1), (39, 52, 4, 21, 5),
+        (45, 28, 3, 19, 3), (52, 72, 2, 23, 8), (58, 10, 3, 18, 2),
+        (63, 44, 4, 20, 6), (69, 80, 2, 22, 1), (74, 22, 3, 17, 9),
+        (80, 58, 4, 21, 3), (85, 14, 2, 19, 5), (90, 40, 3, 23, 0),
+        (94, 70, 2, 18, 7), (10, 88, 3, 22, 2), (30, 68, 2, 20, 9),
+        (48, 90, 3, 19, 4), (66, 64, 2, 21, 6), (78, 86, 3, 18, 8),
+        (88, 90, 2, 20, 3), (16, 46, 2, 19, 10), (56, 50, 2, 22, 5),
+    ]
+    for left, top, size, dur, delay in spots:
+        motes.append(
+            f'<span class="mote" style="left:{left}%;top:{top}%;'
+            f'width:{size}px;height:{size}px;'
+            f'animation-duration:{dur}s;animation-delay:-{delay}s"></span>'
+        )
     return (
         """
         <style>
@@ -533,13 +549,34 @@ def _login_css() -> str:
             max-width: 440px !important;
             padding-top: 7vh !important;
         }
-        /* ロゴの背後だけにそっと置く、にじむ金の光（粒は使わない） */
+        /* ロゴの背後だけにそっと置く、にじむ金の光 */
         .login-aura {
             position: fixed; left:50%; top:18%; transform:translateX(-50%);
             width: min(560px,86vw); height: 380px; z-index:0; pointer-events:none;
             background: radial-gradient(ellipse at center,
                 rgba(201,162,75,.13) 0%, rgba(201,162,75,0) 62%);
             filter: blur(10px);
+        }
+        /* 蛍のように、ふわっと点滅しながら漂う無数の光の粒 */
+        .login-motes {
+            position: fixed; inset: 0; z-index: 0; overflow: hidden;
+            pointer-events: none;
+        }
+        .login-motes .mote {
+            position: absolute; border-radius: 50%;
+            background: radial-gradient(circle, rgba(233,209,140,.95) 0%,
+                rgba(201,162,75,.5) 45%, rgba(201,162,75,0) 72%);
+            box-shadow: 0 0 7px 2px rgba(201,162,75,.3);
+            opacity: 0;
+            animation-name: moteDrift; animation-iteration-count: infinite;
+            animation-timing-function: ease-in-out;
+        }
+        @keyframes moteDrift {
+            0%   { transform: translate(0,0) scale(.6);      opacity: 0; }
+            20%  { opacity: .9; }
+            50%  { transform: translate(12px,-22px) scale(1.1); opacity: .55; }
+            80%  { opacity: .85; }
+            100% { transform: translate(-8px,-44px) scale(.6);  opacity: 0; }
         }
         .block-container > div { position: relative; z-index: 2; }
 
@@ -622,6 +659,7 @@ def _login_css() -> str:
             filter: brightness(1.06);
         }
         </style>
+        <div class="login-motes">""" + "".join(motes) + """</div>
         <div class="login-aura"></div>
         """
     )
