@@ -38,10 +38,10 @@ jobs:
         if: steps.lastday.outputs.run == 'yes'
         run: pip install openpyxl SQLAlchemy "psycopg[binary]"
 
-      - name: 請求書を作成して承認通知
+      - name: 請求書を作成して承認通知（全請求先）
         if: steps.lastday.outputs.run == 'yes'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APP_URL: ${{ secrets.APP_URL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python -m lib.granada_cloud --prepare --soffice soffice --workdir .
+        run: python -m lib.billing --prepare --soffice soffice --workdir .

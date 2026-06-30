@@ -196,12 +196,12 @@ def _check_granada_sync() -> None:
         return
     _granada_next_check = _t.time() + 300
     try:
-        from lib import granada_cloud
-        r = granada_cloud.sync_local_xlsx()
-        if r.get("synced"):
-            print("グラナダ請求書を台帳へ同期:", r.get("sheet"), flush=True)
+        from lib import billing
+        synced = billing.sync_local_xlsx()
+        for s in synced:
+            print("請求書を台帳へ同期:", s.get("client"), s.get("sheet"), flush=True)
     except Exception as e:  # noqa: BLE001
-        print("グラナダ台帳同期をスキップ（次回再試行）:", e, flush=True)
+        print("請求台帳同期をスキップ（次回再試行）:", e, flush=True)
 
 
 def main() -> None:

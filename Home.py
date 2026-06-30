@@ -25,8 +25,8 @@ def today() -> date:
 def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
-from lib import (analytics, base_api, bootstrap, db, exporter, komeful, logic,
-                 seed, shipping, ui, yamato)
+from lib import (analytics, base_api, billing, bootstrap, db, exporter, komeful,
+                 logic, seed, shipping, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -1226,6 +1226,157 @@ def view_analytics():
 # ===========================================================================
 # ルーティング
 # ===========================================================================
+# ===========================================================================
+# 📨 請求（請求書の発行・承認送信 ／ 請求先マスタ）
+# ===========================================================================
+def _billing_issue() -> None:
+    import base64
+    pendings = billing.get_pendings()
+    items = sorted(pendings.items())
+    open_items = [(k, p) for k, p in items if p.get("status") != "sent"]
+    sent_items = [(k, p) for k, p in items if p.get("status") == "sent"]
+
+    if not open_items:
+        st.info("承認待ちの請求書はありません。毎月末日にクラウドが自動作成し、"
+                "ここに表示されます。（スマホ通知のリンクからも開けます）")
+    for key, p in open_items:
+        with st.container(border=True):
+            st.markdown(f"### {p['client_name']}　{p['month']}月分")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("ご請求額（税込）", f"¥{p['amount']:,}")
+            c2.metric("数量", f"{p['qty']:g} 個")
+            c3.metric("対象出荷", f"{len(p['rows'])}件 / {p['total_kg']:g}kg")
+            st.caption(f"宛先 {p['email']} ／ 発行日 {p['issue_date']} ／ "
+                       f"書類番号 {p['doc_number']}")
+            if p.get("warning"):
+                st.warning(p["warning"])
+            with st.expander("出荷明細を確認"):
+                st.dataframe([{"出荷日": r["date"], "品名": r["product"],
+                               "kg": r["kg"], "伝票番号": r["denpyo"]}
+                              for r in p["rows"]],
+                             use_container_width=True, hide_index=True)
+            pdf = base64.b64decode(p["pdf_b64"])
+            st.download_button("📄 請求書PDFを開く / 保存", pdf, file_name=p["pdf_name"],
+                               mime="application/pdf", key=f"dl_{key}",
+                               use_container_width=True)
+            st.markdown(
+                f'<iframe src="data:application/pdf;base64,{p["pdf_b64"]}" '
+                f'width="100%" height="480" style="border:1px solid #ddd;'
+                f'border-radius:8px"></iframe>', unsafe_allow_html=True)
+            ck = f"confirm_{key}"
+            if st.session_state.get(ck):
+                st.markdown(f"**{p['email']} へ送信します。よろしいですか？**")
+                cc1, cc2 = st.columns(2)
+                if cc1.button("✅ はい、送信する", type="primary",
+                              key=f"yes_{key}", use_container_width=True):
+                    with st.spinner("送信中…"):
+                        r = billing.send_pending(key)
+                    if r.get("ok"):
+                        st.session_state.pop(ck, None)
+                        st.success("送信しました。スマホにも完了通知を送りました。")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(f"送信できませんでした：{r.get('msg')}")
+                if cc2.button("やめる", key=f"no_{key}", use_container_width=True):
+                    st.session_state.pop(ck, None)
+                    st.rerun()
+            else:
+                b1, b2 = st.columns([3, 1])
+                if b1.button(f"この内容で {p['email']} へ送信する", type="primary",
+                             key=f"send_{key}", use_container_width=True):
+                    st.session_state[ck] = True
+                    st.rerun()
+                if b2.button("破棄", key=f"disc_{key}", use_container_width=True):
+                    billing.discard_pending(key)
+                    st.rerun()
+
+    if sent_items:
+        with st.expander(f"送信済み（{len(sent_items)}件）"):
+            for _, p in sent_items:
+                st.write(f"✅ {p['client_name']} {p['month']}月分 ¥{p['amount']:,} "
+                         f"／ 書類番号 {p['doc_number']} ／ {p.get('sent_at', '')}")
+
+
+def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
+    fid = c.get("id", "new")
+    with st.form(f"client_{fid}", border=False):
+        cid = st.text_input("ID（英数字・重複不可）", c.get("id", ""),
+                            disabled=not is_new, key=f"cid_{fid}")
+        name = st.text_input("表示名", c.get("name", ""), key=f"nm_{fid}")
+        invoice_to = st.text_input("請求書の宛名（「御中」の前）",
+                                   c.get("invoice_to", ""), key=f"it_{fid}")
+        email = st.text_input("送付先メールアドレス", c.get("email", ""), key=f"em_{fid}")
+        opts = list(cust_opts.keys())
+        cur = c.get("customer_id")
+        idx = opts.index(cur) if cur in opts else 0
+        customer_id = st.selectbox("集計対象の顧客（この宛先の出荷を集計）",
+                                   opts, index=idx if opts else None,
+                                   format_func=lambda i: cust_opts.get(i, str(i)),
+                                   key=f"cu_{fid}")
+        price = st.number_input("単価（5kgあたり・税込／送料込）",
+                                value=int(c.get("price_per_5kg", 4000)), step=100,
+                                key=f"pr_{fid}")
+        item = st.text_input("品名（請求書の明細行）",
+                             c.get("item_desc", "令和7年度　福島県産 コシヒカリ (精米) 5㎏"),
+                             key=f"im_{fid}")
+        subject = st.text_input("メール件名（{month}＝月）",
+                                c.get("subject_tmpl", "阿部農園　{month}月分請求につきまして"),
+                                key=f"sj_{fid}")
+        body = st.text_area("メール本文（{year}＝年・{month}＝月 を差し込み）",
+                            c.get("body_tmpl", ""), height=200, key=f"bd_{fid}")
+        doc_no = st.number_input("最後に発番した書類番号（次回はこの+1）",
+                                 value=int(c.get("last_doc_no", 260000)), step=1,
+                                 key=f"dn_{fid}")
+        local_xlsx = st.text_input("ローカルExcel台帳のパス（任意・PC起動時に追記）",
+                                   c.get("local_xlsx", ""), key=f"lx_{fid}")
+        active = st.checkbox("有効（月末に自動作成する）", value=c.get("active", True),
+                             key=f"ac_{fid}")
+        if st.form_submit_button("保存", type="primary"):
+            if not cid or not email:
+                st.error("ID と メールアドレスは必須です。")
+                return
+            billing.upsert_client({
+                "id": cid.strip(), "name": name.strip(),
+                "invoice_to": invoice_to.strip(), "email": email.strip(),
+                "customer_id": customer_id, "price_per_5kg": int(price),
+                "item_desc": item, "subject_tmpl": subject, "body_tmpl": body,
+                "last_doc_no": int(doc_no), "local_xlsx": local_xlsx.strip(),
+                "active": bool(active)})
+            st.success("保存しました。")
+            st.rerun()
+    if not is_new:
+        if st.button("この請求先を削除", key=f"del_{fid}"):
+            billing.delete_client(c["id"])
+            st.rerun()
+
+
+def _billing_master() -> None:
+    st.caption("月末に自動で請求書を作成・送信する取引先の一覧。ここで追加・編集できます。")
+    custs = db.list_customers()
+    cust_opts = {c["id"]: f"{c['name']}（{c.get('company') or '—'}）" for c in custs}
+    for c in billing.get_clients():
+        mark = "🟢" if c.get("active", True) else "⚪"
+        with st.expander(f"{mark} {c['name']} ／ {c['email']}"):
+            _client_form(c, cust_opts, is_new=False)
+    st.divider()
+    with st.expander("＋ 新しい請求先を追加"):
+        _client_form({}, cust_opts, is_new=True)
+
+
+def view_billing() -> None:
+    st.subheader("📨 請求")
+    tab_issue, tab_master = st.tabs(["請求書の発行・送信", "請求先マスタ"])
+    with tab_issue:
+        _billing_issue()
+    with tab_master:
+        _billing_master()
+
+
+# 通知リンク（?tab=billing）から開かれたら請求タブを初期選択
+if "nav" not in st.session_state and st.query_params.get("tab") == "billing":
+    st.session_state["nav"] = "請求"
+
 view = ui.render_nav()
 _auto_sync_history()
 _agent_progress()
@@ -1237,5 +1388,7 @@ elif view == "顧客":
     view_customers()
 elif view == "分析":
     view_analytics()
+elif view == "請求":
+    view_billing()
 else:
     view_settings()
