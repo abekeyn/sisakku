@@ -1,0 +1,47 @@
+name: グラナダ様 月次請求（末日に承認通知）
+
+# 毎月末日 15:00 JST（=06:00 UTC）にクラウドで請求書を作成し、
+# スマホへ「送信してよいですか？」通知を出す。送信はアプリの『送信する』で確定。
+on:
+  schedule:
+    - cron: "0 6 28,29,30,31 * *"   # 末日候補。実際の末日のみ後続を実行
+  workflow_dispatch: {}              # 手動実行も可（テスト用）
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 末日判定（JST）
+        id: lastday
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime, calendar, os
+          jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+          is_last = jst.day == calendar.monthrange(jst.year, jst.month)[1]
+          manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+          print("run=" + ("yes" if (is_last or manual) else "no"))
+          PY
+
+      - name: Python
+        if: steps.lastday.outputs.run == 'yes'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: LibreOffice（xlsx→PDF用）
+        if: steps.lastday.outputs.run == 'yes'
+        run: sudo apt-get update && sudo apt-get install -y libreoffice-calc
+
+      - name: 依存パッケージ
+        if: steps.lastday.outputs.run == 'yes'
+        run: pip install openpyxl SQLAlchemy "psycopg[binary]"
+
+      - name: 請求書を作成して承認通知
+        if: steps.lastday.outputs.run == 'yes'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python -m lib.granada_cloud --prepare --soffice soffice --workdir .

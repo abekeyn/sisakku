@@ -184,6 +184,26 @@ def _check_b2_pickup() -> bool:
     return False
 
 
+_granada_next_check = 0.0  # 次にグラナダ同期を確認するUNIX時刻（負荷軽減のため間引く）
+
+
+def _check_granada_sync() -> None:
+    """クラウドで送信済みのグラナダ請求書を、ローカルExcel台帳へ追記。
+    DB側の synced_to_xlsx で冪等。5分ごとに確認（毎月の送信後に1回だけ追記される）。"""
+    global _granada_next_check
+    import time as _t
+    if _t.time() < _granada_next_check:
+        return
+    _granada_next_check = _t.time() + 300
+    try:
+        from lib import granada_cloud
+        r = granada_cloud.sync_local_xlsx()
+        if r.get("synced"):
+            print("グラナダ請求書を台帳へ同期:", r.get("sheet"), flush=True)
+    except Exception as e:  # noqa: BLE001
+        print("グラナダ台帳同期をスキップ（次回再試行）:", e, flush=True)
+
+
 def main() -> None:
     db.init_db()
     if "--b2-test" in sys.argv:
@@ -213,6 +233,7 @@ def main() -> None:
                 _check_b2_print()
                 _check_b2_pickup()
                 _check_b2_history()
+                _check_granada_sync()
             except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
                 print("一時エラー（次回再試行）:", e, flush=True)
             time.sleep(INTERVAL)

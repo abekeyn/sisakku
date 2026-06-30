@@ -5,3 +5,5 @@ SQLAlchemy==2.0.50
 psycopg[binary]==3.3.4
 # playwright: PC常駐エージェント＋クラウド印刷（PC不要ルート）でB2自動操作に使用
 playwright==1.60.0
+# openpyxl: グラナダ様 月次請求書のxlsx生成（クラウド/Actions）
+openpyxl==3.1.5
