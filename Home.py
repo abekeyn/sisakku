@@ -483,6 +483,7 @@ def view_home():
 
     if not unshipped:
         st.caption("発送待ちの注文はありません。")
+        _recent_shipments(orders_all)
         return
 
     ship_orders = [o for o in unshipped if not o.get("handover")]
@@ -679,6 +680,40 @@ def view_home():
     if pres and not pres.get("pending"):
         icon = "✓" if pres.get("ok") else "⚠"
         st.caption(f'{icon} 前回の集荷依頼（{pres.get("at","")}）：{pres.get("summary","")}')
+
+    # ======= 最近の発送（お客様へ伝票番号を送る）=======
+    # PCで出荷確定すると伝票番号がクラウドに残るので、スマホ単体でも
+    # ここから番号と「貼るだけ」の文面をコピーできる。
+    _recent_shipments(orders_all)
+
+
+def _recent_shipments(orders_all) -> None:
+    """発送済み（伝票番号あり）の履歴から、伝票番号と連絡文面をコピーする。"""
+    ui.section("最近の発送（伝票番号をお客様へ）",
+               "発送済みの注文を選ぶと、そのままLINE等に貼れる文面をコピーできます")
+    shipped = [o for o in orders_all
+               if o["status"] == "shipped" and (o.get("tracking_no") or "").strip()]
+    if not shipped:
+        st.caption("伝票番号つきの発送はまだありません。"
+                   "PC・アプリで出荷を確定すると、ここに履歴が出ます。")
+        return
+    # 出荷予定日（=発送日。CSV作成時に当日が入る）→作成日の新しい順
+    shipped.sort(key=lambda o: ((o.get("ship_date") or ""), (o.get("created_at") or "")),
+                 reverse=True)
+    opts = {}
+    for o in shipped[:30]:
+        d = (o.get("ship_date") or o.get("order_date") or "").strip()
+        label = f'{o["customer_name"]}様　{o["product_name"]}　{o["tracking_no"]}'
+        opts[(f"{d}　" if d else "") + label] = o
+    pick = st.selectbox("発送した注文を選ぶ", list(opts.keys()), key="ship_history_pick")
+    o = opts[pick]
+    tno = (o["tracking_no"] or "").strip()
+    msg = (f"クロネコヤマト：{tno}にて手配いたしました！"
+           "到着まで今しばらくお待ちくださいませ✨")
+    st.caption("伝票番号（タップでコピー／追跡用）")
+    st.code(tno, language=None)
+    st.caption("お客様へ送る文面（右上のコピーで全文コピー→そのまま貼り付け）")
+    st.code(msg, language=None)
 
 
 # ===========================================================================
@@ -969,6 +1004,22 @@ def view_settings():
             )
 
     with tab_data:
+        ui.section("ホーム画面に追加（アプリのように使う）",
+                   "スマホのホーム画面に置くと、専用アイコンから全画面で起動できます")
+        with st.expander("追加のしかた（iPhone / Android）"):
+            st.markdown(
+                "**iPhone（Safari）**\n"
+                "1. このページを **Safari** で開く（Chrome等では不可）\n"
+                "2. 下の **共有ボタン（□に↑）** をタップ\n"
+                "3. **「ホーム画面に追加」** を選ぶ → 右上の **追加**\n\n"
+                "**Android（Chrome）**\n"
+                "1. このページを **Chrome** で開く\n"
+                "2. 右上の **︙（メニュー）** をタップ\n"
+                "3. **「ホーム画面に追加」／「アプリをインストール」** を選ぶ\n\n"
+                "追加後はアイコンから起動すると、アドレスバーのない全画面（濃紺）で開きます。"
+            )
+
+        st.divider()
         ui.section("顧客データの取込", "ヤマトB2クラウドの発行済データCSVから顧客を登録します")
         up = st.file_uploader("発行済データCSV", type=["csv"], key="reimport")
         hist = st.checkbox("過去の注文も記録する（出荷済み扱い）", value=False)

@@ -94,3 +94,34 @@
 - **データベースに繋がらない**：Supabaseは「Session pooler」のURIを使う／`【パスワード】`を置換したか確認
 - **顧客が空**：STEP4-2 のCSVアップロードを実施
 - **コードを直したら**：GitHub Desktop で Commit → Push すると、数分で自動的にクラウドへ反映
+
+---
+
+## スマホで「アプリのように」使う（PWA対応の現状）
+
+`lib/ui.py` の `_inject_pwa()` で、ホーム画面に追加したときアプリ風に
+起動できるようにしています。Streamlit Community Cloud は配信HTMLの
+`<head>` を書き換えられず、ルート直下に静的ファイル（manifest.json /
+service-worker.js）も置けないため、**同一オリジンの極小コンポーネント
+iframe からJSで親ページの `<head>` にタグを流し込む**方式を採っています。
+
+### できていること
+- **iPhone（Safari）**：`apple-touch-icon`（専用アイコン）、
+  `apple-mobile-web-app-capable`（アドレスバー無しの全画面）、
+  `apple-mobile-web-app-title`（"精米・発送"）、`theme-color`（濃紺）。
+- **Android（Chrome）**：`manifest`（blob配信・`start_url`/`scope` は
+  起動時に実URLから絶対パスで補完）、アイコン192/512、
+  `display: standalone`、テーマ/背景色＝濃紺。インストール可。
+- 追加手順は **設定 → データ → 「ホーム画面に追加」** に記載。
+
+### できないこと（Service Worker／オフライン・プッシュ）
+**現在のホスティング（Streamlit Community Cloud）では不可能**です。理由：
+- Service Worker のスクリプトは **http(s) かつ JS の Content-Type で配信**
+  される必要があり、`blob:` / `data:` URL からの `register()` はブラウザが
+  拒否する。Cloud では root に `sw.js` を置けず、レスポンスヘッダ
+  （`Service-Worker-Allowed` 等）も制御できない。
+- iframe 経由で登録しても **スコープが iframe のパスに限定**され、アプリ
+  本体（ルート）を制御できない。
+- → オフライン動作やプッシュ通知が必要になったら、**静的ファイルと
+  ヘッダを自前で制御できるホスティング**（自前サーバ＋リバースプロキシ、
+  Render / Fly.io / VPS など）へ移すことが前提。深追いは不要。

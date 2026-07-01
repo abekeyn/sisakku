@@ -9,10 +9,12 @@
 from __future__ import annotations
 
 import base64
+import json
 from functools import lru_cache
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from . import config
 
@@ -93,6 +95,9 @@ def inject_css() -> None:
         [data-testid="stDecoration"], [data-testid="stAppDeployButton"],
         #MainMenu {{ visibility: hidden !important; opacity: 0 !important;
                      pointer-events: none !important; }}
+        /* 読み込み中に出るスケルトン（薄い箱）は世界観に合わないので隠す。
+           再実行時に中身がうっすら箱状に見えるのを防ぐ。 */
+        [data-testid="stSkeleton"] {{ display: none !important; }}
         html, body, [class*="css"] {{
             font-family: 'Noto Sans JP', sans-serif;
             color: var(--txt);
@@ -345,13 +350,155 @@ def inject_css() -> None:
     )
 
 
+# ===========================================================================
+# PWA（ホーム画面に追加でアプリのように使う）
+# ---------------------------------------------------------------------------
+# Streamlit Community Cloud は配信HTMLの <head> を差し替えられず、ルート直下に
+# manifest.json / service-worker.js も置けない。そこで「同一オリジンの極小
+# コンポーネントiframe」からJSで window.parent.document.head に必要なタグ
+# （manifest〔data URI〕・apple-touch-icon・各metaカラー）を流し込む。
+# st.markdown / st.html の本文HTMLはサニタイズで <link rel=manifest> や
+# onerror が落ちることがあるため、確実に実行できるコンポーネント経由にした。
+# Service Worker（オフライン/プッシュ）は現ホスティングでは不可（DEPLOY.md参照）。
+# ===========================================================================
+PWA_NAME = "精米・発送管理｜阿部農園"
+PWA_SHORT = "精米・発送"
+
+
+@lru_cache(maxsize=1)
+def _pwa_config() -> str:
+    """注入用の設定（アイコン・manifest雛形・metaタグ）をJSON文字列で返す。
+
+    start_url / scope は配信先URLが起動時まで不明なので、ここでは入れず
+    クライアント側JSで実ページの絶対URLから補う（Android Chromeの
+    インストール要件＝同一オリジンのstart_urlを満たすため）。
+    """
+    # 濃紺背景に白ロゴの専用アイコン（app_icon.png）。無ければicon.pngに退避。
+    icon = _logo_b64("app_icon.png") or _logo_b64("icon.png")
+    if not icon:
+        return ""
+    icon_uri = f"data:image/png;base64,{icon}"
+    cfg = {
+        "icon": icon_uri,
+        "manifest": {
+            "name": PWA_NAME,
+            "short_name": PWA_SHORT,
+            "display": "standalone",
+            "orientation": "portrait",
+            # 起動時スプラッシュの背景色。アイコン画像の紺(#1B1D3E)と完全に
+            # 揃え、ロゴ周りの四角い色ムラを消して「紺に白ロゴが浮かぶ」絵にする。
+            "background_color": NAVY,
+            "theme_color": NAVY,
+            # 横長ロゴ（郡山/福島の文字が端にある）が円形マスクで切れないよう
+            # maskableは付けず "any" のみにする。
+            "icons": [
+                {"src": icon_uri, "sizes": "192x192", "type": "image/png",
+                 "purpose": "any"},
+                {"src": icon_uri, "sizes": "512x512", "type": "image/png",
+                 "purpose": "any"},
+            ],
+        },
+        "meta": [
+            ["apple-mobile-web-app-capable", "yes"],
+            ["mobile-web-app-capable", "yes"],
+            ["apple-mobile-web-app-status-bar-style", "black-translucent"],
+            ["apple-mobile-web-app-title", PWA_SHORT],
+            ["application-name", PWA_SHORT],
+            ["theme-color", NAVY],
+        ],
+    }
+    return json.dumps(cfg, ensure_ascii=False)
+
+
+def _inject_pwa() -> None:
+    """ホーム画面追加用のmeta/manifest/アイコンを親ドキュメントの<head>へ注入。"""
+    cfg = _pwa_config()
+    if not cfg:
+        return
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            // Streamlit Community Cloud では本体アプリ自体が入れ子iframe
+            // （title="streamlitApp"）の中で動く。Chromeがmanifestを読むのは
+            // 最上位のページなので、同一オリジンで辿れる限り上位へ登る。
+            var win = window;
+            while (win.parent && win.parent !== win) {
+              try { void win.parent.document; win = win.parent; }
+              catch (e) { break; }  // クロスオリジンで上がれなくなったら止める
+            }
+            var doc = win.document || document;
+            var loc = win.location || window.location;
+            var head = doc.head || doc.getElementsByTagName('head')[0];
+            if (!head || head.querySelector('[data-pwa="1"]')) return;
+            var cfg = __CFG__;
+            // Streamlit が標準で持つ manifest / アイコン / テーマ色を撤去する。
+            // manifest は仕様上「最初の1枚」だけが採用されるため、Streamlit製を
+            // 残すとアプリ名が "streamlit"・アイコンも純正のままになる。
+            var kill = 'link[rel="manifest"],link[rel~="icon"],' +
+                       'link[rel="apple-touch-icon"],' +
+                       'link[rel="apple-touch-icon-precomposed"],' +
+                       'link[rel="shortcut icon"],meta[name="theme-color"],' +
+                       'meta[name="apple-mobile-web-app-title"],' +
+                       'meta[name="apple-mobile-web-app-capable"],' +
+                       'meta[name="mobile-web-app-capable"],' +
+                       'meta[name="application-name"]';
+            var old = doc.querySelectorAll(kill);
+            for (var i = 0; i < old.length; i++) {
+              if (!old[i].hasAttribute('data-pwa')) {
+                old[i].parentNode.removeChild(old[i]);
+              }
+            }
+            function add(tag, attrs) {
+              var el = doc.createElement(tag);
+              for (var k in attrs) {
+                if (attrs.hasOwnProperty(k)) el.setAttribute(k, attrs[k]);
+              }
+              el.setAttribute('data-pwa', '1');
+              head.appendChild(el);
+            }
+            // manifestは親オリジンのblobとして配信し、start_url/scopeは
+            // 実ページの絶対URLにする（data:URIだと相対解決が壊れるため）。
+            var m = cfg.manifest;
+            var base = loc.origin + loc.pathname;
+            m.start_url = base;
+            m.scope = base;
+            var href;
+            try {
+              var BlobC = win.Blob || Blob;
+              var URLC = win.URL || URL;
+              var blob = new BlobC([JSON.stringify(m)],
+                                   {type: 'application/manifest+json'});
+              href = URLC.createObjectURL(blob);
+            } catch (e2) {
+              // blob不可の環境ではdata:URIにフォールバック
+              href = 'data:application/manifest+json;charset=utf-8,' +
+                     encodeURIComponent(JSON.stringify(m));
+            }
+            add('link', {rel: 'manifest', href: href});
+            add('link', {rel: 'apple-touch-icon', href: cfg.icon});
+            add('link', {rel: 'icon', type: 'image/png', href: cfg.icon});
+            cfg.meta.forEach(function (p) {
+              add('meta', {name: p[0], content: p[1]});
+            });
+          } catch (e) { /* クロスオリジン等で失敗しても本体には影響させない */ }
+        })();
+        </script>
+        """.replace("__CFG__", cfg),
+        height=0,
+        width=0,
+    )
+
+
 def render_header() -> None:
     """ブランドヘッダー＋背景の光（控えめな粒）。"""
     motes = []
+    # (left%, top%, サイズpx, 漂う周期s, 開始ずらしs)。周期を短くすると速く動く。
     spots = [
-        (10, 22, 4, 30, 0), (24, 70, 3, 36, 5), (40, 14, 5, 32, 2),
-        (58, 80, 4, 38, 7), (74, 30, 3, 34, 3), (88, 64, 5, 40, 1),
-        (6, 56, 3, 35, 8), (93, 12, 4, 33, 4),
+        (10, 22, 4, 20, 0), (24, 70, 3, 24, 5), (40, 14, 5, 21, 2),
+        (58, 80, 4, 25, 7), (74, 30, 3, 23, 3), (88, 64, 5, 26, 1),
+        (6, 56, 3, 23, 8), (93, 12, 4, 22, 4),
     ]
     for left, top, size, dur, delay in spots:
         motes.append(
@@ -369,15 +516,19 @@ def render_header() -> None:
 
 
 def _login_css() -> str:
-    """ログイン画面専用：濃紺背景＋ゆっくり漂う金色の光（サイトのヒーロー風）。"""
+    """ログイン画面専用：濃紺のなめらかなグラデーション＋ロゴ背後の静かな光に、
+    蛍のようにふわっと点滅しながら漂う無数の光の粒を重ねる。"""
     motes = []
+    # (left%, top%, サイズpx, 漂う周期s, 開始ずらしs)。小さめ・多めで蛍らしく散らす
     spots = [
-        (8, 18, 5, 22, 0), (16, 72, 3, 28, 4), (27, 40, 7, 34, 2),
-        (38, 12, 4, 26, 7), (46, 84, 6, 31, 1), (57, 30, 3, 24, 5),
-        (63, 60, 8, 38, 3), (71, 16, 4, 27, 8), (78, 78, 5, 30, 2),
-        (84, 44, 6, 33, 6), (90, 24, 3, 25, 9), (93, 66, 7, 36, 1),
-        (12, 50, 4, 29, 10), (33, 90, 5, 32, 3), (52, 6, 6, 35, 7),
-        (68, 92, 4, 28, 5), (88, 88, 5, 30, 8), (4, 38, 6, 34, 2),
+        (6, 16, 5, 16, 0), (13, 64, 4, 20, 4), (19, 36, 6, 18, 2),
+        (26, 84, 5, 22, 7), (33, 12, 4, 17, 1), (39, 52, 6, 21, 5),
+        (45, 28, 5, 19, 3), (52, 72, 4, 23, 8), (58, 10, 5, 18, 2),
+        (63, 44, 6, 20, 6), (69, 80, 4, 22, 1), (74, 22, 5, 17, 9),
+        (80, 58, 6, 21, 3), (85, 14, 4, 19, 5), (90, 40, 5, 23, 0),
+        (94, 70, 4, 18, 7), (10, 88, 5, 22, 2), (30, 68, 4, 20, 9),
+        (48, 90, 5, 19, 4), (66, 64, 4, 21, 6), (78, 86, 5, 18, 8),
+        (88, 90, 4, 20, 3), (16, 46, 4, 19, 10), (56, 50, 4, 22, 5),
     ]
     for left, top, size, dur, delay in spots:
         motes.append(
@@ -390,38 +541,42 @@ def _login_css() -> str:
         <style>
         .stApp {
             background:
-              radial-gradient(1200px 800px at 50% 18%, #2a2c5a 0%, #1b1d3e 45%, #131228 100%) !important;
+              radial-gradient(1100px 760px at 50% 16%,
+                #262a52 0%, #1b1d3e 46%, #14152c 78%, #0f1024 100%) !important;
         }
         header[data-testid="stHeader"] { background: transparent !important; }
         .block-container, [data-testid="stMainBlockContainer"] {
             max-width: 440px !important;
             padding-top: 7vh !important;
         }
+        /* ロゴの背後だけにそっと置く、にじむ金の光 */
+        .login-aura {
+            position: fixed; left:50%; top:18%; transform:translateX(-50%);
+            width: min(560px,86vw); height: 380px; z-index:0; pointer-events:none;
+            background: radial-gradient(ellipse at center,
+                rgba(201,162,75,.13) 0%, rgba(201,162,75,0) 62%);
+            filter: blur(10px);
+        }
+        /* 蛍のように、ふわっと点滅しながら漂う無数の光の粒 */
         .login-motes {
             position: fixed; inset: 0; z-index: 0; overflow: hidden;
             pointer-events: none;
         }
         .login-motes .mote {
             position: absolute; border-radius: 50%;
-            background: radial-gradient(circle, rgba(233,209,140,.95) 0%, rgba(201,162,75,.5) 40%, rgba(201,162,75,0) 70%);
-            box-shadow: 0 0 8px 2px rgba(201,162,75,.35);
-            opacity: .0;
-            animation-name: moteDrift;
-            animation-iteration-count: infinite;
+            background: radial-gradient(circle, rgba(233,209,140,.95) 0%,
+                rgba(201,162,75,.5) 45%, rgba(201,162,75,0) 72%);
+            box-shadow: 0 0 7px 2px rgba(201,162,75,.3);
+            opacity: 0;
+            animation-name: moteDrift; animation-iteration-count: infinite;
             animation-timing-function: ease-in-out;
         }
         @keyframes moteDrift {
-            0%   { transform: translate(0,0) scale(.7);     opacity: 0; }
+            0%   { transform: translate(0,0) scale(.6);      opacity: 0; }
             20%  { opacity: .9; }
-            50%  { transform: translate(14px,-26px) scale(1.1); opacity: .7; }
+            50%  { transform: translate(12px,-22px) scale(1.1); opacity: .55; }
             80%  { opacity: .85; }
-            100% { transform: translate(-10px,-52px) scale(.7); opacity: 0; }
-        }
-        .login-aura {
-            position: fixed; left:50%; top:20%; transform:translateX(-50%);
-            width: min(620px,90vw); height: 420px; z-index:0; pointer-events:none;
-            background: radial-gradient(ellipse at center, rgba(201,162,75,.16) 0%, rgba(201,162,75,0) 65%);
-            filter: blur(8px);
+            100% { transform: translate(-8px,-44px) scale(.6);  opacity: 0; }
         }
         .block-container > div { position: relative; z-index: 2; }
 
@@ -560,10 +715,15 @@ def _login_transition() -> None:
             display: flex; flex-direction: column;
             align-items: center; justify-content: center; gap: 20px;
             background: radial-gradient(1200px 800px at 50% 32%, #2a2c5a 0%, #1b1d3e 46%, #131228 100%);
-            opacity: 0; visibility: hidden; transition: opacity .45s ease;
+            opacity: 0; visibility: hidden;
+            /* 消えるときだけゆっくり（ホームがふわっと出る）。出るときは即時で
+               全面を覆い、ログイン画面が背後に透けないようにする。 */
+            transition: opacity .35s ease, visibility 0s linear .35s;
         }
-        /* Streamlitが実行中（再実行の計算中）だけオーバーレイを出す */
-        body:has([data-testid="stStatusWidget"]) #login-ov { opacity: 1; visibility: visible; }
+        /* Streamlitが実行中（再実行の計算中）だけオーバーレイを出す。即・不透明で覆う */
+        body:has([data-testid="stStatusWidget"]) #login-ov {
+            opacity: 1; visibility: visible; transition: none;
+        }
         #login-ov img {
             height: 104px;
             filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(201,162,75,.45));
@@ -732,7 +892,9 @@ def _boot_overlay(fade: bool = True) -> None:
     """
     logo = _logo_b64("阿部農園ロゴ.png")
     img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
-    fade_rule = "animation: bootFade .55s ease 1.0s forwards;" if fade else ""
+    # ロゴを不透明のまましっかり見せ、最後にサッと消す（ゆっくり溶けると
+    # 背後のログイン画面がうっすら透けて見えるため、重なりを最小化する）。
+    fade_rule = "animation: bootFade .2s ease 1.4s forwards;" if fade else ""
     div_style = ("" if fade else
                  ' style="animation:none!important;opacity:1!important;visibility:visible!important"')
     html = (_BOOT_TEMPLATE.replace("__FADE__", fade_rule)
@@ -760,6 +922,7 @@ def setup_page() -> None:
         initial_sidebar_state="collapsed",
     )
     inject_css()
+    _inject_pwa()
     loading_gate()
     require_login()
     render_header()
