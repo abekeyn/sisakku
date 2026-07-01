@@ -146,6 +146,13 @@ def build_invoice_xlsx(client: dict, target_ym: str, qty: float, doc_no: int,
     ws["J2"] = doc_no
     ws["B9"] = f"下記の通り、{m}月分をご請求申し上げます。"
     ws["F18"] = qty
+    # LibreOffice変換で1ページに収める（Excelと違い自動では収まらないため明示）
+    from openpyxl.worksheet.properties import PageSetupProperties
+    ws.print_area = "A1:J32"
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
     return {"issue_date": issue.isoformat(), "sheet": ws.title}
