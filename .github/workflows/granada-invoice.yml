@@ -5,7 +5,12 @@ name: グラナダ様 月次請求（末日に承認通知）
 on:
   schedule:
     - cron: "0 6 28,29,30,31 * *"   # 末日候補。実際の末日のみ後続を実行
-  workflow_dispatch: {}              # 手動実行も可（テスト用）
+  workflow_dispatch:                 # 手動実行も可（テスト用）
+    inputs:
+      month:
+        description: "対象月 YYYY-MM（空なら当月）"
+        required: false
+        default: ""
 
 jobs:
   prepare:
@@ -44,4 +49,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APP_URL: ${{ secrets.APP_URL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python -m lib.billing --prepare --soffice soffice --workdir .
+        run: |
+          ARGS="--prepare --soffice soffice --workdir ."
+          if [ -n "${{ github.event.inputs.month }}" ]; then ARGS="$ARGS --month ${{ github.event.inputs.month }}"; fi
+          python -m lib.billing $ARGS
