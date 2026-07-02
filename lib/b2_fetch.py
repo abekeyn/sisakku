@@ -464,18 +464,35 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
             _emit(progress, 40, "発行済データを検索中")
 
             # ---- 3. 発行済データの検索 ----
+            # 「発行済データの検索」メニューカードを開く。※単に「発行済データ」だと
+            # 下部FAQの「…発行済データを削除できますか？」を誤クリックするので、
+            # 「発行済データの検索」で厳密に指定する。
             hist = _first_visible(b2, [
-                'a:has-text("発行済データ")', 'button:has-text("発行済データ")',
-                'text="発行済データの検索"', 'a:has-text("検索・再印刷")',
-                'a:has-text("送り状検索")',
+                'a:has-text("発行済データの検索")',
+                'text="発行済データの検索"',
+                ':has-text("発行済データの検索"):not(:has(*))',
             ], 15000)
             if hist is None:
-                raise B2Error("「発行済データ」メニューが見つかりません: " + _shot(b2, "menu"))
+                raise B2Error("「発行済データの検索」メニューが見つかりません: " + _shot(b2, "menu"))
             try:
                 hist.click(timeout=8000)
-            except Exception:  # noqa: BLE001  オーバーレイ等に遮られた場合
-                hist.click(force=True)
+            except Exception:  # noqa: BLE001
+                try:
+                    hist.click(force=True)
+                except Exception:  # noqa: BLE001
+                    hist.evaluate("el => el.click()")
             b2.wait_for_timeout(5000)
+            # まだトップメニューのままなら、DOMクリックで確実に起動
+            if b2.get_by_text("発行済データの検索").count() > 1 or \
+                    b2.locator('text="送り状を発行する"').count() > 0:
+                try:
+                    b2.evaluate(
+                        """() => { const el=[...document.querySelectorAll('a,div,span,button')]
+                            .find(e => (e.textContent||'').trim().startsWith('発行済データの検索'));
+                            if(el) el.click(); }""")
+                    b2.wait_for_timeout(4000)
+                except Exception:  # noqa: BLE001
+                    pass
 
             # 検索期間を直近に絞る（出荷予定日の開始日を書き換え）
             try:
