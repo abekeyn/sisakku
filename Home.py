@@ -84,9 +84,11 @@ def dlg_add_order():
             c1, c2 = st.columns(2)
             prod = c1.selectbox("商品", list(prod_labels))
             qty = c2.number_input("数量", min_value=1, value=1)
+            ch = st.selectbox("経路", list(CHANNEL_OPTS))
             c3, c4 = st.columns(2)
-            ch = c3.selectbox("経路", list(CHANNEL_OPTS))
-            ship = c4.date_input("出荷予定日", value=today())
+            ddate = c3.date_input("お届け日（配達指定・任意）", value=None,
+                                  min_value=today(), key="add_dd")
+            dtime = c4.selectbox("お届け時間帯（任意）", list(TIME_CODES), key="add_dt")
             mill = st.number_input("複合の精米kg（複合商品のみ・1個あたり）", min_value=0.0, value=0.0, step=1.0)
             note = st.text_input("メモ（任意）")
             handover = st.checkbox("手渡し（送り状・配送なし）", value=False,
@@ -96,8 +98,9 @@ def dlg_add_order():
                     "customer_id": cust_labels[sel], "product_id": prod_labels[prod],
                     "qty": int(qty), "channel": CHANNEL_OPTS[ch],
                     "order_date": today().strftime("%Y/%m/%d"),
-                    "ship_date": ship.strftime("%Y/%m/%d"),
-                    "delivery_date": "", "delivery_time": "",
+                    "ship_date": today().strftime("%Y/%m/%d"),
+                    "delivery_date": ddate.strftime("%Y/%m/%d") if ddate else "",
+                    "delivery_time": TIME_CODES[dtime],
                     "milling_kg_override": mill if mill > 0 else None,
                     "note": note, "status": "pending", "external_id": "", "dispatch_ref": "",
                     "handover": 1 if handover else 0,
@@ -117,9 +120,11 @@ def dlg_add_order():
         o1, o2 = st.columns(2)
         prod_n = o1.selectbox("商品", list(prod_labels), key="np")
         qty_n = o2.number_input("数量", min_value=1, value=1, key="nq")
+        ch_n = st.selectbox("経路", list(CHANNEL_OPTS), key="nc")
         o3, o4 = st.columns(2)
-        ch_n = o3.selectbox("経路", list(CHANNEL_OPTS), key="nc")
-        ship_n = o4.date_input("出荷予定日", value=today(), key="ns")
+        ddate_n = o3.date_input("お届け日（配達指定・任意）", value=None,
+                                min_value=today(), key="nadd_dd")
+        dtime_n = o4.selectbox("お届け時間帯（任意）", list(TIME_CODES), key="nadd_dt")
         handover_n = st.checkbox("手渡し（送り状・配送なし）", value=False, key="nh",
                                  help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
         if st.button("お客様＋注文を追加", type="primary", use_container_width=True, key="nbtn"):
@@ -134,8 +139,9 @@ def dlg_add_order():
                     "customer_id": cid, "product_id": prod_labels[prod_n],
                     "qty": int(qty_n), "channel": CHANNEL_OPTS[ch_n],
                     "order_date": today().strftime("%Y/%m/%d"),
-                    "ship_date": ship_n.strftime("%Y/%m/%d"),
-                    "delivery_date": "", "delivery_time": "",
+                    "ship_date": today().strftime("%Y/%m/%d"),
+                    "delivery_date": ddate_n.strftime("%Y/%m/%d") if ddate_n else "",
+                    "delivery_time": TIME_CODES[dtime_n],
                     "milling_kg_override": None, "note": "",
                     "status": "pending", "external_id": "", "dispatch_ref": "",
                     "handover": 1 if handover_n else 0,
@@ -509,30 +515,17 @@ def view_home():
                     db.update_order_status([o["id"]], "pending")
                     st.rerun(scope="fragment")
 
-    # お届け日時の指定（任意）。出荷予定日は自動で今日になる
-    with st.expander("お届け日時を指定する（任意・配達日時の指定）"):
-        st.caption("お客様への配達希望日・時間帯です（送り状に印字）。"
-                   "指定しなければ各注文の設定のまま。出荷予定日は自動で今日になります"
-                   "（※ステップ5の“集荷時間帯＝ヤマトが取りに来る時間”とは別物です）。")
-        o1, o2 = st.columns(2)
-        deliv_d = o1.date_input("お届け日（配達指定日）", value=None,
-                                min_value=today(), key="bulk_deliv")
-        time_sel = o2.selectbox("お届け時間帯（配達指定）",
-                                ["注文の指定どおり"] + list(TIME_CODES), key="bulk_time")
-
     sender = db.get_setting("sender") or {}
     if not sender.get("name"):
         st.warning("送り主が未設定です（設定タブで登録してください）")
+    st.caption("お届け日・時間帯は各注文の「操作 → ✎編集」でお客様ごとに指定できます"
+               "（BASEの注文は自動で反映）。指定があれば送り状に印字されます。出荷予定日は自動で今日。")
 
     def _build_csv_for_selected():
         targets = [o for o in unshipped if o["id"] in set(sel_ids)]
         for o in targets:
-            upd = {"ship_date": today().strftime("%Y/%m/%d")}  # 出荷予定日は今日
-            if deliv_d:
-                upd["delivery_date"] = deliv_d.strftime("%Y/%m/%d")
-            if time_sel != "注文の指定どおり":
-                upd["delivery_time"] = TIME_CODES[time_sel]
-            db.update_order(o["id"], upd)
+            # 出荷予定日は今日。お届け日/時間帯は各注文の設定をそのまま使う
+            db.update_order(o["id"], {"ship_date": today().strftime("%Y/%m/%d")})
         targets = [o for o in _unshipped(db.list_orders()) if o["id"] in set(sel_ids)]
         return yamato.export_csv(targets, sender)
 
