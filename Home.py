@@ -589,8 +589,9 @@ def view_home():
                      help="送り状なしで出荷済みにします。BASEの注文は発送完了も送ります。"):
             msgs, komeful_flag = [], False
             for o in hand_orders:
-                if o["channel"] == "base":
-                    ok, msg = base_api.dispatch_order(o)
+                res = shipping.dispatch_to_channel(o)
+                if res is not None:
+                    ok, msg = res
                     msgs.append(("✓ " if ok else "⚠ ") + f'{o["customer_name"]}様：{msg}')
                 elif o["channel"] == "komeful":
                     komeful_flag = True
@@ -628,8 +629,9 @@ def view_home():
             targets = [o for o in unshipped if o["id"] in set(sel_ids)]
             msgs, komeful_flag = [], False
             for o in targets:
-                if o["channel"] == "base":
-                    ok, msg = base_api.dispatch_order(o)
+                res = shipping.dispatch_to_channel(o)
+                if res is not None:
+                    ok, msg = res
                     msgs.append(("✓ " if ok else "⚠ ") + f' {o["customer_name"]}様：{msg}')
                 elif o["channel"] == "komeful":
                     komeful_flag = True

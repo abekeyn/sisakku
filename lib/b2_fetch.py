@@ -496,18 +496,35 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
             except Exception:  # noqa: BLE001
                 pass
 
-            # 検索（「詳細検索オプションを開く」等を誤クリックしないよう厳密一致）
+            # 検索ボタンを押す。「検索」は複数あり(キーワード検索用など)非表示の
+            # ものが先頭に来ることがあるので、表示されているものを優先して押す。
             exact_search = _re.compile(r"^\s*検索\s*$")
-            search = b2.get_by_role("button", name=exact_search)
-            if search.count() == 0:
-                search = b2.get_by_role("link", name=exact_search)
-            if search.count() == 0:
-                search = b2.locator('input[type="button"][value="検索"], input[type="submit"][value="検索"]')
-            if search.count() == 0:
-                search = b2.get_by_text("検索", exact=True)
-            if search.count() == 0:
+            clicked = False
+            for loc in (b2.get_by_role("button", name=exact_search),
+                        b2.get_by_role("link", name=exact_search),
+                        b2.locator('input[type="button"][value="検索"], '
+                                   'input[type="submit"][value="検索"]'),
+                        b2.get_by_text("検索", exact=True)):
+                for i in range(loc.count()):
+                    el = loc.nth(i)
+                    try:
+                        if el.is_visible():
+                            el.click(timeout=8000)
+                            clicked = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if clicked:
+                    break
+            if not clicked:
+                # 表示判定で拾えない時はJSでDOMクリック（表示されている検索を優先）
+                clicked = bool(b2.evaluate(
+                    """() => { const els=[...document.querySelectorAll('input,button,a')]
+                        .filter(e => /^\\s*検索\\s*$/.test((e.value||e.innerText||'').trim()));
+                        const v = els.find(e => e.offsetParent!==null) || els[0];
+                        if(v){ v.click(); return true; } return false; }"""))
+            if not clicked:
                 raise B2Error("検索ボタンが見つかりません: " + _shot(b2, "search_btn"))
-            search.first.click()
             b2.wait_for_timeout(6000)
 
             # 検索結果が0件なら、ここで終了（出荷確定するものなし）

@@ -16,6 +16,36 @@ def _digits(s) -> str:
     return re.sub(r"\D", "", str(s or ""))
 
 
+# ---------------------------------------------------------------------------
+# チャネル別「出荷完了をそのサービスへ反映する」処理（登録制・拡張しやすく）
+#   将来ほかのAPI連携が増えたら、ここに関数を1つ足して _DISPATCHERS に登録する。
+#   反映不要／手動のチャネルは登録しない（Noneが返り、何もしない）。
+# ---------------------------------------------------------------------------
+def _dispatch_base(o) -> tuple[bool, str]:
+    return base_api.dispatch_order(o)
+
+
+_DISPATCHERS = {
+    "base": _dispatch_base,
+    # 例）将来:  "othershop": _dispatch_othershop,
+}
+
+
+def dispatch_to_channel(o) -> tuple[bool, str] | None:
+    """注文の販売チャネルに対応するサービスへ出荷完了を反映する。
+
+    対応する連携が無いチャネル（LINE・手入力・取込・コメフル等）は None を返す。
+    → BASEの注文だけがBASEに反映される。
+    """
+    fn = _DISPATCHERS.get(o.get("channel"))
+    if fn is None:
+        return None
+    try:
+        return fn(o)
+    except Exception as e:  # noqa: BLE001  1件の失敗で全体を止めない
+        return False, f"{o.get('channel')}反映エラー：{e}"
+
+
 def _expected_item(o) -> str:
     n, q = o["yamato_name"], o["qty"] or 1
     return f"{n}×{q}" if q > 1 else n
@@ -58,10 +88,9 @@ def confirm_shipments(matches) -> dict:
     komeful_flag = False
     for r, o in matches:
         db.update_order(o["id"], {"tracking_no": r["tracking"], "status": "shipped"})
-        if o["channel"] == "base":
-            o2 = dict(o)
-            o2["tracking_no"] = r["tracking"]
-            ok, msg = base_api.dispatch_order(o2)
+        res = dispatch_to_channel(dict(o, tracking_no=r["tracking"]))
+        if res is not None:
+            ok, msg = res
             msgs.append(("✓ " if ok else "⚠ ") + f' {o["customer_name"]}様：{msg}')
         elif o["channel"] == "komeful":
             komeful_flag = True
