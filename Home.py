@@ -26,7 +26,7 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter, komeful,
-                 logic, seed, shipping, ui, yamato)
+                 logic, postal, seed, shipping, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -62,6 +62,16 @@ def _parse_date(s: str) -> date:
 
 def _unshipped(orders):
     return [o for o in orders if o["status"] in ("pending", "milled")]
+
+
+def _zip_search(zip_key: str, addr_key: str, err_key: str):
+    """郵便番号から住所を検索し、住所欄へ自動入力する（ボタンのon_click用）。"""
+    addr = postal.lookup_address(st.session_state.get(zip_key, ""))
+    if addr:
+        st.session_state[addr_key] = addr
+        st.session_state.pop(err_key, None)
+    else:
+        st.session_state[err_key] = "住所が見つかりませんでした（7桁の数字でご確認ください）"
 
 
 # ===========================================================================
@@ -112,8 +122,12 @@ def dlg_add_order():
         name = n1.text_input("お届け先名 *")
         kana = n2.text_input("フリガナ")
         n3, n4 = st.columns([1, 2])
-        zipc = n3.text_input("郵便番号 *", placeholder="9630211")
-        addr = n4.text_input("住所 *")
+        zipc = n3.text_input("郵便番号 *", placeholder="9630211", key="nadd_zip")
+        n3.button("🔍 住所を検索", key="nadd_zip_btn", use_container_width=True,
+                  on_click=_zip_search, args=("nadd_zip", "nadd_addr", "nadd_zip_err"))
+        if st.session_state.get("nadd_zip_err"):
+            n3.caption(f'⚠ {st.session_state["nadd_zip_err"]}')
+        addr = n4.text_input("住所 *", key="nadd_addr")
         n5, n6 = st.columns(2)
         addr2 = n5.text_input("建物名・部屋番号")
         tel = n6.text_input("電話番号 *")
@@ -189,9 +203,16 @@ def dlg_customer(c=None):
     n1, n2 = st.columns(2)
     name = n1.text_input("お届け先名 *", c.get("name", ""))
     kana = n2.text_input("フリガナ", c.get("kana", ""))
+    zip_key, addr_key, err_key = "c_zip_new", "c_addr_new", "c_zip_err_new"
+    if not is_new:
+        zip_key, addr_key, err_key = f'c_zip_{c["id"]}', f'c_addr_{c["id"]}', f'c_zip_err_{c["id"]}'
     n3, n4 = st.columns([1, 2])
-    zipc = n3.text_input("郵便番号 *", c.get("zip", ""))
-    addr = n4.text_input("住所 *", c.get("address", ""))
+    zipc = n3.text_input("郵便番号 *", c.get("zip", ""), key=zip_key)
+    n3.button("🔍 住所を検索", key=f"{zip_key}_btn", use_container_width=True,
+              on_click=_zip_search, args=(zip_key, addr_key, err_key))
+    if st.session_state.get(err_key):
+        n3.caption(f'⚠ {st.session_state[err_key]}')
+    addr = n4.text_input("住所 *", c.get("address", ""), key=addr_key)
     n5, n6 = st.columns(2)
     addr2 = n5.text_input("建物名等", c.get("address2", ""))
     tel = n6.text_input("電話番号 *", c.get("tel", ""))
