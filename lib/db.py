@@ -48,6 +48,7 @@ customers = Table(
     Column("honorific", String(16), default="様"),
     Column("note", Text, default=""),
     Column("created_at", String(64)),
+    Column("addr_updated_at", String(64), default=""),  # 手動で住所を編集した日時（履歴取込の上書き防止用）
 )
 
 products = Table(
@@ -142,6 +143,10 @@ def init_db() -> None:
     if "price" not in pcols:
         with engine.begin() as c:
             c.execute(text("ALTER TABLE products ADD COLUMN price FLOAT DEFAULT 0"))
+    ccols = [c["name"] for c in _inspect(engine).get_columns("customers")]
+    if "addr_updated_at" not in ccols:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE customers ADD COLUMN addr_updated_at VARCHAR(64) DEFAULT ''"))
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +226,7 @@ def set_setting(key: str, value) -> None:
 # 顧客 (customers)
 # ---------------------------------------------------------------------------
 _CUST_FIELDS = ("name", "kana", "tel", "zip", "address", "address2",
-                "company", "honorific", "note")
+                "company", "honorific", "note", "addr_updated_at")
 
 
 @_cacheable(ttl=120)

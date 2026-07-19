@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date as _date, datetime as _datetime
 
 from . import db, logic, yamato
 
@@ -11,6 +12,21 @@ def _ship_key(s: str):
     """出荷予定日を並べ替え用のタプルに（古い順ソート用）。"""
     m = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", s or "")
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+
+def _addr_locked_after(customer: dict, ship_date: str) -> bool:
+    """この発送日より後にアプリ側で住所を手動編集済みなら True（履歴取込での上書きを防ぐ）。"""
+    au = (customer or {}).get("addr_updated_at") or ""
+    if not au:
+        return False
+    try:
+        locked = _datetime.fromisoformat(au).date()
+    except ValueError:
+        return False
+    key = _ship_key(ship_date)
+    if key == (0, 0, 0):
+        return False
+    return locked >= _date(*key)
 
 
 def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
@@ -37,8 +53,10 @@ def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
 
     # 既存顧客を「正規化したお名前」で索引（名前で照合するため）
     by_name = {}
+    by_id = {}
     for c in db.list_customers():
         by_name.setdefault(logic.normalize_text(c["name"]), c["id"])
+        by_id[c["id"]] = c
 
     sender_set = False
     n_cust = 0
@@ -77,8 +95,11 @@ def import_issued_csv(path_or_bytes, import_history: bool = True) -> dict:
         norm = logic.normalize_text(name)
         if norm in by_name:
             cid = by_name[norm]
-            # 同一名は最新の住所等で更新（空欄では既存を消さない）
-            db.update_customer(cid, {k: v for k, v in cust.items() if v})
+            # 同一名は最新の住所等で更新（空欄では既存を消さない）。ただし
+            # アプリ側でこの発送日より後に住所を手動修正済みなら、古い履歴で
+            # 上書きしない（修正がヤマトの発送履歴に反映されるまでの間を保護）
+            if not _addr_locked_after(by_id.get(cid), g(row, "出荷予定日")):
+                db.update_customer(cid, {k: v for k, v in cust.items() if v})
         else:
             cid = db.upsert_customer(cust)
             by_name[norm] = cid

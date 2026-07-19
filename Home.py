@@ -166,6 +166,17 @@ def dlg_add_order():
 @st.dialog("注文を編集")
 def dlg_edit_order(o):
     st.markdown(f'**{o["customer_name"]} 様**　{o["product_name"]}')
+    st.caption(f'〒{o["zip"]}　{o["address"]}{o["address2"] or ""}　☎ {o["tel"]}')
+    if st.button("📍 お届け先住所・電話番号を修正", use_container_width=True):
+        dlg_customer(db.get_customer(o["customer_id"]))
+    if o["status"] == "shipped":
+        st.warning("出荷済みの注文です。住所などのミスで送り状を作り直す場合は"
+                   "「🔁 再送する」を押してください。")
+        if st.button("🔁 再送する（未出荷に戻して送り状を作り直す）",
+                     use_container_width=True,
+                     help="伝票番号をクリアして未出荷に戻します。ホーム画面の「送り状を作る」で新しい送り状を発行できます。"):
+            db.update_order(o["id"], {"status": "milled", "tracking_no": ""})
+            st.rerun()
     c1, c2 = st.columns(2)
     qty = c1.number_input("数量", min_value=1, value=int(o["qty"] or 1))
     ship = c2.date_input("出荷予定日", value=_parse_date(o["ship_date"]))
@@ -223,7 +234,7 @@ def dlg_customer(c=None):
         else:
             data = {"name": name, "kana": kana, "tel": tel, "zip": zipc,
                     "address": addr, "address2": addr2, "company": company,
-                    "honorific": "様"}
+                    "honorific": "様", "addr_updated_at": now_iso()}
             if is_new:
                 db.upsert_customer(data)
             else:
@@ -787,8 +798,10 @@ def view_orders():
                     db.update_order_status([o["id"]], "shipped")
                     st.rerun(scope="fragment")
             else:
-                if st.button("↩ 未出荷に戻す", key=f'ob{o["id"]}', use_container_width=True):
-                    db.update_order_status([o["id"]], "pending")
+                if st.button("🔁 再送する（未出荷に戻す）", key=f'ob{o["id"]}', use_container_width=True,
+                             help="伝票番号をクリアして未出荷に戻します。住所などを直したい場合は「✎ 編集」から。"
+                                  "ホーム画面の「送り状を作る」で新しい送り状を発行できます。"):
+                    db.update_order(o["id"], {"status": "milled", "tracking_no": ""})
                     st.rerun(scope="fragment")
             if st.button("🗑 削除", key=f'od{o["id"]}', use_container_width=True):
                 st.session_state["del_order"] = o["id"]
