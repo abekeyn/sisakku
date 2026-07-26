@@ -388,6 +388,9 @@ def _agent_progress():
         if res and not res.get("pending"):
             st.session_state["agent_last"] = {"title": w["title"], "res": res}
             st.session_state.pop("agent_watch", None)
+            # 完了直後にページ全体を再実行し、注文一覧（出荷済みが消える等）も
+            # 最新状態にする（ここはfragmentなので自分だけだと他が古いままになる）
+            st.rerun()
         else:
             # 開始直後の1回だけ最上部へスクロールして進捗バーを見せる
             if st.session_state.get("_scrolled_for") != w.get("res"):
