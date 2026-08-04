@@ -29,6 +29,12 @@ CLIENTS_KEY = "billing_clients"
 PENDING_KEY = "billing_pending"          # {f"{client_id}:{ym}": pending}
 HISTORY_KEY = "billing_sent_history"
 UNIT_KG = 5.0
+TAX_RATE = 0.08  # 軽減税率（テンプレートのI18と一致させる）
+
+
+def _unit_price_excl(price_incl_tax: float) -> int:
+    """税込単価→テンプレートのH18（税抜単価）に書く値へ変換。"""
+    return int(round(price_incl_tax / (1 + TAX_RATE)))
 
 # 既定の請求先（初回はこれをマスタへ取り込む）。鉄板焼きかいか（グラナダ）様。
 DEFAULT_CLIENTS = [{
@@ -130,12 +136,19 @@ def month_shipments(client: dict, target_ym: str) -> dict:
 
 # ===== 帳票生成 ===================================================================
 def build_invoice_xlsx(client: dict, target_ym: str, qty: float, doc_no: int,
-                       out_path: str | Path) -> dict:
-    """テンプレートを複製し、請求先固有の宛名・品名・当月値を埋めて保存。"""
+                       out_path: str | Path, unit_price: float | None = None) -> dict:
+    """テンプレートを複製し、請求先固有の宛名・品名・当月値を埋めて保存。
+
+    unit_price（税込・5kgあたり）を指定すると、テンプレートのH18（税抜単価）も
+    書き換える。省略時は請求先マスタの price_per_5kg を使う（常に一致させる。
+    以前はH18がテンプレート固定値のままで、マスタの単価変更がPDFに反映され
+    ない不整合があった）。
+    """
     from openpyxl import load_workbook
     y, m = int(target_ym[:4]), int(target_ym[5:7])
     issue = date(y, m, calendar.monthrange(y, m)[1])
     out_path = Path(out_path)
+    price = unit_price if unit_price is not None else client.get("price_per_5kg", 4000)
     wb = load_workbook(TEMPLATE_XLSX)
     ws = wb[wb.sheetnames[0]]
     ws.title = f"請求書 {target_ym.replace('-', '')}"
@@ -146,6 +159,7 @@ def build_invoice_xlsx(client: dict, target_ym: str, qty: float, doc_no: int,
     ws["J2"] = doc_no
     ws["B9"] = f"下記の通り、{m}月分をご請求申し上げます。"
     ws["F18"] = qty
+    ws["H18"] = _unit_price_excl(price)
     # LibreOffice変換で1ページに収める（Excelと違い自動では収まらないため明示）
     from openpyxl.worksheet.properties import PageSetupProperties
     ws.print_area = "A1:J32"
@@ -177,16 +191,18 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
                 "name": client["name"], "warning": s["warning"]}
 
     doc_no = int(client.get("last_doc_no", 0)) + 1
+    price = client.get("price_per_5kg", 4000)
     workdir = Path(workdir)
     xlsx = workdir / f"invoice_{client['id']}_{target_ym}.xlsx"
-    info = build_invoice_xlsx(client, target_ym, s["qty"], doc_no, xlsx)
+    info = build_invoice_xlsx(client, target_ym, s["qty"], doc_no, xlsx, unit_price=price)
     pdf = xlsx_to_pdf(xlsx, workdir, soffice=soffice)
     pending = {
         "client_id": client["id"], "client_name": client["name"],
         "email": client["email"], "target_ym": target_ym, "month": m,
         "issue_date": info["issue_date"], "doc_number": doc_no,
-        "qty": s["qty"], "total_kg": s["total_kg"], "amount": s["amount"],
-        "rows": s["rows"], "source": s["source"], "warning": s["warning"],
+        "qty": s["qty"], "total_kg": s["total_kg"], "unit_price": price,
+        "amount": s["amount"], "rows": s["rows"], "source": s["source"],
+        "warning": s["warning"],
         "pdf_b64": base64.b64encode(pdf.read_bytes()).decode("ascii"),
         "pdf_name": pdf_filename(info["issue_date"]),
         "status": "pending", "prepared_at": datetime.now().isoformat(timespec="seconds"),
@@ -196,6 +212,65 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
     _save_pendings(allp)
     return {"client_id": client["id"], "name": client["name"],
             "amount": s["amount"], "qty": s["qty"], "status": "prepared"}
+
+
+def regenerate_pending(pending_key: str, qty: float, unit_price: float,
+                       soffice: str = "soffice", workdir: str | Path = ".") -> dict:
+    """承認待ちの数量・単価を修正し、xlsx/PDFを作り直す（書類番号・発行日は変えない）。"""
+    allp = get_pendings()
+    p = allp.get(pending_key)
+    if not p:
+        return {"ok": False, "msg": "対象の請求書が見つかりません"}
+    if p.get("status") == "sent":
+        return {"ok": False, "msg": "既に送信済みです"}
+    client = get_client(p["client_id"])
+    if not client:
+        return {"ok": False, "msg": "請求先マスタが見つかりません"}
+    workdir = Path(workdir)
+    xlsx = workdir / f"invoice_{client['id']}_{p['target_ym']}.xlsx"
+    info = build_invoice_xlsx(client, p["target_ym"], qty, p["doc_number"], xlsx,
+                              unit_price=unit_price)
+    pdf = xlsx_to_pdf(xlsx, workdir, soffice=soffice)
+    amount = int(round(qty * unit_price))
+    p.update({
+        "qty": qty, "total_kg": qty * UNIT_KG, "unit_price": unit_price,
+        "amount": amount, "pdf_b64": base64.b64encode(pdf.read_bytes()).decode("ascii"),
+        "pdf_name": pdf_filename(info["issue_date"]), "edited": True,
+        "edited_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    allp[pending_key] = p
+    _save_pendings(allp)
+    return {"ok": True, "amount": amount, "qty": qty}
+
+
+def prepare_manual(client_id: str, target_ym: str, qty: float, unit_price: float,
+                   soffice: str = "soffice", workdir: str | Path = ".") -> dict:
+    """自動集計を使わず、数量・単価を手入力して請求書を新規作成する。"""
+    client = get_client(client_id)
+    if not client:
+        return {"ok": False, "msg": "請求先マスタが見つかりません"}
+    m = int(target_ym[5:7])
+    doc_no = int(client.get("last_doc_no", 0)) + 1
+    workdir = Path(workdir)
+    xlsx = workdir / f"invoice_{client['id']}_{target_ym}_manual.xlsx"
+    info = build_invoice_xlsx(client, target_ym, qty, doc_no, xlsx, unit_price=unit_price)
+    pdf = xlsx_to_pdf(xlsx, workdir, soffice=soffice)
+    amount = int(round(qty * unit_price))
+    pending = {
+        "client_id": client["id"], "client_name": client["name"],
+        "email": client["email"], "target_ym": target_ym, "month": m,
+        "issue_date": info["issue_date"], "doc_number": doc_no,
+        "qty": qty, "total_kg": qty * UNIT_KG, "unit_price": unit_price,
+        "amount": amount, "rows": [], "source": "manual", "warning": "",
+        "pdf_b64": base64.b64encode(pdf.read_bytes()).decode("ascii"),
+        "pdf_name": pdf_filename(info["issue_date"]),
+        "status": "pending", "prepared_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    allp = get_pendings()
+    key = f"{client['id']}:{target_ym}:manual{int(datetime.now().timestamp())}"
+    allp[key] = pending
+    _save_pendings(allp)
+    return {"ok": True, "key": key, "amount": amount, "qty": qty}
 
 
 def prepare_all(target_ym: str | None = None, soffice: str = "soffice",

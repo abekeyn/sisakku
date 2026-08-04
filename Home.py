@@ -1312,6 +1312,43 @@ def view_analytics():
 # ===========================================================================
 def _billing_issue() -> None:
     import base64
+    import tempfile
+
+    with st.expander("＋ 手入力で請求書を新規作成（自動集計を使わない）"):
+        clients = [c for c in billing.get_clients() if c.get("active", True)]
+        if not clients:
+            st.caption("先に「請求先マスタ」で請求先を登録してください。")
+        else:
+            copts = {c["id"]: c["name"] for c in clients}
+            m1, m2, m3 = st.columns([2, 1, 1])
+            mcid = m1.selectbox("請求先", list(copts), format_func=lambda i: copts[i],
+                                key="man_cid")
+            mcli = billing.get_client(mcid) or {}
+            yr = m2.number_input("年", min_value=2020, max_value=2100,
+                                 value=today().year, step=1, key="man_yr")
+            mo = m3.number_input("月", min_value=1, max_value=12,
+                                 value=today().month, step=1, key="man_mo")
+            m4, m5 = st.columns(2)
+            mkg = m4.number_input("数量（kg）", min_value=0.0, step=5.0, value=0.0,
+                                  key="man_kg", help="5kgあたりの単価で請求額を計算します")
+            mprice = m5.number_input("単価（5kgあたり・税込／送料込）", min_value=0,
+                                     value=int(mcli.get("price_per_5kg", 4000)),
+                                     step=100, key="man_price")
+            if mkg > 0:
+                st.caption(f"ご請求額（税込）：¥{round(mkg / billing.UNIT_KG * mprice):,}")
+            if st.button("作成する", type="primary", use_container_width=True,
+                        disabled=mkg <= 0, key="man_create"):
+                with st.spinner("請求書を作成中…"):
+                    r = billing.prepare_manual(
+                        mcid, f"{int(yr):04d}-{int(mo):02d}",
+                        mkg / billing.UNIT_KG, mprice,
+                        workdir=tempfile.gettempdir())
+                if r.get("ok"):
+                    st.success(f"作成しました（¥{r['amount']:,}）。下の一覧から内容を確認して送信してください。")
+                    st.rerun()
+                else:
+                    st.error(f"作成できませんでした：{r.get('msg')}")
+
     pendings = billing.get_pendings()
     items = sorted(pendings.items())
     open_items = [(k, p) for k, p in items if p.get("status") != "sent"]
@@ -1344,6 +1381,28 @@ def _billing_issue() -> None:
                 f'<iframe src="data:application/pdf;base64,{p["pdf_b64"]}" '
                 f'width="100%" height="480" style="border:1px solid #ddd;'
                 f'border-radius:8px"></iframe>', unsafe_allow_html=True)
+
+            with st.expander("🖊 数量・単価を修正して作り直す"):
+                e1, e2 = st.columns(2)
+                ekg = e1.number_input("数量（kg）", min_value=0.0, step=5.0,
+                                      value=float(p["total_kg"]), key=f"ekg_{key}")
+                eprice = e2.number_input("単価（5kgあたり・税込／送料込）", min_value=0,
+                                         value=int(p.get("unit_price", 4000)),
+                                         step=100, key=f"eprice_{key}")
+                if ekg > 0:
+                    st.caption(f"ご請求額（税込）：¥{round(ekg / billing.UNIT_KG * eprice):,}")
+                if st.button("この内容で作り直す", key=f"regen_{key}",
+                            use_container_width=True, disabled=ekg <= 0):
+                    with st.spinner("請求書を作り直しています…"):
+                        r = billing.regenerate_pending(
+                            key, ekg / billing.UNIT_KG, eprice,
+                            workdir=tempfile.gettempdir())
+                    if r.get("ok"):
+                        st.success(f"作り直しました（¥{r['amount']:,}）。")
+                        st.rerun()
+                    else:
+                        st.error(f"作り直せませんでした：{r.get('msg')}")
+
             ck = f"confirm_{key}"
             if st.session_state.get(ck):
                 st.markdown(f"**{p['email']} へ送信します。よろしいですか？**")
