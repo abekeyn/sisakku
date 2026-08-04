@@ -1,14 +1,41 @@
-name: グラナダ様 月次請求（末日に承認通知）
+name: グラナダ様 月次請求（末日に承認通知／アプリからの手動作成・修正）
 
 # 毎月末日 15:00 JST（=06:00 UTC）にクラウドで請求書を作成し、
 # スマホへ「送信してよいですか？」通知を出す。送信はアプリの『送信する』で確定。
+#
+# アプリの「請求」タブから「数量・単価を修正して作り直す」「手入力で新規作成」を
+# 押すと、このworkflowがworkflow_dispatchで起動され（action=regenerate/manual）、
+# PDF生成（LibreOffice）だけをここで行う。常時起動のアプリ本体にLibreOfficeを
+# 直接入れるとビルドが壊れるため、PDF生成は必ずこちら側で行う方針。
 on:
   schedule:
     - cron: "0 6 28,29,30,31 * *"   # 末日候補。実際の末日のみ後続を実行
-  workflow_dispatch:                 # 手動実行も可（テスト用）
+  workflow_dispatch:                 # アプリ・手動実行の両方から
     inputs:
+      action:
+        description: "処理内容"
+        required: false
+        default: "prepare"
+        type: choice
+        options: ["prepare", "regenerate", "manual"]
       month:
-        description: "対象月 YYYY-MM（空なら当月）"
+        description: "対象月 YYYY-MM（prepare/manual用。空なら当月）"
+        required: false
+        default: ""
+      pending_key:
+        description: "regenerate対象のpendingキー（client_id:target_ym）"
+        required: false
+        default: ""
+      client_id:
+        description: "manual作成の請求先ID"
+        required: false
+        default: ""
+      qty_kg:
+        description: "regenerate/manual用：数量(kg)"
+        required: false
+        default: ""
+      unit_price:
+        description: "regenerate/manual用：単価（5kgあたり・税込）"
         required: false
         default: ""
 
@@ -18,38 +45,67 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 末日判定（JST）
-        id: lastday
+      - name: 実行判定
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTION: ${{ github.event.inputs.action }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import datetime, calendar, os
-          jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-          is_last = jst.day == calendar.monthrange(jst.year, jst.month)[1]
-          manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-          print("run=" + ("yes" if (is_last or manual) else "no"))
+          import calendar
+          import datetime
+          import os
+
+          event = os.environ.get("EVENT_NAME")
+          action = os.environ.get("ACTION") or "prepare"
+          if event == "workflow_dispatch" and action != "prepare":
+              # アプリからの明示的な依頼（今すぐ作り直す／新規作成）は常に実行
+              print("run=yes")
+          else:
+              jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+              is_last = jst.day == calendar.monthrange(jst.year, jst.month)[1]
+              manual = event == "workflow_dispatch"
+              print("run=" + ("yes" if (is_last or manual) else "no"))
           PY
 
       - name: Python
-        if: steps.lastday.outputs.run == 'yes'
+        if: steps.gate.outputs.run == 'yes'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: LibreOffice＋日本語フォント（xlsx→PDF用）
-        if: steps.lastday.outputs.run == 'yes'
+        if: steps.gate.outputs.run == 'yes'
         run: sudo apt-get update && sudo apt-get install -y libreoffice-calc fonts-noto-cjk
 
       - name: 依存パッケージ
-        if: steps.lastday.outputs.run == 'yes'
+        if: steps.gate.outputs.run == 'yes'
         run: pip install openpyxl SQLAlchemy "psycopg[binary]"
 
-      - name: 請求書を作成して承認通知（全請求先）
-        if: steps.lastday.outputs.run == 'yes'
+      - name: 請求書処理を実行
+        if: steps.gate.outputs.run == 'yes'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APP_URL: ${{ secrets.APP_URL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ACTION: ${{ github.event.inputs.action }}
+          MONTH: ${{ github.event.inputs.month }}
+          PENDING_KEY: ${{ github.event.inputs.pending_key }}
+          CLIENT_ID: ${{ github.event.inputs.client_id }}
+          QTY_KG: ${{ github.event.inputs.qty_kg }}
+          UNIT_PRICE: ${{ github.event.inputs.unit_price }}
         run: |
-          ARGS="--prepare --soffice soffice --workdir ."
-          if [ -n "${{ github.event.inputs.month }}" ]; then ARGS="$ARGS --month ${{ github.event.inputs.month }}"; fi
-          python -m lib.billing $ARGS
+          ACTION="${ACTION:-prepare}"
+          if [ "$ACTION" = "regenerate" ]; then
+            python -m lib.billing --regenerate "$PENDING_KEY" \
+              --qty-kg "$QTY_KG" --unit-price "$UNIT_PRICE" \
+              --soffice soffice --workdir .
+          elif [ "$ACTION" = "manual" ]; then
+            python -m lib.billing --manual-client "$CLIENT_ID" --month "$MONTH" \
+              --qty-kg "$QTY_KG" --unit-price "$UNIT_PRICE" \
+              --soffice soffice --workdir .
+          else
+            ARGS="--prepare --soffice soffice --workdir ."
+            if [ -n "$MONTH" ]; then ARGS="$ARGS --month $MONTH"; fi
+            python -m lib.billing $ARGS
+          fi

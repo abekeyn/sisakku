@@ -379,12 +379,46 @@ def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="月次請求 クラウド版（複数請求先）")
     ap.add_argument("--prepare", action="store_true")
+    ap.add_argument("--regenerate", metavar="PENDING_KEY", default="",
+                    help="承認待ち1件の数量・単価を修正して作り直す")
+    ap.add_argument("--manual-client", metavar="CLIENT_ID", default="",
+                    help="自動集計を使わず手入力で請求書を新規作成する")
+    ap.add_argument("--qty-kg", type=float, default=None)
+    ap.add_argument("--unit-price", type=float, default=None)
     ap.add_argument("--month")
     ap.add_argument("--soffice", default="soffice")
     ap.add_argument("--workdir", default=".")
     a = ap.parse_args()
     try:
-        print(prepare_all(a.month, soffice=a.soffice, workdir=a.workdir))
+        if a.regenerate:
+            if a.qty_kg is None or a.unit_price is None:
+                raise SystemExit("--regenerate には --qty-kg と --unit-price が必要です")
+            r = regenerate_pending(a.regenerate, a.qty_kg / UNIT_KG, a.unit_price,
+                                   soffice=a.soffice, workdir=a.workdir)
+            print(r)
+            if r.get("ok"):
+                _ntfy("Invoice: REGENERATED",
+                      f"✅ 請求書を作り直しました\n数量 {a.qty_kg:g}kg／単価 ¥{a.unit_price:,.0f}\n"
+                      f"金額 ¥{r['amount']:,}", tags="white_check_mark")
+            else:
+                _ntfy("Invoice: REGEN FAILED", f"⚠️ 作り直しに失敗：{r.get('msg')}",
+                      priority="high", tags="warning")
+        elif a.manual_client:
+            if a.qty_kg is None or a.unit_price is None or not a.month:
+                raise SystemExit("--manual-client には --month --qty-kg --unit-price が必要です")
+            r = prepare_manual(a.manual_client, a.month, a.qty_kg / UNIT_KG, a.unit_price,
+                               soffice=a.soffice, workdir=a.workdir)
+            print(r)
+            if r.get("ok"):
+                _ntfy("Invoice: CREATED",
+                      f"✅ 請求書を作成しました（{a.month}）\n"
+                      f"数量 {a.qty_kg:g}kg／単価 ¥{a.unit_price:,.0f}\n"
+                      f"金額 ¥{r['amount']:,}", tags="white_check_mark")
+            else:
+                _ntfy("Invoice: CREATE FAILED", f"⚠️ 作成に失敗：{r.get('msg')}",
+                      priority="high", tags="warning")
+        else:
+            print(prepare_all(a.month, soffice=a.soffice, workdir=a.workdir))
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()
