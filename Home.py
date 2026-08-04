@@ -1351,7 +1351,9 @@ def _billing_issue() -> None:
     _billing_watch()
 
     with st.expander("＋ 手入力で請求書を新規作成（自動集計を使わない）"):
-        clients = [c for c in billing.get_clients() if c.get("active", True)]
+        # 「有効（月末に自動作成する）」は自動集計フローだけの設定。手入力作成は
+        # それとは独立の操作なので、無効な請求先も選べるようにする。
+        clients = billing.get_clients()
         if not clients:
             st.caption("先に「請求先マスタ」で請求先を登録してください。")
         else:
