@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from . import base_api, db, komeful, logic, yamato
+from . import base_api, db, komeful, logic, shopify_api, yamato
 
 
 def _digits(s) -> str:
@@ -25,8 +25,13 @@ def _dispatch_base(o) -> tuple[bool, str]:
     return base_api.dispatch_order(o)
 
 
+def _dispatch_shopify(o) -> tuple[bool, str]:
+    return shopify_api.dispatch_order(o)
+
+
 _DISPATCHERS = {
     "base": _dispatch_base,
+    "shopify": _dispatch_shopify,
     # 例）将来:  "othershop": _dispatch_othershop,
 }
 

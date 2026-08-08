@@ -26,7 +26,7 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter, gh_actions,
-                 komeful, logic, postal, seed, shipping, ui, yamato)
+                 komeful, logic, postal, seed, shipping, shopify_api, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -36,7 +36,8 @@ TIME_CODES = {
     "16-18時": "1618", "18-20時": "1820", "19-21時": "1921",
 }
 CODE_TO_LABEL = {v: k for k, v in TIME_CODES.items()}
-CHANNEL_OPTS = {"LINE": "line", "コメフル": "komeful", "BASE": "base", "手入力": "manual"}
+CHANNEL_OPTS = {"LINE": "line", "コメフル": "komeful", "BASE": "base",
+                "Shopify": "shopify", "手入力": "manual"}
 # 集荷の時間帯（ヤマト集荷依頼ページの実オプションに一致させる）
 PICKUP_TIMES = ["指定なし", "13時まで", "14時から16時まで",
                 "16時から18時まで", "17時から18時30分まで"]
@@ -434,8 +435,8 @@ def view_home():
 
     # ======= STEP 1｜注文を集める =======
     ui.step(1, "注文を集める",
-            "BASEはボタン1つで自動取込。LINE・コメフルの注文は手で追加します", first=True)
-    a1, a2, a3 = st.columns(3)
+            "BASE・Shopifyはボタン1つで自動取込。LINE・コメフルの注文は手で追加します", first=True)
+    a1, a2, a3, a4 = st.columns(4)
     if a1.button("⟳ BASE取込", use_container_width=True):
         cfg = db.get_setting("base_config") or {}
         if not cfg.get("refresh_token"):
@@ -448,9 +449,20 @@ def view_home():
             else:
                 st.toast(f"BASE：未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込", icon="✅")
                 st.rerun(scope="fragment")
-    if a2.button("＋ 注文追加", use_container_width=True):
+    if a2.button("⟳ Shopify取込", use_container_width=True):
+        if not shopify_api.is_configured():
+            st.warning("設定タブでShopify連携を登録してください。")
+        else:
+            with st.spinner("Shopifyから未発送の注文を取得中..."):
+                r = shopify_api.fetch_orders_via_api()
+            if r.get("error"):
+                st.error(r["error"])
+            else:
+                st.toast(f"Shopify：{r.get('read', 0)}件読込中、新規 {r['added']} 件を取込", icon="✅")
+                st.rerun(scope="fragment")
+    if a3.button("＋ 注文追加", use_container_width=True):
         dlg_add_order()
-    if a3.button("CSV取込", use_container_width=True):
+    if a4.button("CSV取込", use_container_width=True):
         dlg_csv_import()
 
     # ======= STEP 2｜精米する =======
@@ -887,8 +899,8 @@ def view_customers():
 # ⚙ 設定
 # ===========================================================================
 def view_settings():
-    tab_sender, tab_prod, tab_base, tab_print, tab_data = st.tabs(
-        ["送り主", "商品", "BASE連携", "印刷", "データ"]
+    tab_sender, tab_prod, tab_base, tab_shopify, tab_print, tab_data = st.tabs(
+        ["送り主", "商品", "BASE連携", "Shopify連携", "印刷", "データ"]
     )
 
     with tab_sender:
@@ -980,6 +992,26 @@ def view_settings():
             )
             if st.form_submit_button("保存", type="primary"):
                 db.set_setting("dispatch_message", msg)
+                st.success("保存しました。")
+
+    with tab_shopify:
+        scfg = db.get_setting("shopify_config") or {}
+        if shopify_api.is_configured():
+            st.success("Shopify連携は設定済みです（自動取込・自動出荷が使えます）")
+        st.caption("Shopify管理画面 → 設定 → アプリと販売チャネル → 「アプリを開発する」で"
+                   "カスタムアプリを作成し、Admin APIスコープに read_orders・"
+                   "read_fulfillments・write_fulfillments を付与してインストールすると、"
+                   "アクセストークン（shpat_で始まる文字列）が発行されます。")
+        with st.form("shopify_form"):
+            shop_domain = st.text_input("ショップドメイン", scfg.get("shop_domain", ""),
+                                        placeholder="example.myshopify.com")
+            access_token = st.text_input("Admin APIアクセストークン",
+                                         scfg.get("access_token", ""), type="password",
+                                         placeholder="shpat_...")
+            if st.form_submit_button("保存", type="primary"):
+                db.set_setting("shopify_config", {
+                    "shop_domain": shop_domain.strip(), "access_token": access_token.strip(),
+                })
                 st.success("保存しました。")
 
     with tab_print:
