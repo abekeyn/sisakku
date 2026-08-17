@@ -8,6 +8,7 @@
 - ⚙ 設定   : 送り主・商品・CSV取込・BASE連携・データ管理
 追加・編集はすべてモーダル（ダイアログ）で行い、画面遷移しない。
 """
+import re
 from datetime import date, datetime, timedelta, timezone
 
 import altair as alt
@@ -75,6 +76,23 @@ def _zip_search(zip_key: str, addr_key: str, err_key: str):
         st.session_state[err_key] = "住所が見つかりませんでした（7桁の数字でご確認ください）"
 
 
+def _norm_zip(s: str) -> str:
+    """郵便番号からハイフン等を除去する（ヤマトはハイフン無し7桁を想定）。"""
+    return re.sub(r"\D", "", s or "")
+
+
+def _addr_len_hint(addr: str) -> None:
+    """住所が長すぎる（建物名が混ざっている等）場合に注意書きを出す。
+
+    ヤマトの送り状は住所を都道府県・市区郡町村・町地番に自動分割するが、
+    町地番は全角16文字までしか入らない。建物名・部屋番号を住所欄に含めると
+    超過してB2の「修正が必要」エラーになるため、事前に気づけるようにする。
+    """
+    if len(addr or "") > 24:
+        st.caption("⚠ 住所が長めです。建物名・部屋番号が混ざっていたら「建物名」欄に分けてください"
+                   "（送り状の項目上限を超えるとB2で修正必要エラーになります）。")
+
+
 # ===========================================================================
 # ダイアログ（モーダル）
 # ===========================================================================
@@ -129,6 +147,7 @@ def dlg_add_order():
         if st.session_state.get("nadd_zip_err"):
             n3.caption(f'⚠ {st.session_state["nadd_zip_err"]}')
         addr = n4.text_input("住所 *", key="nadd_addr")
+        _addr_len_hint(addr)
         n5, n6 = st.columns(2)
         addr2 = n5.text_input("建物名・部屋番号")
         tel = n6.text_input("電話番号 *")
@@ -147,7 +166,7 @@ def dlg_add_order():
                 st.error("名前・郵便番号・住所・電話番号は必須です。")
             else:
                 cid = db.upsert_customer({
-                    "name": name, "kana": kana, "tel": tel, "zip": zipc,
+                    "name": name, "kana": kana, "tel": tel, "zip": _norm_zip(zipc),
                     "address": addr, "address2": addr2, "honorific": "様",
                 })
                 db.add_order({
@@ -225,6 +244,7 @@ def dlg_customer(c=None):
     if st.session_state.get(err_key):
         n3.caption(f'⚠ {st.session_state[err_key]}')
     addr = n4.text_input("住所 *", c.get("address", ""), key=addr_key)
+    _addr_len_hint(addr)
     n5, n6 = st.columns(2)
     addr2 = n5.text_input("建物名等", c.get("address2", ""))
     tel = n6.text_input("電話番号 *", c.get("tel", ""))
@@ -233,7 +253,7 @@ def dlg_customer(c=None):
         if not (name and zipc and addr):
             st.error("名前・郵便番号・住所は必須です。")
         else:
-            data = {"name": name, "kana": kana, "tel": tel, "zip": zipc,
+            data = {"name": name, "kana": kana, "tel": tel, "zip": _norm_zip(zipc),
                     "address": addr, "address2": addr2, "company": company,
                     "honorific": "様", "addr_updated_at": now_iso()}
             if is_new:
