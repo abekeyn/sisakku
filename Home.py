@@ -27,7 +27,7 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter, gh_actions,
-                 komeful, logic, postal, seed, shipping, shopify_api, ui, yamato)
+                 komeful, logic, postal, receipt, seed, shipping, shopify_api, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -1528,9 +1528,25 @@ def _billing_issue() -> None:
 
     if sent_items:
         with st.expander(f"送信済み（{len(sent_items)}件）"):
-            for _, p in sent_items:
+            for key, p in sent_items:
                 st.write(f"✅ {p['client_name']} {p['month']}月分 ¥{p['amount']:,} "
                          f"／ 書類番号 {p['doc_number']} ／ {p.get('sent_at', '')}")
+                rk = f"receipt_pdf_{key}"
+                if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
+                    client = billing.get_client(p["client_id"]) or {}
+                    st.session_state[rk] = receipt.build_receipt_pdf(
+                        invoice_to=client.get("invoice_to", p["client_name"]),
+                        amount=p["amount"],
+                        item_desc=client.get("item_desc", ""),
+                        issue_date=date.fromisoformat(p["issue_date"]),
+                        doc_no=str(p["doc_number"]),
+                    )
+                if st.session_state.get(rk):
+                    st.download_button(
+                        "↓ 領収書PDFをダウンロード", st.session_state[rk],
+                        file_name=receipt.receipt_filename(p["issue_date"], p["client_name"]),
+                        mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
+                st.divider()
 
 
 def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:

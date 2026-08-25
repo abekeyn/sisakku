@@ -7,3 +7,5 @@ psycopg[binary]==3.3.4
 playwright==1.60.0
 # openpyxl: グラナダ様 月次請求書のxlsx生成（クラウド/Actions）
 openpyxl==3.1.5
+# reportlab: 領収書PDFをアプリ内で即時生成（LibreOffice不要・日本語フォント埋め込み）
+reportlab==5.0.1
