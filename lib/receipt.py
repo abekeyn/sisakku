@@ -1,44 +1,14 @@
 # -*- coding: utf-8 -*-
-"""領収書PDFの生成。
-
-請求書と違い、LibreOffice（GitHub Actions経由）を使わずアプリ内で完結して
-即時発行できるようにするため、reportlabで直接PDFを描画する。
-日本語は Noto Sans JP（TrueType・templates/fonts/に同梱）を埋め込むため、
-サーバー側にCJKフォントが無くても文字化け・空白表示にならない
-（reportlab標準のCID日本語フォントは非埋め込みのため、閲覧環境によっては
-表示されないことがある。実際に検証して埋め込み方式に切り替えた）。
-"""
+"""領収書PDFの生成（アプリ内で即時・reportlab）。"""
 from __future__ import annotations
 
 import io
 from datetime import date
-from pathlib import Path
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
-FONT_PATH = Path(__file__).resolve().parent.parent / "templates" / "fonts" / "NotoSansJP-Regular.ttf"
-FONT_NAME = "NotoSansJP"
-
-_registered = False
-
-
-def _ensure_font() -> None:
-    global _registered
-    if not _registered:
-        pdfmetrics.registerFont(TTFont(FONT_NAME, str(FONT_PATH)))
-        _registered = True
-
-
-# 阿部農園の発行者情報（請求書テンプレート templates/granada_invoice_template.xlsx と同一内容）
-ISSUER_NAME = "阿部農園"
-ISSUER_ZIP_ADDRESS = "〒963-0211　福島県郡山市片平町字西大町一"
-ISSUER_TEL = "TEL：080-6030-3705"
-ISSUER_REG_NO = "登録番号：T3810553743686"
-ISSUER_CONTACT = "担当：阿部　喜臣"
-
-TAX_RATE = 0.08
+from . import pdf_common as pc
 
 
 def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
@@ -46,24 +16,15 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     """領収書PDF(bytes)を作る。amountは税込金額。"""
     from reportlab.pdfgen import canvas as _canvas
 
-    _ensure_font()
+    pc.ensure_font()
     issue_date = issue_date or date.today()
-    tax_excl = round(amount / (1 + TAX_RATE))
+    tax_excl = round(amount / (1 + pc.TAX_RATE))
     tax = amount - tax_excl
 
     buf = io.BytesIO()
     c = _canvas.Canvas(buf, pagesize=A4)
     w, h = A4
-    F = FONT_NAME
-
-    def text(x, y, s, size=11, align="left"):
-        c.setFont(F, size)
-        if align == "center":
-            c.drawCentredString(x, y, s)
-        elif align == "right":
-            c.drawRightString(x, y, s)
-        else:
-            c.drawString(x, y, s)
+    text = pc.make_text_fn(c)
 
     text(w / 2, h - 80, "領　収　書", size=26, align="center")
 
@@ -73,7 +34,7 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
 
     atesaki = f"{invoice_to}　御中"
     text(60, h - 180, atesaki, size=15)
-    c.line(60, h - 186, 60 + max(240, pdfmetrics.stringWidth(atesaki, F, 15) + 10), h - 186)
+    c.line(60, h - 186, 60 + max(240, pdfmetrics.stringWidth(atesaki, pc.FONT_NAME, 15) + 10), h - 186)
 
     box_y = h - 260
     c.rect(60, box_y - 10, w - 120, 46, stroke=1, fill=0)
@@ -91,12 +52,7 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
         "※お振込みにてご入金を確認しております（現金領収ではないため収入印紙は不要です）。",
         size=8)
 
-    iy2 = 160
-    text(w - 60, iy2 + 60, ISSUER_NAME, size=13, align="right")
-    text(w - 60, iy2 + 42, ISSUER_ZIP_ADDRESS, size=9, align="right")
-    text(w - 60, iy2 + 28, ISSUER_TEL, size=9, align="right")
-    text(w - 60, iy2 + 14, ISSUER_REG_NO, size=9, align="right")
-    text(w - 60, iy2, ISSUER_CONTACT, size=9, align="right")
+    pc.draw_issuer_block(c, w, 160)
 
     c.showPage()
     c.save()

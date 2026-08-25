@@ -26,7 +26,7 @@ def today() -> date:
 def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
-from lib import (analytics, base_api, billing, bootstrap, db, exporter, gh_actions,
+from lib import (analytics, base_api, billing, bootstrap, db, exporter,
                  komeful, logic, postal, receipt, seed, shipping, shopify_api, ui, yamato)
 
 ui.setup_page()
@@ -1362,45 +1362,8 @@ def view_analytics():
 # ===========================================================================
 # 📨 請求（請求書の発行・承認送信 ／ 請求先マスタ）
 # ===========================================================================
-@st.fragment(run_every=5)
-def _billing_watch() -> None:
-    """GitHub Actionsでの請求書作り直し・手入力作成の完了をポーリングして表示する。"""
-    w = st.session_state.get("billing_watch")
-    if not w:
-        return
-    allp = billing.get_pendings()
-    done = None
-    if w["kind"] == "regenerate":
-        p = allp.get(w["key"])
-        if p and (p.get("edited_at") or "") > w["since"]:
-            done = p
-    else:  # manual
-        for p in allp.values():
-            if (p.get("client_id") == w["client_id"] and p.get("target_ym") == w["target_ym"]
-                    and p.get("source") == "manual"
-                    and (p.get("prepared_at") or "") > w["since"]):
-                done = p
-                break
-    if done:
-        st.session_state.pop("billing_watch", None)
-        st.success(f"✅ {w['label']}が完了しました（¥{done['amount']:,}）。")
-        st.rerun()
-        return
-    elapsed = (datetime.now(JST) - datetime.fromisoformat(w["started"])).total_seconds()
-    st.info(f"⏳ {w['label']}をGitHub Actionsで処理中です（経過 約{int(elapsed // 60)}分）。"
-            "通常1〜2分ほどで一覧に反映されます。")
-    if elapsed > 240:
-        st.caption("時間がかかっています。スマホに失敗通知が来ていないか確認するか、"
-                   "GitHubのActionsタブで実行状況を確認してください。")
-
-
 def _billing_issue() -> None:
     import base64
-
-    if not gh_actions.is_configured():
-        st.info("数量・単価の修正／手入力作成には GitHub連携（secretsのGITHUB_PAT）が必要です。"
-                "未設定のため、これらの機能は使えません。")
-    _billing_watch()
 
     with st.expander("＋ 手入力で請求書を新規作成（自動集計を使わない）"):
         # 「有効（月末に自動作成する）」は自動集計フローだけの設定。手入力作成は
@@ -1410,14 +1373,11 @@ def _billing_issue() -> None:
             st.caption("先に「請求先マスタ」で請求先を登録してください。")
         else:
             copts = {c["id"]: c["name"] for c in clients}
-            m1, m2, m3 = st.columns([2, 1, 1])
+            m1, m2 = st.columns([2, 1])
             mcid = m1.selectbox("請求先", list(copts), format_func=lambda i: copts[i],
                                 key="man_cid")
             mcli = billing.get_client(mcid) or {}
-            yr = m2.number_input("年", min_value=2020, max_value=2100,
-                                 value=today().year, step=1, key="man_yr")
-            mo = m3.number_input("月", min_value=1, max_value=12,
-                                 value=today().month, step=1, key="man_mo")
+            mdate = m2.date_input("発行日", value=today(), key="man_date")
             m4, m5 = st.columns(2)
             mkg = m4.number_input("数量（kg）", min_value=0.0, step=5.0, value=0.0,
                                   key="man_kg", help="5kgあたりの単価で請求額を計算します")
@@ -1427,19 +1387,13 @@ def _billing_issue() -> None:
             if mkg > 0:
                 st.caption(f"ご請求額（税込）：¥{round(mkg / billing.UNIT_KG * mprice):,}")
             if st.button("作成する", type="primary", use_container_width=True,
-                        disabled=(mkg <= 0 or not gh_actions.is_configured()), key="man_create"):
-                target_ym = f"{int(yr):04d}-{int(mo):02d}"
-                ok, msg = gh_actions.trigger("manual", month=target_ym, client_id=mcid,
-                                             qty_kg=mkg, unit_price=mprice)
-                if ok:
-                    st.session_state["billing_watch"] = {
-                        "kind": "manual", "client_id": mcid, "target_ym": target_ym,
-                        "label": f"{copts[mcid]} {int(mo)}月分の作成",
-                        "since": now_iso(), "started": now_iso(),
-                    }
+                        disabled=mkg <= 0, key="man_create"):
+                r = billing.prepare_manual(mcid, mdate, mkg / billing.UNIT_KG, mprice)
+                if r.get("ok"):
+                    st.success(f"作成しました（¥{r['amount']:,}）。下の一覧から内容を確認して送信してください。")
                     st.rerun()
                 else:
-                    st.error(msg)
+                    st.error(r.get("msg", "作成できませんでした。"))
 
     pendings = billing.get_pendings()
     items = sorted(pendings.items())
@@ -1474,7 +1428,9 @@ def _billing_issue() -> None:
                 f'width="100%" height="480" style="border:1px solid #ddd;'
                 f'border-radius:8px"></iframe>', unsafe_allow_html=True)
 
-            with st.expander("🖊 数量・単価を修正して作り直す"):
+            with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
+                edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]),
+                                      key=f"edate_{key}")
                 e1, e2 = st.columns(2)
                 ekg = e1.number_input("数量（kg）", min_value=0.0, step=5.0,
                                       value=float(p["total_kg"]), key=f"ekg_{key}")
@@ -1484,19 +1440,14 @@ def _billing_issue() -> None:
                 if ekg > 0:
                     st.caption(f"ご請求額（税込）：¥{round(ekg / billing.UNIT_KG * eprice):,}")
                 if st.button("この内容で作り直す", key=f"regen_{key}",
-                            use_container_width=True,
-                            disabled=(ekg <= 0 or not gh_actions.is_configured())):
-                    ok, msg = gh_actions.trigger("regenerate", pending_key=key,
-                                                 qty_kg=ekg, unit_price=eprice)
-                    if ok:
-                        st.session_state["billing_watch"] = {
-                            "kind": "regenerate", "key": key,
-                            "label": f"{p['client_name']} {p['month']}月分の修正",
-                            "since": now_iso(), "started": now_iso(),
-                        }
+                            use_container_width=True, disabled=ekg <= 0):
+                    r = billing.regenerate_pending(key, ekg / billing.UNIT_KG, eprice,
+                                                   issue_date=edate)
+                    if r.get("ok"):
+                        st.success(f"作り直しました（¥{r['amount']:,}）。")
                         st.rerun()
                     else:
-                        st.error(msg)
+                        st.error(r.get("msg", "作り直せませんでした。"))
 
             ck = f"confirm_{key}"
             if st.session_state.get(ck):

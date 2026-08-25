@@ -215,8 +215,15 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
 
 
 def regenerate_pending(pending_key: str, qty: float, unit_price: float,
-                       soffice: str = "soffice", workdir: str | Path = ".") -> dict:
-    """承認待ちの数量・単価を修正し、xlsx/PDFを作り直す（書類番号・発行日は変えない）。"""
+                       issue_date: date | None = None) -> dict:
+    """承認待ちの数量・単価（・発行日）を修正し、PDFをその場で作り直す（書類番号は変えない）。
+
+    LibreOffice/GitHub Actionsを使わず、アプリ内でreportlabにより即時生成する
+    （lib/invoice_pdf.py）。手入力・修正はどのみち元のExcelテンプレートとの
+    厳密な一致が必須ではないため、待ち時間のない即時発行を優先する。
+    """
+    from . import invoice_pdf
+
     allp = get_pendings()
     p = allp.get(pending_key)
     if not p:
@@ -226,44 +233,48 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
     client = get_client(p["client_id"])
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
-    workdir = Path(workdir)
-    xlsx = workdir / f"invoice_{client['id']}_{p['target_ym']}.xlsx"
-    info = build_invoice_xlsx(client, p["target_ym"], qty, p["doc_number"], xlsx,
-                              unit_price=unit_price)
-    pdf = xlsx_to_pdf(xlsx, workdir, soffice=soffice)
+
+    issue_date = issue_date or date.fromisoformat(p["issue_date"])
     amount = int(round(qty * unit_price))
+    pdf = invoice_pdf.build_invoice_pdf(
+        invoice_to=client["invoice_to"], item_desc=client.get("item_desc", ""),
+        qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=p["doc_number"])
     p.update({
         "qty": qty, "total_kg": qty * UNIT_KG, "unit_price": unit_price,
-        "amount": amount, "pdf_b64": base64.b64encode(pdf.read_bytes()).decode("ascii"),
-        "pdf_name": pdf_filename(info["issue_date"]), "edited": True,
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
+        "amount": amount, "issue_date": issue_date.isoformat(),
+        "pdf_b64": base64.b64encode(pdf).decode("ascii"),
+        "pdf_name": invoice_pdf.invoice_filename(issue_date, p["client_name"]),
+        "edited": True, "edited_at": datetime.now().isoformat(timespec="seconds"),
     })
     allp[pending_key] = p
     _save_pendings(allp)
     return {"ok": True, "amount": amount, "qty": qty}
 
 
-def prepare_manual(client_id: str, target_ym: str, qty: float, unit_price: float,
-                   soffice: str = "soffice", workdir: str | Path = ".") -> dict:
-    """自動集計を使わず、数量・単価を手入力して請求書を新規作成する。"""
+def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: float) -> dict:
+    """自動集計を使わず、発行日・数量・単価を手入力して請求書をその場で新規作成する。
+
+    LibreOffice/GitHub Actionsを使わず、アプリ内でreportlabにより即時生成する。
+    """
+    from . import invoice_pdf
+
     client = get_client(client_id)
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
-    m = int(target_ym[5:7])
+    target_ym = issue_date.strftime("%Y-%m")
     doc_no = int(client.get("last_doc_no", 0)) + 1
-    workdir = Path(workdir)
-    xlsx = workdir / f"invoice_{client['id']}_{target_ym}_manual.xlsx"
-    info = build_invoice_xlsx(client, target_ym, qty, doc_no, xlsx, unit_price=unit_price)
-    pdf = xlsx_to_pdf(xlsx, workdir, soffice=soffice)
     amount = int(round(qty * unit_price))
+    pdf = invoice_pdf.build_invoice_pdf(
+        invoice_to=client["invoice_to"], item_desc=client.get("item_desc", ""),
+        qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=doc_no)
     pending = {
         "client_id": client["id"], "client_name": client["name"],
-        "email": client["email"], "target_ym": target_ym, "month": m,
-        "issue_date": info["issue_date"], "doc_number": doc_no,
+        "email": client["email"], "target_ym": target_ym, "month": issue_date.month,
+        "issue_date": issue_date.isoformat(), "doc_number": doc_no,
         "qty": qty, "total_kg": qty * UNIT_KG, "unit_price": unit_price,
         "amount": amount, "rows": [], "source": "manual", "warning": "",
-        "pdf_b64": base64.b64encode(pdf.read_bytes()).decode("ascii"),
-        "pdf_name": pdf_filename(info["issue_date"]),
+        "pdf_b64": base64.b64encode(pdf).decode("ascii"),
+        "pdf_name": invoice_pdf.invoice_filename(issue_date, client["name"]),
         "status": "pending", "prepared_at": datetime.now().isoformat(timespec="seconds"),
     }
     allp = get_pendings()
@@ -376,49 +387,17 @@ def sync_local_xlsx() -> list[dict]:
 
 
 def main() -> None:
+    """月次自動請求（--prepare）のみ。数量・単価の修正や手入力作成はアプリ内で
+    即時に行う（lib/invoice_pdf.py）ため、GitHub Actions経由のCLIからは行わない。"""
     import argparse
     ap = argparse.ArgumentParser(description="月次請求 クラウド版（複数請求先）")
     ap.add_argument("--prepare", action="store_true")
-    ap.add_argument("--regenerate", metavar="PENDING_KEY", default="",
-                    help="承認待ち1件の数量・単価を修正して作り直す")
-    ap.add_argument("--manual-client", metavar="CLIENT_ID", default="",
-                    help="自動集計を使わず手入力で請求書を新規作成する")
-    ap.add_argument("--qty-kg", type=float, default=None)
-    ap.add_argument("--unit-price", type=float, default=None)
     ap.add_argument("--month")
     ap.add_argument("--soffice", default="soffice")
     ap.add_argument("--workdir", default=".")
     a = ap.parse_args()
     try:
-        if a.regenerate:
-            if a.qty_kg is None or a.unit_price is None:
-                raise SystemExit("--regenerate には --qty-kg と --unit-price が必要です")
-            r = regenerate_pending(a.regenerate, a.qty_kg / UNIT_KG, a.unit_price,
-                                   soffice=a.soffice, workdir=a.workdir)
-            print(r)
-            if r.get("ok"):
-                _ntfy("Invoice: REGENERATED",
-                      f"✅ 請求書を作り直しました\n数量 {a.qty_kg:g}kg／単価 ¥{a.unit_price:,.0f}\n"
-                      f"金額 ¥{r['amount']:,}", tags="white_check_mark")
-            else:
-                _ntfy("Invoice: REGEN FAILED", f"⚠️ 作り直しに失敗：{r.get('msg')}",
-                      priority="high", tags="warning")
-        elif a.manual_client:
-            if a.qty_kg is None or a.unit_price is None or not a.month:
-                raise SystemExit("--manual-client には --month --qty-kg --unit-price が必要です")
-            r = prepare_manual(a.manual_client, a.month, a.qty_kg / UNIT_KG, a.unit_price,
-                               soffice=a.soffice, workdir=a.workdir)
-            print(r)
-            if r.get("ok"):
-                _ntfy("Invoice: CREATED",
-                      f"✅ 請求書を作成しました（{a.month}）\n"
-                      f"数量 {a.qty_kg:g}kg／単価 ¥{a.unit_price:,.0f}\n"
-                      f"金額 ¥{r['amount']:,}", tags="white_check_mark")
-            else:
-                _ntfy("Invoice: CREATE FAILED", f"⚠️ 作成に失敗：{r.get('msg')}",
-                      priority="high", tags="warning")
-        else:
-            print(prepare_all(a.month, soffice=a.soffice, workdir=a.workdir))
+        print(prepare_all(a.month, soffice=a.soffice, workdir=a.workdir))
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()
