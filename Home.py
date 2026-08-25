@@ -1362,6 +1362,25 @@ def view_analytics():
 # ===========================================================================
 # 📨 請求（請求書の発行・承認送信 ／ 請求先マスタ）
 # ===========================================================================
+def _receipt_button(key: str, p: dict) -> None:
+    """領収書を発行するボタン＋ダウンロードボタン（未送信・送信済み共通）。"""
+    rk = f"receipt_pdf_{key}"
+    if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
+        client = billing.get_client(p["client_id"]) or {}
+        st.session_state[rk] = receipt.build_receipt_pdf(
+            invoice_to=client.get("invoice_to", p["client_name"]),
+            amount=p["amount"],
+            item_desc=client.get("item_desc", ""),
+            issue_date=date.fromisoformat(p["issue_date"]),
+            doc_no=str(p["doc_number"]),
+        )
+    if st.session_state.get(rk):
+        st.download_button(
+            "↓ 領収書PDFをダウンロード", st.session_state[rk],
+            file_name=receipt.receipt_filename(p["issue_date"], p["client_name"]),
+            mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
+
+
 def _billing_issue() -> None:
     import base64
 
@@ -1428,6 +1447,8 @@ def _billing_issue() -> None:
                 f'width="100%" height="480" style="border:1px solid #ddd;'
                 f'border-radius:8px"></iframe>', unsafe_allow_html=True)
 
+            _receipt_button(key, p)
+
             with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
                 edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]),
                                       key=f"edate_{key}")
@@ -1482,21 +1503,7 @@ def _billing_issue() -> None:
             for key, p in sent_items:
                 st.write(f"✅ {p['client_name']} {p['month']}月分 ¥{p['amount']:,} "
                          f"／ 書類番号 {p['doc_number']} ／ {p.get('sent_at', '')}")
-                rk = f"receipt_pdf_{key}"
-                if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
-                    client = billing.get_client(p["client_id"]) or {}
-                    st.session_state[rk] = receipt.build_receipt_pdf(
-                        invoice_to=client.get("invoice_to", p["client_name"]),
-                        amount=p["amount"],
-                        item_desc=client.get("item_desc", ""),
-                        issue_date=date.fromisoformat(p["issue_date"]),
-                        doc_no=str(p["doc_number"]),
-                    )
-                if st.session_state.get(rk):
-                    st.download_button(
-                        "↓ 領収書PDFをダウンロード", st.session_state[rk],
-                        file_name=receipt.receipt_filename(p["issue_date"], p["client_name"]),
-                        mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
+                _receipt_button(key, p)
                 st.divider()
 
 
