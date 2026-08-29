@@ -1383,7 +1383,7 @@ def _receipt_button(key: str, p: dict) -> None:
     rk = f"receipt_pdf_{key}"
     if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
         client = billing.get_client(p["client_id"]) or {}
-        st.session_state[rk] = receipt.build_receipt_pdf(
+        pdf = receipt.build_receipt_pdf(
             invoice_to=client.get("invoice_to", p["client_name"]),
             amount=p["amount"],
             item_desc=client.get("item_desc", ""),
@@ -1392,11 +1392,22 @@ def _receipt_button(key: str, p: dict) -> None:
             payment_method=payment_method, payment_note=payment_note,
             qty=p.get("qty", 1), total_kg=p.get("total_kg"),
         )
+        st.session_state[rk] = {"pdf": pdf, "payment_method": payment_method}
     if st.session_state.get(rk):
+        rdata = st.session_state[rk]
+
+        def _save_receipt_on_download(p=p, rdata=rdata):
+            billing.save_receipt(
+                p["client_id"], date.fromisoformat(p["issue_date"]), p["doc_number"],
+                rdata["pdf"], receipt.receipt_filename(p["issue_date"], p["client_name"]),
+                rdata["payment_method"], p["amount"])
+
         st.download_button(
-            "↓ 領収書PDFをダウンロード", st.session_state[rk],
+            "↓ 領収書PDFをダウンロード", rdata["pdf"],
             file_name=receipt.receipt_filename(p["issue_date"], p["client_name"]),
-            mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
+            mime="application/pdf", key=f"recdl_{key}", use_container_width=True,
+            on_click=_save_receipt_on_download,
+            help="ダウンロードすると、次回PC起動時に「発行書類」フォルダへも自動保存されます。")
 
 
 def _billing_issue() -> None:

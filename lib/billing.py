@@ -361,6 +361,72 @@ def discard_pending(pending_key: str) -> None:
         _save_pendings(allp)
 
 
+# ===== 領収書：発行記録とPC側フォルダ保存 ==========================================
+RECEIPTS_KEY = "billing_receipts"  # {receipt_id: {...}}
+
+
+def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
+                 filename: str, payment_method: str, amount: int) -> str:
+    """発行した領収書をDBに記録する（ダウンロード時に呼ぶ）。
+
+    アプリ本体はクラウドで動くためPCのフォルダへ直接は保存できない。
+    ここでは記録だけ残し、実際のファイル書き出しはPC常駐エージェントが
+    次回起動時に sync_receipts() で行う（請求書のローカル台帳同期と同じ方式）。
+    """
+    receipts = db.get_setting(RECEIPTS_KEY) or {}
+    rid = f"{client_id}:{issue_date.isoformat()}:{int(datetime.now().timestamp())}"
+    receipts[rid] = {
+        "client_id": client_id, "issue_date": issue_date.isoformat(), "doc_number": doc_no,
+        "amount": amount, "payment_method": payment_method,
+        "pdf_b64": base64.b64encode(pdf_bytes).decode("ascii"), "filename": filename,
+        "created_at": datetime.now().isoformat(timespec="seconds"), "synced_to_folder": False,
+    }
+    db.set_setting(RECEIPTS_KEY, receipts)
+    return rid
+
+
+def _receipts_folder(client: dict) -> Path | None:
+    """請求先のローカル保存フォルダ（local_xlsxの親フォルダ、または本体がフォルダならそのまま）。"""
+    xlsx = client.get("local_xlsx") or ""
+    if not xlsx:
+        return None
+    p = Path(xlsx)
+    if not p.exists():
+        return None
+    return p if p.is_dir() else p.parent
+
+
+def sync_receipts() -> list[dict]:
+    """【PC側】未保存の領収書をクライアントのローカルフォルダ（発行書類/○○様/）へ書き出す。
+
+    ファイル名はフォルダ名（例：鉄板焼きかいか様）から組み立てる。DB上の
+    請求先名（例：鉄板焼きかいか（グラナダ）様、アプリ内部の識別用の長い表記）を
+    そのまま使うと、既存の請求書PDF（発行書類/鉄板焼きかいか様/…_鉄板焼きかいか様_
+    請求書.pdf）と命名規則がずれるため、フォルダ名に合わせて統一する。
+    """
+    out = []
+    receipts = db.get_setting(RECEIPTS_KEY) or {}
+    changed = False
+    for rid, r in receipts.items():
+        if r.get("synced_to_folder"):
+            continue
+        client = get_client(r["client_id"]) or {}
+        folder = _receipts_folder(client)
+        if not folder:
+            continue  # ローカルフォルダ未設定の請求先はPDFダウンロードのみ（クラウド保管）
+        d = r["issue_date"].replace("-", "")
+        fname = f"{d}_{folder.name}_領収書.pdf"
+        path = folder / fname
+        path.write_bytes(base64.b64decode(r["pdf_b64"]))
+        r["synced_to_folder"] = True
+        r["synced_at"] = datetime.now().isoformat(timespec="seconds")
+        changed = True
+        out.append({"client": client.get("name", r["client_id"]), "path": str(path)})
+    if changed:
+        db.set_setting(RECEIPTS_KEY, receipts)
+    return out
+
+
 # ===== PC側：ローカルExcel台帳へ同期追記 =========================================
 def sync_local_xlsx() -> list[dict]:
     """送信済みだがローカル台帳未反映の請求書を、各請求先のlocal_xlsxへ追記。"""

@@ -204,6 +204,26 @@ def _check_granada_sync() -> None:
         print("請求台帳同期をスキップ（次回再試行）:", e, flush=True)
 
 
+_receipt_next_check = 0.0  # 次に領収書同期を確認するUNIX時刻（負荷軽減のため間引く）
+
+
+def _check_receipt_sync() -> None:
+    """クラウドでダウンロードされた領収書PDFを、各請求先のローカルフォルダ
+    （発行書類/○○様/）へ書き出す。DB側の synced_to_folder で冪等。5分ごとに確認。"""
+    global _receipt_next_check
+    import time as _t
+    if _t.time() < _receipt_next_check:
+        return
+    _receipt_next_check = _t.time() + 300
+    try:
+        from lib import billing
+        synced = billing.sync_receipts()
+        for s in synced:
+            print("領収書をフォルダへ保存:", s.get("client"), s.get("path"), flush=True)
+    except Exception as e:  # noqa: BLE001
+        print("領収書フォルダ同期をスキップ（次回再試行）:", e, flush=True)
+
+
 def main() -> None:
     db.init_db()
     if "--b2-test" in sys.argv:
@@ -234,6 +254,7 @@ def main() -> None:
                 _check_b2_pickup()
                 _check_b2_history()
                 _check_granada_sync()
+                _check_receipt_sync()
             except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
                 print("一時エラー（次回再試行）:", e, flush=True)
             time.sleep(INTERVAL)
