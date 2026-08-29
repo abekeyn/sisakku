@@ -23,9 +23,13 @@ STAMP_DUTY_THRESHOLD = 50_000
 
 def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
                       issue_date: date | None = None, doc_no: str = "",
-                      payment_method: str = "bank", payment_note: str = "") -> bytes:
+                      payment_method: str = "bank", payment_note: str = "",
+                      qty: float = 1, total_kg: float | None = None) -> bytes:
     """領収書PDF(bytes)を作る（A5サイズ）。amountは税込金額。
 
+    item_descは「精米5kg」のような1個あたりの品名。qtyが1件でない場合、
+    但し書きに「×個数（合計◯kg）」を付け、金額と数量が食い違って見えない
+    ようにする（品名の"5kg"だけを見て全体の金額だと誤解されるのを防ぐ）。
     payment_method: "bank"(振込・既定) / "cash"(現金) / "other"(自由記述)。
     "other" のときは payment_note の内容をそのまま注記として使う。
     """
@@ -35,6 +39,11 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     issue_date = issue_date or date.today()
     tax_excl = round(amount / (1 + pc.TAX_RATE))
     tax = amount - tax_excl
+
+    desc = item_desc
+    if qty and qty != 1:
+        kg_note = f"　合計{total_kg:g}kg" if total_kg else ""
+        desc = f"{item_desc}　×{qty:g}{kg_note}"
 
     note = payment_note.strip() if payment_method == "other" else PAYMENT_NOTES.get(
         payment_method, PAYMENT_NOTES["bank"])
@@ -69,8 +78,13 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     text(m + 14, box_y + 5, "ご請求金額", size=10)
     text(w - m - 14, box_y + 5, f"¥ {amount:,} －", size=16, align="right")
 
-    text(m, box_y - 32, f"但し　{item_desc} として", size=9.5)
-    text(m, box_y - 48, "上記正に領収いたしました。", size=9.5)
+    tadashi = f"但し　{desc} として"
+    if pdfmetrics.stringWidth(tadashi, pc.FONT_NAME, 9.5) > w - 2 * m:
+        text(m, box_y - 32, f"但し　{desc}", size=9.5)
+        text(m, box_y - 46, "として上記正に領収いたしました。", size=9.5)
+    else:
+        text(m, box_y - 32, tadashi, size=9.5)
+        text(m, box_y - 46, "上記正に領収いたしました。", size=9.5)
 
     iy = box_y - 78
     text(m, iy, "【内訳】", size=8.5)

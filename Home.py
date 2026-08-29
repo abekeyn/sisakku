@@ -1390,6 +1390,7 @@ def _receipt_button(key: str, p: dict) -> None:
             issue_date=date.fromisoformat(p["issue_date"]),
             doc_no=str(p["doc_number"]),
             payment_method=payment_method, payment_note=payment_note,
+            qty=p.get("qty", 1), total_kg=p.get("total_kg"),
         )
     if st.session_state.get(rk):
         st.download_button(
