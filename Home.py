@@ -1362,8 +1362,24 @@ def view_analytics():
 # ===========================================================================
 # 📨 請求（請求書の発行・承認送信 ／ 請求先マスタ）
 # ===========================================================================
+_PAYMENT_OPTS = {"振込": "bank", "現金": "cash", "その他（自由記述）": "other"}
+
+
 def _receipt_button(key: str, p: dict) -> None:
     """領収書を発行するボタン＋ダウンロードボタン（未送信・送信済み共通）。"""
+    pm_label = st.selectbox("入金方法", list(_PAYMENT_OPTS), key=f"pm_{key}")
+    payment_method = _PAYMENT_OPTS[pm_label]
+    payment_note = ""
+    if payment_method == "other":
+        payment_note = st.text_input(
+            "領収書に記載する注記", key=f"pmnote_{key}",
+            placeholder="例：クレジットカード決済にて受領いたしました。")
+    elif payment_method == "cash":
+        tax_excl = round(p["amount"] / (1 + billing.TAX_RATE))
+        if tax_excl >= receipt.STAMP_DUTY_THRESHOLD:
+            st.caption("⚠ 税抜5万円以上の現金領収のため、印刷後に収入印紙の貼付が必要です"
+                       "（領収書に貼付欄を印字します）。")
+
     rk = f"receipt_pdf_{key}"
     if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
         client = billing.get_client(p["client_id"]) or {}
@@ -1373,6 +1389,7 @@ def _receipt_button(key: str, p: dict) -> None:
             item_desc=client.get("item_desc", ""),
             issue_date=date.fromisoformat(p["issue_date"]),
             doc_no=str(p["doc_number"]),
+            payment_method=payment_method, payment_note=payment_note,
         )
     if st.session_state.get(rk):
         st.download_button(
