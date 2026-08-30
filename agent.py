@@ -208,8 +208,10 @@ _receipt_next_check = 0.0  # 次に領収書同期を確認するUNIX時刻（�
 
 
 def _check_receipt_sync() -> None:
-    """クラウドでダウンロードされた領収書PDFを、各請求先のローカルフォルダ
-    （発行書類/○○様/）へ書き出す。DB側の synced_to_folder で冪等。5分ごとに確認。"""
+    """クラウドで発行された領収書・給与明細PDFをローカルフォルダへ書き出す。
+
+    領収書は各請求先の発行書類/○○様/、給与明細は発行書類/給与明細/。
+    DB側の synced_to_folder で冪等。5分ごとに確認。"""
     global _receipt_next_check
     import time as _t
     if _t.time() < _receipt_next_check:
@@ -222,6 +224,12 @@ def _check_receipt_sync() -> None:
             print("領収書をフォルダへ保存:", s.get("client"), s.get("path"), flush=True)
     except Exception as e:  # noqa: BLE001
         print("領収書フォルダ同期をスキップ（次回再試行）:", e, flush=True)
+    try:
+        from lib import payslip
+        for s in payslip.sync_payslips():
+            print("給与明細をフォルダへ保存:", s.get("employee"), s.get("path"), flush=True)
+    except Exception as e:  # noqa: BLE001
+        print("給与明細フォルダ同期をスキップ（次回再試行）:", e, flush=True)
 
 
 def main() -> None:

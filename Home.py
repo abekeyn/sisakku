@@ -27,7 +27,8 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter,
-                 komeful, logic, postal, receipt, seed, shipping, shopify_api, ui, yamato)
+                 komeful, logic, payslip, postal, receipt, seed, shipping,
+                 shopify_api, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -1392,22 +1393,26 @@ def _receipt_button(key: str, p: dict) -> None:
             payment_method=payment_method, payment_note=payment_note,
             qty=p.get("qty", 1), total_kg=p.get("total_kg"),
         )
-        st.session_state[rk] = {"pdf": pdf, "payment_method": payment_method}
+        # 発行した時点で記録＋フォルダ保存まで済ませる。ダウンロードし忘れても
+        # 控えが残るようにするため（給与明細タブと同じ挙動）。
+        fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
+        rid = billing.save_receipt(
+            p["client_id"], date.fromisoformat(p["issue_date"]), p["doc_number"],
+            pdf, fname, payment_method, p["amount"])
+        saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
+        st.session_state[rk] = {
+            "pdf": pdf, "filename": fname,
+            "path": next((s["path"] for s in saved if s.get("id") == rid), ""),
+        }
     if st.session_state.get(rk):
         rdata = st.session_state[rk]
-
-        def _save_receipt_on_download(p=p, rdata=rdata):
-            billing.save_receipt(
-                p["client_id"], date.fromisoformat(p["issue_date"]), p["doc_number"],
-                rdata["pdf"], receipt.receipt_filename(p["issue_date"], p["client_name"]),
-                rdata["payment_method"], p["amount"])
-
+        if rdata["path"]:
+            st.success(f"発行しました。{rdata['path']} に保存済みです。")
+        else:
+            st.success("発行しました。次回PC起動時に「発行書類」フォルダへ保存されます。")
         st.download_button(
-            "↓ 領収書PDFをダウンロード", rdata["pdf"],
-            file_name=receipt.receipt_filename(p["issue_date"], p["client_name"]),
-            mime="application/pdf", key=f"recdl_{key}", use_container_width=True,
-            on_click=_save_receipt_on_download,
-            help="ダウンロードすると、次回PC起動時に「発行書類」フォルダへも自動保存されます。")
+            "↓ 領収書PDFをダウンロード", rdata["pdf"], file_name=rdata["filename"],
+            mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
 
 
 def _billing_issue() -> None:
@@ -1611,6 +1616,233 @@ def view_billing() -> None:
         _billing_master()
 
 
+def _month_end(y: int, mo: int) -> date:
+    import calendar
+    return date(y, mo, calendar.monthrange(y, mo)[1])
+
+
+def _recent_months(n: int = 13) -> list[str]:
+    """当月から過去n-1か月分の 'YYYY-MM' リスト（新しい順）。"""
+    out, d = [], today().replace(day=1)
+    for _ in range(n):
+        out.append(d.strftime("%Y-%m"))
+        d = (d - timedelta(days=1)).replace(day=1)
+    return out
+
+
+def _editor_rows(df, taxfree: bool) -> list[dict]:
+    """data_editorの表を明細の行リストへ戻す（空行・NaNは捨てる）。"""
+    rows = []
+    for _, r in df.iterrows():
+        name = str(r["項目"] or "").strip()
+        if not name or name.lower() == "nan":
+            continue
+        amt = r["金額"]
+        amt = 0 if pd.isna(amt) else int(amt)
+        row = {"name": name, "amount": amt}
+        if taxfree:
+            row["taxfree"] = bool(r["非課税"]) and not pd.isna(r["非課税"])
+        rows.append(row)
+    return rows
+
+
+def _payroll_issue() -> None:
+    emps = payslip.get_employees()
+    if not emps:
+        st.info("まず「従業員・支払者」タブで従業員を登録してください。")
+        return
+
+    opts = {e["id"]: e["name"] for e in emps}
+    c1, c2, c3 = st.columns([2, 1.4, 1.4])
+    with c1:
+        emp_id = st.selectbox("従業員", list(opts), format_func=lambda k: opts[k],
+                              key="pay_emp")
+    with c2:
+        ym = st.selectbox("対象月", _recent_months(), key="pay_ym")
+    y, mo = int(ym[:4]), int(ym[5:7])
+    with c3:
+        pay_date = st.date_input("支給日", value=_month_end(y, mo), key="pay_date",
+                                 format="YYYY/MM/DD")
+    emp = payslip.get_employee(emp_id) or {}
+
+    c4, c5 = st.columns(2)
+    with c4:
+        period = st.date_input(
+            "計算期間", value=(date(y, mo, 1), _month_end(y, mo)),
+            key="pay_period", format="YYYY/MM/DD")
+    with c5:
+        show_attend = st.checkbox("勤怠（就業日数・労働時間）を記載する", key="pay_attend")
+    p_from, p_to = (period if isinstance(period, tuple) and len(period) == 2
+                    else (date(y, mo, 1), _month_end(y, mo)))
+
+    work_days = work_hours = None
+    if show_attend:
+        c6, c7 = st.columns(2)
+        with c6:
+            work_days = st.number_input("就業日数", min_value=0.0, max_value=31.0,
+                                        value=0.0, step=0.5, key="pay_days")
+        with c7:
+            work_hours = st.number_input("労働時間", min_value=0.0, value=0.0,
+                                         step=1.0, key="pay_hours")
+
+    earn0, ded0 = payslip.prefill(emp)
+    if payslip.latest_slip(emp_id):
+        st.caption("金額は前回発行した明細の内容を初期表示しています。変更があれば直してください。")
+
+    c8, c9 = st.columns(2)
+    with c8:
+        st.markdown("**支給**")
+        e_ed = st.data_editor(
+            pd.DataFrame([{"項目": e["name"], "金額": int(e["amount"]),
+                           "非課税": bool(e.get("taxfree"))} for e in earn0]),
+            num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=f"pay_earn_{emp_id}_{ym}",
+            column_config={"金額": st.column_config.NumberColumn(format="%d", step=1000,
+                                                                min_value=0),
+                           "非課税": st.column_config.CheckboxColumn(
+                               help="通勤手当など、所得税の課税対象にしない支給")})
+    with c9:
+        st.markdown("**控除**")
+        d_ed = st.data_editor(
+            pd.DataFrame([{"項目": d["name"], "金額": int(d["amount"])} for d in ded0]),
+            num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=f"pay_ded_{emp_id}_{ym}",
+            column_config={"金額": st.column_config.NumberColumn(format="%d", step=100,
+                                                                min_value=0)})
+
+    earnings = _editor_rows(e_ed, taxfree=True)
+    deductions = _editor_rows(d_ed, taxfree=False)
+    t = payslip.totals(earnings, deductions)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("支給合計", f"¥{t['gross']:,}")
+    m2.metric("控除合計", f"¥{t['deduction']:,}")
+    m3.metric("差引支給額", f"¥{t['net']:,}")
+
+    # 源泉所得税は手入力。金額の目安だけ添える（税額表・月額表の甲欄が前提）。
+    tax_row = next((d for d in deductions if "源泉" in d["name"]), None)
+    if t["taxable"] < payslip.KOU_ZERO_LIMIT and tax_row and tax_row["amount"] > 0:
+        st.caption(f"ℹ 課税対象支給額が¥{payslip.KOU_ZERO_LIMIT:,}未満です。扶養控除等申告書の"
+                   "提出があれば、源泉徴収税額表（月額表・甲欄）では0円になります。")
+    elif t["taxable"] >= payslip.KOU_ZERO_LIMIT and (not tax_row or tax_row["amount"] == 0):
+        st.caption(f"ℹ 課税対象支給額が¥{payslip.KOU_ZERO_LIMIT:,}以上のため、通常は源泉所得税の"
+                   "天引きが必要です（源泉徴収税額表・月額表で確認してください）。")
+
+    note = st.text_input("備考（明細に印字する注記）", value="お振込みにて支給いたします。",
+                         key="pay_note")
+
+    pk = f"payslip_pdf_{emp_id}_{ym}"
+    if st.button("📄 給与明細を発行", key="pay_issue", use_container_width=True,
+                 type="primary", disabled=t["gross"] <= 0,
+                 help=None if t["gross"] > 0 else "支給額を入力すると発行できます"):
+        pdf = payslip.build_payslip_pdf(
+            employee_name=emp["name"], pay_date=pay_date,
+            period_from=p_from, period_to=p_to,
+            earnings=earnings, deductions=deductions,
+            work_days=work_days if show_attend else None,
+            work_hours=work_hours if show_attend else None,
+            note=note)
+        fname = payslip.payslip_filename(pay_date, emp["name"])
+        payslip.save_slip(emp_id, emp["name"], ym, pay_date, t,
+                          earnings, deductions, pdf, fname)
+        saved = payslip.sync_payslips()   # PCなら「発行書類/給与明細/」へ即保存
+        st.session_state[pk] = {"pdf": pdf, "filename": fname,
+                                "path": saved[0]["path"] if saved else ""}
+
+    data = st.session_state.get(pk)
+    if data:
+        if data["path"]:
+            st.success(f"発行しました。{data['path']} に保存済みです。")
+        else:
+            st.success("発行しました。次回PC起動時に「発行書類／給与明細」へ保存されます。")
+        st.download_button("↓ 給与明細PDFをダウンロード", data["pdf"],
+                           file_name=data["filename"], mime="application/pdf",
+                           key="pay_dl", use_container_width=True)
+
+
+def _payroll_history() -> None:
+    import base64
+
+    slips = payslip.get_slips()
+    if not slips:
+        st.caption("まだ発行した明細はありません。")
+        return
+    emps = {e["id"]: e["name"] for e in payslip.get_employees()}
+    year = today().year
+    for eid, name in emps.items():
+        yt = payslip.year_total(eid, year)
+        if yt["gross"]:
+            st.caption(f"{name}：{year}年の支給累計 ¥{yt['gross']:,}／"
+                       f"控除累計 ¥{yt['deduction']:,}（源泉徴収票・年末調整の確認用）")
+    st.divider()
+    for key, s in sorted(slips.items(), key=lambda kv: kv[1]["pay_date"], reverse=True):
+        mark = "📁" if s.get("synced_to_folder") else "☁"
+        with st.expander(f"{mark} {s['pay_date']}　{s['employee_name']}　"
+                         f"差引 ¥{s['net']:,}（支給 ¥{s['gross']:,}／控除 ¥{s['deduction']:,}）"):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("↓ PDF", base64.b64decode(s["pdf_b64"]),
+                                   file_name=s["filename"], mime="application/pdf",
+                                   key=f"payhdl_{key}", use_container_width=True)
+            with c2:
+                if st.button("🗑 削除", key=f"paydel_{key}", use_container_width=True):
+                    payslip.delete_slip(key)
+                    st.rerun()
+
+
+def _payroll_master() -> None:
+    st.markdown("**従業員**")
+    for e in payslip.get_employees():
+        with st.expander(f"👤 {e['name']}"):
+            with st.form(f"payemp_{e['id']}"):
+                nm = st.text_input("氏名", value=e["name"])
+                memo = st.text_input("備考", value=e.get("note", ""))
+                c1, c2 = st.columns(2)
+                if c1.form_submit_button("保存", use_container_width=True):
+                    payslip.upsert_employee({**e, "name": nm.strip(), "note": memo})
+                    st.rerun()
+                if c2.form_submit_button("削除", use_container_width=True):
+                    payslip.delete_employee(e["id"])
+                    st.rerun()
+    with st.expander("＋ 従業員を追加"):
+        with st.form("payemp_new"):
+            nm = st.text_input("氏名", placeholder="例：阿部　太郎")
+            memo = st.text_input("備考", placeholder="例：2026年8月〜")
+            if st.form_submit_button("追加", use_container_width=True) and nm.strip():
+                ids = {x["id"] for x in payslip.get_employees()}
+                new_id = next(f"emp{i}" for i in range(1, 100) if f"emp{i}" not in ids)
+                payslip.upsert_employee({"id": new_id, "name": nm.strip(), "note": memo})
+                st.rerun()
+
+    st.divider()
+    st.markdown("**支払者（事業主）** — 明細の右下に印字されます")
+    er = payslip.get_employer()
+    with st.form("pay_employer"):
+        name = st.text_input("事業所名", value=er.get("name", ""))
+        rep = st.text_input("代表者名", value=er.get("rep", ""))
+        addr = st.text_input("住所", value=er.get("address", ""))
+        tel = st.text_input("電話番号", value=er.get("tel", ""))
+        folder = st.text_input("PDFの保存先フォルダ",
+                               value=db.get_setting(payslip.FOLDER_KEY)
+                               or payslip.DEFAULT_FOLDER)
+        if st.form_submit_button("保存", use_container_width=True):
+            payslip.save_employer({"name": name, "rep": rep, "address": addr, "tel": tel})
+            db.set_setting(payslip.FOLDER_KEY, folder)
+            st.success("保存しました")
+
+
+def view_payroll() -> None:
+    st.subheader("💴 給与")
+    tab_issue, tab_hist, tab_master = st.tabs(
+        ["給与明細の発行", "発行履歴", "従業員・支払者"])
+    with tab_issue:
+        _payroll_issue()
+    with tab_hist:
+        _payroll_history()
+    with tab_master:
+        _payroll_master()
+
+
 # 通知リンク（?tab=billing）から開かれたら請求タブを初期選択
 if "nav" not in st.session_state and st.query_params.get("tab") == "billing":
     st.session_state["nav"] = "請求"
@@ -1628,5 +1860,7 @@ elif view == "分析":
     view_analytics()
 elif view == "請求":
     view_billing()
+elif view == "給与":
+    view_payroll()
 else:
     view_settings()

@@ -367,13 +367,21 @@ RECEIPTS_KEY = "billing_receipts"  # {receipt_id: {...}}
 
 def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
                  filename: str, payment_method: str, amount: int) -> str:
-    """発行した領収書をDBに記録する（ダウンロード時に呼ぶ）。
+    """発行した領収書をDBに記録する（発行ボタンを押した時点で呼ぶ）。
 
-    アプリ本体はクラウドで動くためPCのフォルダへ直接は保存できない。
-    ここでは記録だけ残し、実際のファイル書き出しはPC常駐エージェントが
-    次回起動時に sync_receipts() で行う（請求書のローカル台帳同期と同じ方式）。
+    アプリ本体はクラウドでも動くためPCのフォルダへ直接は保存できない。
+    ここでは記録を残し、実際のファイル書き出しは sync_receipts() が行う
+    （PC上で使っているときは発行直後に、クラウド経由なら常駐エージェントが）。
+
+    同じ請求先・同じ発行日のものは「作り直し（再発行）」とみなして置き換える。
+    入金方法を選び直して発行し直すたびに記録が増えると、同じ領収書が何度も
+    フォルダへ書き出されてしまうため。
     """
     receipts = db.get_setting(RECEIPTS_KEY) or {}
+    for old in [k for k, v in receipts.items()
+                if v.get("client_id") == client_id
+                and v.get("issue_date") == issue_date.isoformat()]:
+        receipts.pop(old)
     rid = f"{client_id}:{issue_date.isoformat()}:{int(datetime.now().timestamp())}"
     receipts[rid] = {
         "client_id": client_id, "issue_date": issue_date.isoformat(), "doc_number": doc_no,
@@ -421,7 +429,8 @@ def sync_receipts() -> list[dict]:
         r["synced_to_folder"] = True
         r["synced_at"] = datetime.now().isoformat(timespec="seconds")
         changed = True
-        out.append({"client": client.get("name", r["client_id"]), "path": str(path)})
+        out.append({"id": rid, "client": client.get("name", r["client_id"]),
+                    "path": str(path)})
     if changed:
         db.set_setting(RECEIPTS_KEY, receipts)
     return out
@@ -438,7 +447,10 @@ def sync_local_xlsx() -> list[dict]:
             continue
         client = get_client(p["client_id"]) or {}
         xlsx = client.get("local_xlsx")
-        if not xlsx or not Path(xlsx).exists():
+        # local_xlsx にはExcel台帳のファイル、または領収書の保存先フォルダだけを
+        # 設定している請求先がある。フォルダをExcelとして開こうとすると毎回失敗して
+        # 同期が延々と再試行になるため、実ファイルのときだけ台帳追記を行う。
+        if not xlsx or not Path(xlsx).is_file():
             continue  # ローカル台帳が無い請求先はPDFのみ（クラウド保管）
         from lib import granada_invoice as gi  # win32com（PC専用）
         info = gi.generate(p["target_ym"], p["qty"], xlsx_path=Path(xlsx),
