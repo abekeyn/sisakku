@@ -53,7 +53,7 @@ DEFAULT_CLIENTS = [{
         "内容についてご確認の上、\nご不明点等ございましたらご返信をお願いいたします。\n\n"
         "以上、よろしくお願いいたします。\n"),
     "last_doc_no": 260004,
-    "local_xlsx": r"C:\Users\wolhp\OneDrive\デスクトップ\発行書類\鉄板焼きかいか様\グラナダ様請求書.xlsx",
+    "local_xlsx": r"C:\Users\wolhp\OneDrive\デスクトップ\発行書類\t_鉄板焼きかいか様\グラナダ様請求書.xlsx",
     "active": True,
 }]
 
@@ -393,6 +393,15 @@ def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
     return rid
 
 
+def _folder_label(folder: Path) -> str:
+    """フォルダ名から並び替え用の接頭辞を落とした表記を返す。
+
+    発行書類の下は「k_京香様」のように頭文字を付けて並べているが、その接頭辞は
+    ファイル名には入れない（20260829_京香様_領収書.pdf のままにする）。
+    """
+    return re.sub(r"^[0-9A-Za-z]{1,3}_", "", folder.name)
+
+
 def _receipts_folder(client: dict) -> Path | None:
     """請求先のローカル保存フォルダ（local_xlsxの親フォルダ、または本体がフォルダならそのまま）。"""
     xlsx = client.get("local_xlsx") or ""
@@ -423,7 +432,7 @@ def sync_receipts() -> list[dict]:
         if not folder:
             continue  # ローカルフォルダ未設定の請求先はPDFダウンロードのみ（クラウド保管）
         d = r["issue_date"].replace("-", "")
-        fname = f"{d}_{folder.name}_領収書.pdf"
+        fname = f"{d}_{_folder_label(folder)}_領収書.pdf"
         path = folder / fname
         path.write_bytes(base64.b64decode(r["pdf_b64"]))
         r["synced_to_folder"] = True

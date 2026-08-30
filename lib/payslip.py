@@ -29,7 +29,7 @@ SLIPS_KEY = "payroll_slips"           # 発行済み明細 {f"{emp_id}:{ym}": sl
 FOLDER_KEY = "payroll_folder"         # ローカル保存先（発行書類/給与明細/）
 EMPLOYER_KEY = "payroll_employer"     # 支払者（事業主）情報
 
-DEFAULT_FOLDER = r"C:\Users\wolhp\OneDrive\デスクトップ\発行書類\給与明細"
+DEFAULT_FOLDER = r"C:\Users\wolhp\OneDrive\デスクトップ\発行書類\z_給与明細"
 # 事業主（給与の支払者）は阿部　喜之。請求書の担当者（阿部　喜臣）とは別人なので、
 # pdf_common の ISSUER_CONTACT は流用しない。
 DEFAULT_EMPLOYER = {"name": pc.ISSUER_NAME, "rep": "阿部　喜之",

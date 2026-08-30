@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 
 INVOICE_XLSX = Path(
-    r"C:/Users/wolhp/OneDrive/デスクトップ/発行書類/鉄板焼きかいか様/グラナダ様請求書.xlsx"
+    r"C:/Users/wolhp/OneDrive/デスクトップ/発行書類/t_鉄板焼きかいか様/グラナダ様請求書.xlsx"
 )
 OUT_DIR = INVOICE_XLSX.parent
 UNIT_KG = 5.0            # 1個あたり
