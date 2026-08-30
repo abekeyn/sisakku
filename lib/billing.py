@@ -53,6 +53,7 @@ DEFAULT_CLIENTS = [{
         "内容についてご確認の上、\nご不明点等ございましたらご返信をお願いいたします。\n\n"
         "以上、よろしくお願いいたします。\n"),
     "last_doc_no": 260004,
+    "folder": "t_鉄板焼きかいか様",   # 発行書類の下に作る保存先フォルダ名
     "local_xlsx": r"C:\Users\wolhp\OneDrive\デスクトップ\発行書類\t_鉄板焼きかいか様\グラナダ様請求書.xlsx",
     "active": True,
 }]
@@ -402,8 +403,32 @@ def _folder_label(folder: Path) -> str:
     return re.sub(r"^[0-9A-Za-z]{1,3}_", "", folder.name)
 
 
-def _receipts_folder(client: dict) -> Path | None:
-    """請求先のローカル保存フォルダ（local_xlsxの親フォルダ、または本体がフォルダならそのまま）。"""
+def folder_configured(client: dict) -> bool:
+    """保存先が設定されているかどうか（フォルダが実在するかは問わない）。
+
+    receipts_folder() はPCにフォルダが無いと None を返すため、クラウドでは
+    「未設定」と「PCが手元に無いだけ」を区別できない。設定漏れの警告には
+    こちらを使う。
+    """
+    return bool((client.get("folder") or "").strip()
+                or (client.get("local_xlsx") or "").strip())
+
+
+def receipts_folder(client: dict) -> Path | None:
+    """請求先のローカル保存フォルダ。無ければ作る（PC以外ではNone）。
+
+    folder（「発行書類」直下のフォルダ名。例：k_京香様）を優先する。設定されて
+    いれば実体が無くても作成するので、取引先を増やすときにエクスプローラーで
+    先にフォルダを用意しておく必要はない。
+    folder が空のときは、従来どおり local_xlsx（Excel台帳のパス）から解決する。
+    """
+    name = (client.get("folder") or "").strip()
+    if name:
+        if not config.DOCS_ROOT.exists():
+            return None      # クラウド等、発行書類フォルダが無い環境
+        p = config.DOCS_ROOT / name
+        p.mkdir(parents=True, exist_ok=True)
+        return p
     xlsx = client.get("local_xlsx") or ""
     if not xlsx:
         return None
@@ -428,7 +453,7 @@ def sync_receipts() -> list[dict]:
         if r.get("synced_to_folder"):
             continue
         client = get_client(r["client_id"]) or {}
-        folder = _receipts_folder(client)
+        folder = receipts_folder(client)
         if not folder:
             continue  # ローカルフォルダ未設定の請求先はPDFダウンロードのみ（クラウド保管）
         d = r["issue_date"].replace("-", "")

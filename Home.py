@@ -1408,8 +1408,12 @@ def _receipt_button(key: str, p: dict) -> None:
         rdata = st.session_state[rk]
         if rdata["path"]:
             st.success(f"発行しました。{rdata['path']} に保存済みです。")
-        else:
+        elif billing.folder_configured(billing.get_client(p["client_id"]) or {}):
             st.success("発行しました。次回PC起動時に「発行書類」フォルダへ保存されます。")
+        else:
+            st.success("発行しました。")
+            st.warning("この請求先は保存先フォルダが未設定のため、PCには保存されません。"
+                       "下の「請求先マスタ」で保存先フォルダ名を設定してください。")
         st.download_button(
             "↓ 領収書PDFをダウンロード", rdata["pdf"], file_name=rdata["filename"],
             mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
@@ -1571,8 +1575,16 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
         doc_no = st.number_input("最後に発番した書類番号（次回はこの+1）",
                                  value=int(c.get("last_doc_no", 260000)), step=1,
                                  key=f"dn_{fid}")
-        local_xlsx = st.text_input("ローカルExcel台帳のパス（任意・PC起動時に追記）",
-                                   c.get("local_xlsx", ""), key=f"lx_{fid}")
+        folder = st.text_input(
+            "領収書の保存先フォルダ名", c.get("folder", ""), key=f"fd_{fid}",
+            placeholder="例：k_京香様",
+            help="「発行書類」の下にこの名前でフォルダを自動で作ります。頭文字を"
+                 "付けておくと一覧の並びが揃います（こ→k・す→s・て→t）。"
+                 "空欄だと領収書はPCに保存されません。")
+        local_xlsx = st.text_input("ローカルExcel台帳のファイルパス（任意・PC起動時に追記）",
+                                   c.get("local_xlsx", ""), key=f"lx_{fid}",
+                                   help="請求書をExcel台帳へ追記している請求先だけ設定します。"
+                                        "通常は空欄で構いません。")
         active = st.checkbox("有効（月末に自動作成する）", value=c.get("active", True),
                              key=f"ac_{fid}")
         if st.form_submit_button("保存", type="primary"):
@@ -1584,9 +1596,11 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
                 "invoice_to": invoice_to.strip(), "email": email.strip(),
                 "customer_id": customer_id, "price_per_5kg": int(price),
                 "item_desc": item, "subject_tmpl": subject, "body_tmpl": body,
-                "last_doc_no": int(doc_no), "local_xlsx": local_xlsx.strip(),
-                "active": bool(active)})
-            st.success("保存しました。")
+                "last_doc_no": int(doc_no), "folder": folder.strip(),
+                "local_xlsx": local_xlsx.strip(), "active": bool(active)})
+            # 設定したフォルダはこの場で作る（PCで操作しているとき）
+            made = billing.receipts_folder(billing.get_client(cid.strip()) or {})
+            st.success(f"保存しました。保存先：{made}" if made else "保存しました。")
             st.rerun()
     if not is_new:
         if st.button("この請求先を削除", key=f"del_{fid}"):
@@ -1596,6 +1610,11 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
 
 def _billing_master() -> None:
     st.caption("月末に自動で請求書を作成・送信する取引先の一覧。ここで追加・編集できます。")
+    # 保存先フォルダの設定漏れは、領収書が黙ってPCに残らない事故になるため目立たせる
+    unset = [c["name"] for c in billing.get_clients() if not billing.folder_configured(c)]
+    if unset:
+        st.warning("保存先フォルダが未設定です。この請求先の領収書はPCに保存されません："
+                   + "／".join(unset))
     custs = db.list_customers()
     cust_opts = {c["id"]: f"{c['name']}（{c.get('company') or '—'}）" for c in custs}
     for c in billing.get_clients():

@@ -17,6 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 _SECRETS_FILE = ROOT / ".streamlit" / "secrets.toml"
 
+# 発行済み書類（請求書・領収書・給与明細）をためるPC上のフォルダ。
+# この下に「k_京香様」「z_給与明細」のように、並び替え用の頭文字を付けた
+# フォルダを置く。クラウド（Linux）にはこのパスが無いので、保存処理は
+# 自動的に素通りし、PC常駐エージェントが後から書き出す。
+DOCS_ROOT = Path(r"C:\Users\wolhp\OneDrive\デスクトップ\発行書類")
+
 
 def _from_file(key: str):
     try:
