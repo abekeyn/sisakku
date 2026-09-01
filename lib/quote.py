@@ -30,6 +30,7 @@ QUOTES_KEY = "quotes"             # {quote_id: {...}}
 DOC_NO_KEY = "quote_last_doc_no"  # 最後に発番した見積番号
 MAIL_KEY = "quote_mail_tmpl"      # メール文面の既定（件名・本文）
 FOLDER_KEY = "quote_folder"       # 保存先（発行書類/m_見積書/）
+SHOW_TAX_KEY = "quote_show_tax"   # 合計欄（税抜・消費税の内訳）を印字するか
 
 DOC_NO_BASE = 260000              # 発番の起点（26年・0001から）
 DEFAULT_FOLDER = str(config.DOCS_ROOT / "m_見積書")
@@ -337,15 +338,51 @@ def _fit_size(s: str, max_w: float, size: float, min_size: float = 7.0) -> float
     return size
 
 
+def _fit_lines(s: str, max_w: float, size: float, max_lines: int = 2) -> list[str]:
+    """明細1セル分の行リスト。max_lines行に収まらない分は末尾を…で切る。
+
+    文字を小さくして押し込むのではなく折り返す（品名と適用条件が重なって
+    読めなくなるのを防ぐ）。
+    """
+    lines = _wrap(s, max_w, size)
+    if len(lines) <= max_lines:
+        return lines
+    head = lines[:max_lines]
+    last = head[-1]
+    while last and pdfmetrics.stringWidth(last + "…", pc.FONT_NAME, size) > max_w:
+        last = last[:-1]
+    head[-1] = last + "…"
+    return head
+
+
 def _wrap(s: str, max_w: float, size: float) -> list[str]:
-    """max_w幅で折り返した行のリスト（日本語なので1文字ずつ詰めて測る）。"""
+    """max_w幅で折り返した行のリスト（日本語なので1文字ずつ詰めて測る）。
+
+    行の途中に空白があればそこで切る（「コシヒカリ (精／米) 30kg」のように
+    単語の途中で割れて読みにくくなるのを避けるため）。
+    """
     lines: list[str] = []
     for para in (s or "").split("\n"):
         cur = ""
         for ch in para:
             if cur and pdfmetrics.stringWidth(cur + ch, pc.FONT_NAME, size) > max_w:
-                lines.append(cur)
-                cur = ch
+                cut = max(cur.rfind(" "), cur.rfind("　"))
+                if cut < len(cur) * 0.5 and ch.isascii() and ch.isalnum():
+                    # 「40kg」「30kg」が行またぎで割れないよう英数字のかたまりごと送る
+                    cut = len(cur)
+                    while cut > 0 and cur[cut - 1].isascii() and cur[cut - 1].isalnum():
+                        cut -= 1
+                    if cut > len(cur) * 0.5:
+                        lines.append(cur[:cut])
+                        cur = cur[cut:] + ch
+                        continue
+                    cut = -1
+                if cut >= len(cur) * 0.5:
+                    lines.append(cur[:cut])
+                    cur = cur[cut + 1:] + ch
+                else:
+                    lines.append(cur)
+                    cur = ch
             else:
                 cur += ch
         lines.append(cur)
@@ -355,7 +392,8 @@ def _wrap(s: str, max_w: float, size: float) -> list[str]:
 def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
                     issue_date: date, doc_no, valid_until: date | None = None,
                     title: str = "", fields: list[dict] | None = None,
-                    headline: str = "", note: str = "") -> bytes:
+                    headline: str = "", note: str = "",
+                    show_tax: bool = True) -> bytes:
     """見積書PDF(bytes)を作る（A4。品目が多ければ続きのページへ送る）。
 
     tax_included=True なら単価・金額を税込で印字する（お客様に伝えている金額を
@@ -363,6 +401,8 @@ def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
     fields は「納期」「お支払条件」など、件名の下に並べる自由な記載項目
     （[{"label": ..., "value": ...}, ...]）。有効期限はその先頭に自動で入る。
     headline は見積金額欄に出す文言（空なら合計または単価レンジを自動で出す）。
+    show_tax=False なら、明細の下の合計欄（税抜金額合計・消費税等・税込合計）を
+    印字しない（金額は上のお見積金額欄だけで足りることが多いため）。
     """
     from reportlab.pdfgen import canvas as _canvas
 
@@ -450,21 +490,27 @@ def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
     n = len(rows)
     row_h = 20 if n <= 8 else (16 if n <= 14 else 14)
     fs = 10 if row_h == 20 else (8.5 if row_h == 16 else 8)
-    floor = 252 + (30 + 16 * (len(t["by_rate"]) + 1) if t["has_total"] else 0)
+    show_totals = t["has_total"] and show_tax
+    floor = 252 + (30 + 16 * (len(t["by_rate"]) + 1) if show_totals else 0)
 
-    pages, rest, top = [], list(rows), box_y - 52
-    while rest:
-        with_totals = int((top - floor) // row_h)     # 合計欄まで置ける行数
-        if len(rest) <= with_totals:
-            pages.append(rest)
-            break
-        full = int((top - 100) // row_h)              # 続きがある回は下まで使える
-        take = min(full, max(1, (len(rest) + 1) // 2)) if len(rest) <= full else full
-        pages.append(rest[:take])
-        rest = rest[take:]
-        top = h - 70
-    if not pages:            # 明細0件でも見出しだけは出す
-        pages = [[]]
+    # 長い品名・条件は折り返す。折り返した行の分だけその行の高さを増やす
+    lead = fs + 2
+    plan = []
+    for it in rows:
+        name_lines = _fit_lines(it["name"], name_w, fs)
+        cond_lines = _fit_lines(it["cond"], cond_w, fs) if (has_cond and it["cond"]) else []
+        extra = max(len(name_lines), len(cond_lines), 1) - 1
+        plan.append({"it": it, "name": name_lines, "cond": cond_lines,
+                     "h": row_h + extra * lead})
+
+    pages, cur, y = [], [], box_y - 52
+    for r in plan:
+        if cur and y - r["h"] < floor:
+            pages.append(cur)
+            cur, y = [], h - 70
+        cur.append(r)
+        y -= r["h"]
+    pages.append(cur)            # 明細0件でも見出しだけは出す
 
     ty = box_y - 52
     for i, page_rows in enumerate(pages):
@@ -473,23 +519,26 @@ def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
             ty = h - 70
             text(60, ty + 22, f"{to_name}　御中　／　見積番号：{doc_no}（続き）", size=9)
         table_header(ty)
-        for it in page_rows:
-            ty -= row_h
+        for r in page_rows:
+            it = r["it"]
+            ty -= r["h"]
+            base = ty + (r["h"] - row_h)   # 折り返した行は上から書き始める
             unit_excl, unit_incl, line_excl, line_incl = line_amounts(it, tax_included)
-            text(60, ty, it["name"], size=_fit_size(it["name"], name_w, fs))
-            if has_cond and it["cond"]:
-                text(x_cond, ty, it["cond"], size=_fit_size(it["cond"], cond_w, fs))
-            text(x_unit, ty, it["unit"], size=fs)
-            text(x_price, ty, f"¥{(unit_incl if tax_included else unit_excl):,}",
+            for k, line in enumerate(r["name"]):
+                text(60, base - k * lead, line, size=fs)
+            for k, line in enumerate(r["cond"]):
+                text(x_cond, base - k * lead, line, size=fs)
+            text(x_unit, base, it["unit"], size=fs)
+            text(x_price, base, f"¥{(unit_incl if tax_included else unit_excl):,}",
                  size=fs, align="right")
-            text(x_rate, ty, f"{it['rate']}%", size=fs, align="right")
+            text(x_rate, base, f"{it['rate']}%", size=fs, align="right")
             if (it.get("qty") or 0) > 0:
-                text(x_qty, ty, f"{it['qty']:g}", size=fs, align="right")
-                text(w - 60, ty, f"¥{(line_incl if tax_included else line_excl):,}",
+                text(x_qty, base, f"{it['qty']:g}", size=fs, align="right")
+                text(w - 60, base, f"¥{(line_incl if tax_included else line_excl):,}",
                      size=fs, align="right")
     c.line(60, ty - 10, w - 60, ty - 10)
 
-    if t["has_total"]:
+    if show_totals:
         ty -= 30
         lx = 460      # 見出しの右端（金額欄と重ならない位置で右揃えにする）
         text(lx, ty, "税抜金額合計", size=9, align="right")
@@ -506,7 +555,7 @@ def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
         text(w - 60, ty, f"¥{t['total']:,}", size=10, align="right")
 
     ny = ty - 34
-    if quoted_only and t["has_total"]:
+    if quoted_only and show_totals:
         # 数量欄が空の行があると、合計との関係が読み取りにくいので必ず断る
         text(60, ny, "※数量欄が空の行は単価のご提示です（上記合計には含みません）。", size=8)
         ny -= 16

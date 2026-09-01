@@ -1976,6 +1976,14 @@ def _quote_issue() -> None:
                               "税込です。どちらでも合計欄には税抜・消費税・税込を"
                               "並べて印字します。")
     tax_included = _QUOTE_TAX_OPTS[tax_label]
+    # 合計欄の内訳（税抜・消費税・税込）は要らないことも多いので、出す／出さないを
+    # 選べるようにして、選んだ状態を次回以降も覚えておく
+    show_tax = st.checkbox(
+        "明細の下に合計欄（税抜金額合計・消費税等・税込合計）を印字する",
+        value=bool(db.get_setting(quote.SHOW_TAX_KEY, True)), key="q_showtax",
+        on_change=lambda: db.set_setting(quote.SHOW_TAX_KEY,
+                                         st.session_state["q_showtax"]),
+        help="外すと、金額は上の「お見積金額」欄だけになります。")
 
     with st.expander("記載項目（納期・お支払条件など）を追加・変更する"):
         st.caption("件名の下に「項目：内容」の形で並びます。行を足せばいくつでも書けます"
@@ -2039,7 +2047,8 @@ def _quote_issue() -> None:
         pdf = quote.build_quote_pdf(
             to_name=to_name.strip(), items=items, tax_included=tax_included,
             issue_date=issue_date, doc_no=int(doc_no), valid_until=valid_until,
-            title=title, fields=fields, headline=headline, note=note)
+            title=title, fields=fields, headline=headline, note=note,
+            show_tax=show_tax)
         fname = quote.quote_filename(issue_date, to_name.strip())
         qid = quote.save_quote({
             "doc_no": int(doc_no), "client_id": cid, "to_name": to_name.strip(),
@@ -2047,6 +2056,7 @@ def _quote_issue() -> None:
             "issue_date": issue_date.isoformat(),
             "valid_until": valid_until.isoformat() if valid_until else "",
             "fields": fields, "headline": headline, "note": note,
+            "show_tax": show_tax,
             "items": items, "tax_included": tax_included, "amount": t["total"],
             "price_text": quote.price_summary(items, tax_included, headline),
         }, pdf, fname)
