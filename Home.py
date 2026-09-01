@@ -27,8 +27,8 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter,
-                 komeful, logic, payslip, postal, receipt, seed, shipping,
-                 shopify_api, ui, yamato)
+                 komeful, logic, payslip, postal, quote, receipt, seed,
+                 shipping, shopify_api, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -1862,6 +1862,286 @@ def view_payroll() -> None:
         _payroll_master()
 
 
+# ===========================================================================
+# 🧾 見積（見積書の作成・送信 ／ 発行履歴 ／ メール文面）
+# ===========================================================================
+_QUOTE_TAX_OPTS = {"税込で入力・表示する": True, "税抜で入力・表示する": False}
+_QUOTE_RATES = ["8%（お米などの軽減税率）", "10%（送料・資材など）"]
+
+
+def _quote_editor_rows(df) -> list[dict]:
+    """data_editorの表を見積明細の行リストへ戻す（空行・NaNは捨てる）。"""
+    def _txt(r, col) -> str:
+        v = r[col]
+        return "" if pd.isna(v) else str(v).strip()
+
+    rows = []
+    for _, r in df.iterrows():
+        name = _txt(r, "内容")
+        if not name:
+            continue
+        rows.append({
+            "name": name, "cond": _txt(r, "適用条件"),
+            "qty": 0.0 if pd.isna(r["数量"]) else float(r["数量"]),
+            "unit": _txt(r, "単位"),
+            "price": 0.0 if pd.isna(r["単価"]) else float(r["単価"]),
+            "rate": 8 if pd.isna(r["税率"]) else int(str(r["税率"]).split("%")[0]),
+        })
+    return rows
+
+
+def _quote_field_rows(df) -> list[dict]:
+    """記載項目（納期・お支払条件など）の表を [{label, value}] へ戻す。"""
+    rows = []
+    for _, r in df.iterrows():
+        label = "" if pd.isna(r["項目"]) else str(r["項目"]).strip()
+        value = "" if pd.isna(r["内容"]) else str(r["内容"]).strip()
+        if label and value:
+            rows.append({"label": label, "value": value})
+    return rows
+
+
+def _quote_mail_form(q: dict, prefix: str) -> None:
+    """見積書PDFを添付してGmailで送る（文面をその場で直してから送信する）。
+
+    prefix は画面上の置き場所（作成画面／発行履歴）。同じ見積書のフォームが
+    両方に出てもウィジェットのキーが衝突しないよう分けている。
+    """
+    qid = f"{prefix}_{q['id']}"
+    sub0, body0 = quote.render_mail(q)
+    st.markdown("**✉ メールで送る**")
+    if q.get("status") == "sent":
+        st.caption(f"送信済み：{q.get('sent_at', '')} ／ {q.get('email', '')}")
+    to = st.text_input("送付先メールアドレス", value=q.get("email", ""), key=f"qto_{qid}")
+    subject = st.text_input("件名", value=sub0, key=f"qsub_{qid}")
+    body = st.text_area("本文", value=body0, height=340, key=f"qbody_{qid}",
+                        help="ここで直した文面がそのまま送られます。よく使う言い回しは"
+                             "「メール文面」タブで既定として保存できます。")
+
+    ck = f"qconf_{qid}"
+    if st.session_state.get(ck):
+        st.markdown(f"**{to} へ見積書PDFを添付して送信します。よろしいですか？**")
+        cc1, cc2 = st.columns(2)
+        if cc1.button("✅ はい、送信する", type="primary", key=f"qyes_{qid}",
+                      use_container_width=True):
+            with st.spinner("送信中…"):
+                r = quote.send_quote(q["id"], subject, body, to_addr=to)
+            if r.get("ok"):
+                st.session_state.pop(ck, None)
+                st.success(f"{to} へ送信しました。")
+                st.balloons()
+                st.rerun()
+            else:
+                st.error(f"送信できませんでした：{r.get('msg')}")
+        if cc2.button("やめる", key=f"qno_{qid}", use_container_width=True):
+            st.session_state.pop(ck, None)
+            st.rerun()
+    else:
+        label = "✉ もう一度送信する" if q.get("status") == "sent" else "✉ この内容で送信する"
+        if st.button(label, type="primary", key=f"qsend_{qid}",
+                     use_container_width=True, disabled=not to.strip()):
+            st.session_state[ck] = True
+            st.rerun()
+
+
+def _quote_issue() -> None:
+    import base64
+
+    clients = billing.get_clients()
+    copts = {**{c["id"]: c["name"] for c in clients},
+             "": "その他（宛名を直接入力する）"}
+    cid = st.selectbox("宛先", list(copts), format_func=lambda k: copts[k], key="q_cid")
+    cli = (billing.get_client(cid) or {}) if cid else {}
+
+    c1, c2 = st.columns(2)
+    to_name = c1.text_input("宛名（「御中」の前）", value=cli.get("invoice_to", ""),
+                            key=f"q_to_{cid}",
+                            placeholder="例：株式会社グラナダ 鉄板焼きかいか")
+    email = c2.text_input("送付先メールアドレス", value=cli.get("email", ""),
+                          key=f"q_mail_{cid}")
+
+    c3, c4, c5 = st.columns([2, 1, 1])
+    title = c3.text_input("件名", value="お米代", key="q_title")
+    issue_date = c4.date_input("発行日", value=today(), key="q_date", format="YYYY/MM/DD")
+    # 見積番号・有効期限はキーを付けない（発行するたび／発行日を直すたびに
+    # 既定値が入り直るようにするため。手で直した値はそのまま残る）
+    doc_no = c5.number_input("見積番号", value=quote.next_doc_no(), step=1)
+
+    c6, c7 = st.columns([1, 2])
+    valid_until = c6.date_input("有効期限", value=quote.default_valid_until(issue_date),
+                                format="YYYY/MM/DD")
+    tax_label = c7.radio("単価の入力・表示", list(_QUOTE_TAX_OPTS), horizontal=True,
+                         key="q_taxmode",
+                         help="お客様に伝えている金額をそのまま載せられるよう、既定は"
+                              "税込です。どちらでも合計欄には税抜・消費税・税込を"
+                              "並べて印字します。")
+    tax_included = _QUOTE_TAX_OPTS[tax_label]
+
+    with st.expander("記載項目（納期・お支払条件など）を追加・変更する"):
+        st.caption("件名の下に「項目：内容」の形で並びます。行を足せばいくつでも書けます"
+                   "（例：お届け方法／切り替え時期／数量の考え方）。")
+        f_ed = st.data_editor(
+            pd.DataFrame([{"項目": f["label"], "内容": f["value"]}
+                          for f in quote.DEFAULT_FIELDS]),
+            num_rows="dynamic", use_container_width=True, hide_index=True,
+            key="q_fields",
+            column_config={"項目": st.column_config.TextColumn(width="small"),
+                           "内容": st.column_config.TextColumn(width="large")})
+    fields = _quote_field_rows(f_ed)
+
+    st.markdown("**明細**")
+    st.caption("単価は「単位」あたりの金額です（例：単位＝30kg、単価＝15,000 なら"
+               "「30kgあたり15,000円」）。数量を空欄にすると、その行は"
+               "“単価のご提示”になり合計に入りません。条件ごとの単価を並べたいとき"
+               "（例：一部お切り替え＝月40kgまでは15,000円／全量お切り替え＝年間1t以上は"
+               "14,000円）に使えます。")
+    init = [{"内容": cli.get("item_desc") or quote.DEFAULT_ITEM["name"], "適用条件": "",
+             "数量": 1.0, "単位": "個",
+             "単価": int(cli.get("price_per_5kg") or quote.DEFAULT_ITEM["price"]),
+             "税率": _QUOTE_RATES[0]}]
+    edited = st.data_editor(
+        pd.DataFrame(init), num_rows="dynamic", use_container_width=True,
+        hide_index=True, key=f"q_items_{cid}",
+        column_config={
+            "内容": st.column_config.TextColumn(width="large"),
+            "適用条件": st.column_config.TextColumn(
+                width="medium", help="例：月40kgまで／年間1,000kg以上（空欄なら列ごと出ません）"),
+            "数量": st.column_config.NumberColumn(
+                step=1.0, min_value=0.0, help="空欄にすると単価のご提示だけの行になります"),
+            "単位": st.column_config.TextColumn(width="small", help="例：個／袋／30kg／口／式"),
+            "単価": st.column_config.NumberColumn(format="%d", step=100, min_value=0),
+            "税率": st.column_config.SelectboxColumn(options=_QUOTE_RATES, width="medium"),
+        })
+    items = _quote_editor_rows(edited)
+    t = quote.totals(items, tax_included)
+
+    if t["has_total"]:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("税抜合計", f"¥{t['excl']:,}")
+        m2.metric("消費税等", f"¥{t['tax']:,}")
+        m3.metric("お見積金額（税込）", f"¥{t['total']:,}")
+    elif items:
+        st.info(f"数量のある行が無いので、合計は出さずに単価のご提示として"
+                f"「{quote.price_range(items, tax_included)}」と印字します。")
+
+    headline = st.text_input(
+        "見積金額欄に出す文言（空欄なら自動）", key="q_headline",
+        placeholder=quote.price_summary(items, tax_included) if items else "",
+        help="自動の文言を使わず、自分で書きたいときに入れてください"
+             "（例：ご採用のプランにより決定）。")
+    note = st.text_area("備考（見積書に印字する注記）", height=80, key="q_note",
+                        value="本見積には精米・袋詰め・送料を含みます。")
+
+    ready = bool(items) and bool(to_name.strip())
+    if st.button("📄 見積書を発行", type="primary", use_container_width=True,
+                 disabled=not ready, key="q_issue",
+                 help=None if ready else "宛名と明細を入力すると発行できます"):
+        pdf = quote.build_quote_pdf(
+            to_name=to_name.strip(), items=items, tax_included=tax_included,
+            issue_date=issue_date, doc_no=int(doc_no), valid_until=valid_until,
+            title=title, fields=fields, headline=headline, note=note)
+        fname = quote.quote_filename(issue_date, to_name.strip())
+        qid = quote.save_quote({
+            "doc_no": int(doc_no), "client_id": cid, "to_name": to_name.strip(),
+            "email": email.strip(), "title": title,
+            "issue_date": issue_date.isoformat(),
+            "valid_until": valid_until.isoformat() if valid_until else "",
+            "fields": fields, "headline": headline, "note": note,
+            "items": items, "tax_included": tax_included, "amount": t["total"],
+            "price_text": quote.price_summary(items, tax_included, headline),
+        }, pdf, fname)
+        saved = quote.sync_quotes()   # PCならこの場で発行書類フォルダへ書き出す
+        st.session_state["q_issued"] = qid
+        st.session_state["q_saved_path"] = next(
+            (s["path"] for s in saved if s.get("id") == qid), "")
+        st.rerun()
+
+    qid = st.session_state.get("q_issued")
+    q = quote.get_quote(qid) if qid else None
+    if not q:
+        return
+
+    st.divider()
+    path = st.session_state.get("q_saved_path", "")
+    if path:
+        st.success(f"発行しました（見積番号 {q['doc_no']}）。{path} に保存済みです。")
+    else:
+        st.success(f"発行しました（見積番号 {q['doc_no']}）。"
+                   "次回PC起動時に「発行書類」フォルダへ保存されます。")
+    st.download_button("📄 見積書PDFを開く / 保存", base64.b64decode(q["pdf_b64"]),
+                       file_name=q["filename"], mime="application/pdf",
+                       key=f"qdl_{qid}", use_container_width=True)
+    st.markdown(
+        f'<iframe src="data:application/pdf;base64,{q["pdf_b64"]}" '
+        f'width="100%" height="480" style="border:1px solid #ddd;'
+        f'border-radius:8px"></iframe>', unsafe_allow_html=True)
+    _quote_mail_form(q, "issue")
+
+
+def _quote_history() -> None:
+    import base64
+
+    quotes = quote.get_quotes()
+    if not quotes:
+        st.caption("まだ発行した見積書はありません。")
+        return
+    for qid, q in sorted(quotes.items(), key=lambda kv: kv[1]["created_at"],
+                         reverse=True):
+        mark = ("✅" if q.get("status") == "sent"
+                else "📁" if q.get("synced_to_folder") else "☁")
+        amount = q.get("price_text") or f"¥{q['amount']:,}（税込）"
+        with st.expander(f"{mark} {q['issue_date']}　{q['to_name']}　"
+                         f"{amount}　／ 見積番号 {q['doc_no']}"):
+            st.caption(f"件名 {q.get('title') or '—'} ／ "
+                       f"有効期限 {q.get('valid_until') or '—'}")
+            st.dataframe([{"内容": i["name"], "適用条件": i.get("cond", ""),
+                           "数量": i["qty"] or "", "単位": i["unit"],
+                           "単価": f"¥{int(i['price']):,}", "税率": f"{i['rate']}%"}
+                          for i in q.get("items", [])],
+                         use_container_width=True, hide_index=True)
+            c1, c2 = st.columns(2)
+            c1.download_button("↓ PDF", base64.b64decode(q["pdf_b64"]),
+                               file_name=q["filename"], mime="application/pdf",
+                               key=f"qhdl_{qid}", use_container_width=True)
+            if c2.button("🗑 削除", key=f"qhdel_{qid}", use_container_width=True):
+                quote.delete_quote(qid)
+                st.rerun()
+            st.divider()
+            _quote_mail_form(q, "hist")
+
+
+def _quote_mail_master() -> None:
+    st.caption("見積書を送るときの既定の文面です。差し込み記号：{to_name}＝宛名（御中付き）"
+               "／{title}＝件名／{price}＝金額の文言（合計、または"
+               "「¥14,000〜¥15,000（税込・30kgあたり）」のような単価のご提示）"
+               "／{amount}＝税込合計（数字だけ）／{valid_until}＝有効期限"
+               "／{issue_date}＝発行日／{doc_no}＝見積番号")
+    t = quote.get_mail_tmpl()
+    with st.form("quote_mail_tmpl"):
+        subject = st.text_input("件名", value=t["subject"])
+        body = st.text_area("本文", value=t["body"], height=340)
+        folder = st.text_input(
+            "PDFの保存先フォルダ（請求先が紐づかない見積書）",
+            value=db.get_setting(quote.FOLDER_KEY) or quote.DEFAULT_FOLDER,
+            help="請求先マスタから宛先を選んだ見積書は、その取引先のフォルダへ保存します。")
+        if st.form_submit_button("保存", type="primary"):
+            quote.save_mail_tmpl(subject, body)
+            db.set_setting(quote.FOLDER_KEY, folder.strip())
+            st.success("保存しました。次に発行する見積書からこの文面になります。")
+
+
+def view_quote() -> None:
+    st.subheader("🧾 見積")
+    tab_issue, tab_hist, tab_mail = st.tabs(
+        ["見積書の作成・送信", "発行履歴", "メール文面"])
+    with tab_issue:
+        _quote_issue()
+    with tab_hist:
+        _quote_history()
+    with tab_mail:
+        _quote_mail_master()
+
+
 # 通知リンク（?tab=billing）から開かれたら請求タブを初期選択
 if "nav" not in st.session_state and st.query_params.get("tab") == "billing":
     st.session_state["nav"] = "請求"
@@ -1877,6 +2157,8 @@ elif view == "顧客":
     view_customers()
 elif view == "分析":
     view_analytics()
+elif view == "見積":
+    view_quote()
 elif view == "請求":
     view_billing()
 elif view == "給与":
