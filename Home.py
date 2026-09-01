@@ -94,6 +94,38 @@ def _addr_len_hint(addr: str) -> None:
                    "（送り状の項目上限を超えるとB2で修正必要エラーになります）。")
 
 
+def _pdf_preview(b64: str, height: int = 480) -> None:
+    """PDFをその場でプレビュー表示する。
+
+    <iframe src="data:application/pdf;base64,...">は一部環境（Chromeなど）で
+    「このページはChromeによってブロックされています」と表示され開けないことが
+    あるため、base64をJSで一度Blob化してblob: URLをiframeに渡す方式にする
+    （data: URIを直接iframeのsrcに渡すより安定して表示できる）。
+    """
+    import streamlit.components.v1 as components
+    components.html(
+        f"""
+        <div style="width:100%;height:{height}px;border:1px solid #ddd;
+                    border-radius:8px;overflow:hidden;">
+          <iframe id="pdfframe" style="width:100%;height:100%;border:none;"></iframe>
+        </div>
+        <script>
+          const b64 = "{b64}";
+          const byteChars = atob(b64);
+          const byteNumbers = new Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {{
+              byteNumbers[i] = byteChars.charCodeAt(i);
+          }}
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], {{type: 'application/pdf'}});
+          const url = URL.createObjectURL(blob);
+          document.getElementById('pdfframe').src = url;
+        </script>
+        """,
+        height=height + 2,
+    )
+
+
 # ===========================================================================
 # ダイアログ（モーダル）
 # ===========================================================================
@@ -1419,9 +1451,84 @@ def _receipt_button(key: str, p: dict) -> None:
             mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
 
 
-def _billing_issue() -> None:
+def _render_pending_card(key: str, p: dict) -> None:
+    """承認待ち請求書1件のカード（明細・PDF・修正・送信/破棄）を描画する。"""
     import base64
 
+    with st.container(border=True):
+        st.markdown(f"### {p['client_name']}　{p['month']}月分")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("ご請求額（税込）", f"¥{p['amount']:,}")
+        c2.metric("数量", f"{p['qty']:g} 個")
+        c3.metric("対象出荷", f"{len(p['rows'])}件 / {p['total_kg']:g}kg")
+        st.caption(f"宛先 {p['email']} ／ 発行日 {p['issue_date']} ／ "
+                   f"書類番号 {p['doc_number']}")
+        if p.get("warning"):
+            st.warning(p["warning"])
+        with st.expander("出荷明細を確認"):
+            st.dataframe([{"出荷日": r["date"], "品名": r["product"],
+                           "kg": r["kg"], "伝票番号": r["denpyo"]}
+                          for r in p["rows"]],
+                         use_container_width=True, hide_index=True)
+        pdf = base64.b64decode(p["pdf_b64"])
+        st.download_button("📄 請求書PDFを開く / 保存", pdf, file_name=p["pdf_name"],
+                           mime="application/pdf", key=f"dl_{key}",
+                           use_container_width=True)
+        _pdf_preview(p["pdf_b64"])
+
+        _receipt_button(key, p)
+
+        with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
+            edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]),
+                                  key=f"edate_{key}")
+            e1, e2 = st.columns(2)
+            ekg = e1.number_input("数量（kg）", min_value=0.0, step=5.0,
+                                  value=float(p["total_kg"]), key=f"ekg_{key}")
+            eprice = e2.number_input("単価（5kgあたり・税込／送料込）", min_value=0,
+                                     value=int(p.get("unit_price", 4000)),
+                                     step=100, key=f"eprice_{key}")
+            if ekg > 0:
+                st.caption(f"ご請求額（税込）：¥{round(ekg / billing.UNIT_KG * eprice):,}")
+            if st.button("この内容で作り直す", key=f"regen_{key}",
+                        use_container_width=True, disabled=ekg <= 0):
+                r = billing.regenerate_pending(key, ekg / billing.UNIT_KG, eprice,
+                                               issue_date=edate)
+                if r.get("ok"):
+                    st.success(f"作り直しました（¥{r['amount']:,}）。")
+                    st.rerun()
+                else:
+                    st.error(r.get("msg", "作り直せませんでした。"))
+
+        ck = f"confirm_{key}"
+        if st.session_state.get(ck):
+            st.markdown(f"**{p['email']} へ送信します。よろしいですか？**")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("✅ はい、送信する", type="primary",
+                          key=f"yes_{key}", use_container_width=True):
+                with st.spinner("送信中…"):
+                    r = billing.send_pending(key)
+                if r.get("ok"):
+                    st.session_state.pop(ck, None)
+                    st.success("送信しました。スマホにも完了通知を送りました。")
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error(f"送信できませんでした：{r.get('msg')}")
+            if cc2.button("やめる", key=f"no_{key}", use_container_width=True):
+                st.session_state.pop(ck, None)
+                st.rerun()
+        else:
+            b1, b2 = st.columns([3, 1])
+            if b1.button(f"この内容で {p['email']} へ送信する", type="primary",
+                         key=f"send_{key}", use_container_width=True):
+                st.session_state[ck] = True
+                st.rerun()
+            if b2.button("破棄", key=f"disc_{key}", use_container_width=True):
+                billing.discard_pending(key)
+                st.rerun()
+
+
+def _billing_issue() -> None:
     with st.expander("＋ 手入力で請求書を新規作成（自動集計を使わない）"):
         # 「有効（月末に自動作成する）」は自動集計フローだけの設定。手入力作成は
         # それとは独立の操作なので、無効な請求先も選べるようにする。
@@ -1460,81 +1567,17 @@ def _billing_issue() -> None:
     if not open_items:
         st.info("承認待ちの請求書はありません。毎月末日にクラウドが自動作成し、"
                 "ここに表示されます。（スマホ通知のリンクからも開けます）")
-    for key, p in open_items:
-        with st.container(border=True):
-            st.markdown(f"### {p['client_name']}　{p['month']}月分")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("ご請求額（税込）", f"¥{p['amount']:,}")
-            c2.metric("数量", f"{p['qty']:g} 個")
-            c3.metric("対象出荷", f"{len(p['rows'])}件 / {p['total_kg']:g}kg")
-            st.caption(f"宛先 {p['email']} ／ 発行日 {p['issue_date']} ／ "
-                       f"書類番号 {p['doc_number']}")
-            if p.get("warning"):
-                st.warning(p["warning"])
-            with st.expander("出荷明細を確認"):
-                st.dataframe([{"出荷日": r["date"], "品名": r["product"],
-                               "kg": r["kg"], "伝票番号": r["denpyo"]}
-                              for r in p["rows"]],
-                             use_container_width=True, hide_index=True)
-            pdf = base64.b64decode(p["pdf_b64"])
-            st.download_button("📄 請求書PDFを開く / 保存", pdf, file_name=p["pdf_name"],
-                               mime="application/pdf", key=f"dl_{key}",
-                               use_container_width=True)
-            st.markdown(
-                f'<iframe src="data:application/pdf;base64,{p["pdf_b64"]}" '
-                f'width="100%" height="480" style="border:1px solid #ddd;'
-                f'border-radius:8px"></iframe>', unsafe_allow_html=True)
-
-            _receipt_button(key, p)
-
-            with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
-                edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]),
-                                      key=f"edate_{key}")
-                e1, e2 = st.columns(2)
-                ekg = e1.number_input("数量（kg）", min_value=0.0, step=5.0,
-                                      value=float(p["total_kg"]), key=f"ekg_{key}")
-                eprice = e2.number_input("単価（5kgあたり・税込／送料込）", min_value=0,
-                                         value=int(p.get("unit_price", 4000)),
-                                         step=100, key=f"eprice_{key}")
-                if ekg > 0:
-                    st.caption(f"ご請求額（税込）：¥{round(ekg / billing.UNIT_KG * eprice):,}")
-                if st.button("この内容で作り直す", key=f"regen_{key}",
-                            use_container_width=True, disabled=ekg <= 0):
-                    r = billing.regenerate_pending(key, ekg / billing.UNIT_KG, eprice,
-                                                   issue_date=edate)
-                    if r.get("ok"):
-                        st.success(f"作り直しました（¥{r['amount']:,}）。")
-                        st.rerun()
-                    else:
-                        st.error(r.get("msg", "作り直せませんでした。"))
-
-            ck = f"confirm_{key}"
-            if st.session_state.get(ck):
-                st.markdown(f"**{p['email']} へ送信します。よろしいですか？**")
-                cc1, cc2 = st.columns(2)
-                if cc1.button("✅ はい、送信する", type="primary",
-                              key=f"yes_{key}", use_container_width=True):
-                    with st.spinner("送信中…"):
-                        r = billing.send_pending(key)
-                    if r.get("ok"):
-                        st.session_state.pop(ck, None)
-                        st.success("送信しました。スマホにも完了通知を送りました。")
-                        st.balloons()
-                        st.rerun()
-                    else:
-                        st.error(f"送信できませんでした：{r.get('msg')}")
-                if cc2.button("やめる", key=f"no_{key}", use_container_width=True):
-                    st.session_state.pop(ck, None)
-                    st.rerun()
-            else:
-                b1, b2 = st.columns([3, 1])
-                if b1.button(f"この内容で {p['email']} へ送信する", type="primary",
-                             key=f"send_{key}", use_container_width=True):
-                    st.session_state[ck] = True
-                    st.rerun()
-                if b2.button("破棄", key=f"disc_{key}", use_container_width=True):
-                    billing.discard_pending(key)
-                    st.rerun()
+    else:
+        # 請求先ごとにタブを分ける（複数の請求先の分がまとめて縦に並ぶと見づらいため）
+        by_client: dict[str, list] = {}
+        for key, p in open_items:
+            by_client.setdefault(p["client_name"], []).append((key, p))
+        names = list(by_client)
+        tabs = st.tabs([f"{name}（{len(by_client[name])}）" for name in names])
+        for tab, name in zip(tabs, names):
+            with tab:
+                for key, p in by_client[name]:
+                    _render_pending_card(key, p)
 
     if sent_items:
         with st.expander(f"送信済み（{len(sent_items)}件）"):
@@ -2081,10 +2124,7 @@ def _quote_issue() -> None:
     st.download_button("📄 見積書PDFを開く / 保存", base64.b64decode(q["pdf_b64"]),
                        file_name=q["filename"], mime="application/pdf",
                        key=f"qdl_{qid}", use_container_width=True)
-    st.markdown(
-        f'<iframe src="data:application/pdf;base64,{q["pdf_b64"]}" '
-        f'width="100%" height="480" style="border:1px solid #ddd;'
-        f'border-radius:8px"></iframe>', unsafe_allow_html=True)
+    _pdf_preview(q["pdf_b64"])
     _quote_mail_form(q, "issue")
 
 

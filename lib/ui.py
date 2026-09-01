@@ -110,7 +110,7 @@ def inject_css() -> None:
         .block-container, [data-testid="stMainBlockContainer"] {{
             padding-top: 2.6rem !important;
             padding-bottom: 4rem !important;
-            max-width: 860px;
+            max-width: 1400px;
         }}
 
         h1, h2, h3, h4 {{
@@ -918,7 +918,7 @@ def loading_gate() -> None:
 def setup_page() -> None:
     st.set_page_config(
         page_title="精米・発送管理｜阿部農園",
-        page_icon=_page_icon(), layout="centered",
+        page_icon=_page_icon(), layout="wide",
         initial_sidebar_state="collapsed",
     )
     inject_css()
