@@ -101,6 +101,6 @@ def send_test(to_addr: str = "") -> tuple[bool, str]:
     to = (to_addr or _cfg("SMTP_USER")).strip()
     if not to:
         return False, "送信先がありません（SMTP_USER 未設定）"
-    ok, msg = _send(to, "【テスト】精米・発送管理 メール設定確認",
+    ok, msg = _send(to, "【テスト】阿部農園基幹システム メール設定確認",
                     "このメールが届けば、メール送信設定は正常です。", pdf_bytes=None)
     return (ok, f"テストメールを送信しました（{to}）。受信を確認してください。" if ok else msg)

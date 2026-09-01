@@ -156,7 +156,7 @@ def inject_css() -> None:
         }}
         .brand-bar .t {{
             font-family:'Shippori Mincho',serif; color:var(--txt);
-            font-weight:700; font-size: clamp(1rem, 3.4vw, 1.22rem); letter-spacing:.16em;
+            font-weight:700; font-size: clamp(.8rem, 2.9vw, 1.1rem); letter-spacing:.08em;
             white-space:nowrap; text-shadow: 0 1px 14px rgba(0,0,0,.4);
         }}
 
@@ -361,8 +361,8 @@ def inject_css() -> None:
 # onerror が落ちることがあるため、確実に実行できるコンポーネント経由にした。
 # Service Worker（オフライン/プッシュ）は現ホスティングでは不可（DEPLOY.md参照）。
 # ===========================================================================
-PWA_NAME = "精米・発送管理｜阿部農園"
-PWA_SHORT = "精米・発送"
+PWA_NAME = "阿部農園基幹システム"
+PWA_SHORT = "阿部農園"
 
 
 @lru_cache(maxsize=1)
@@ -510,7 +510,7 @@ def render_header() -> None:
     img = f'<img src="data:image/png;base64,{logo}" alt=""/>' if logo else ""
     st.markdown(
         f'<div class="app-motes">{"".join(motes)}</div>'
-        f'<div class="brand-bar">{img}<span class="t">精米・発送管理</span></div>',
+        f'<div class="brand-bar">{img}<span class="t">阿部農園基幹システム</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -588,10 +588,11 @@ def _login_css() -> str:
         }
         .login-title {
             font-family: 'Shippori Mincho', serif; font-weight: 700;
-            color: #F4EEDF !important; letter-spacing: .14em;
-            font-size: clamp(1.7rem, 6.5vw, 2.4rem);
-            margin: .35rem 0 .1rem; text-indent: .14em;
+            color: #F4EEDF !important; letter-spacing: .06em;
+            font-size: clamp(1.05rem, 5.6vw, 2rem);
+            margin: .35rem 0 .1rem; text-indent: .06em;
             text-shadow: 0 2px 24px rgba(0,0,0,.35);
+            white-space: nowrap;
         }
         .login-sub {
             color: rgba(244,238,223,.62); font-size:.82rem; letter-spacing:.08em;
@@ -678,7 +679,7 @@ def require_login() -> None:
     img = f'<img src="data:image/png;base64,{logo}" alt="阿部農園"/>' if logo else ""
     st.markdown(
         f'<div class="login-brand">{img}'
-        f'<div class="login-title">精米・発送管理</div>'
+        f'<div class="login-title">阿部農園基幹システム</div>'
         f'<div class="login-sub">Rice, and the time it makes</div>'
         f'<div class="login-orn"><span class="l"></span><span class="d"></span>'
         f'<span class="l r"></span></div></div>',
@@ -917,7 +918,7 @@ def loading_gate() -> None:
 
 def setup_page() -> None:
     st.set_page_config(
-        page_title="精米・発送管理｜阿部農園",
+        page_title="阿部農園基幹システム",
         page_icon=_page_icon(), layout="wide",
         initial_sidebar_state="collapsed",
     )
