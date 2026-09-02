@@ -590,8 +590,8 @@ def _login_css() -> str:
             font-family: 'Shippori Mincho', serif; font-weight: 700;
             color: #F4EEDF !important; letter-spacing: .06em;
             font-size: clamp(1.05rem, 5.6vw, 2rem);
-            margin: .35rem 0 .1rem; text-indent: .06em;
-            text-shadow: 0 2px 24px rgba(0,0,0,.35);
+            margin: .35rem 0 .1rem;
+            text-align: center; text-shadow: 0 2px 24px rgba(0,0,0,.35);
             white-space: nowrap;
         }
         .login-sub {
