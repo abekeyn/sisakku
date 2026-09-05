@@ -61,6 +61,40 @@ _GENERIC_BANNERS = (
 )
 
 
+def _find_error_edit_index(page) -> int:
+    """取込み結果一覧で「修正必要」（Noセルが赤背景）の行を探し、
+    その行の「編集」ボタンが全体で何番目かを返す（見つからなければ0）。
+
+    複数件取り込んだとき、エラー行が2件目以降だと常に先頭行の編集ボタンを
+    開いてしまい、無関係な行を見て原因を特定できない不具合があったため
+    （行ごとに赤背景のNoセルで修正必要行を判別するようにした）。
+    """
+    js = """() => {
+        const editEls = [...document.querySelectorAll(
+            'a, button, input[type="button"], input[type="image"]')]
+            .filter(el => {
+                const t = (el.tagName === 'INPUT') ? (el.value || el.alt || '')
+                                                    : (el.innerText || el.textContent || '');
+                return (t || '').includes('編集');
+            });
+        for (let i = 0; i < editEls.length; i++) {
+            const tr = editEls[i].closest('tr');
+            if (!tr) continue;
+            const cell = tr.querySelector('td, th');
+            if (!cell) continue;
+            const bg = getComputedStyle(cell).backgroundColor;
+            const m = bg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+            if (m && +m[1] >= 150 && +m[2] <= 90 && +m[3] <= 90) return i;
+        }
+        return -1;
+    }"""
+    try:
+        idx = page.evaluate(js)
+    except Exception:  # noqa: BLE001
+        idx = -1
+    return idx if isinstance(idx, int) and idx >= 0 else 0
+
+
 def _read_b2_fix_reason(page) -> str:
     """『編集』を押して編集画面に入り、エラーの具体的な理由を読む。
 
@@ -81,10 +115,11 @@ def _read_b2_fix_reason(page) -> str:
         return out.join('\\n');
     }"""
     try:
+        edit_idx = _find_error_edit_index(page)
         ebtn = page.locator(
             'a:has-text("編集"), button:has-text("編集"), '
             'input[type="button"][value*="編集"], input[type="image"][alt*="編集"]'
-        ).first
+        ).nth(edit_idx)
         target = page
         try:
             with page.context.expect_page(timeout=6000) as pinfo:
@@ -382,33 +417,59 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             if "エラー" in body and "0" in (m.group(1) if m else "0"):
                 raise B2Error("取込みでエラーが出ました（パターン/列の対応を確認）: " + _shot(b2, "import_error"))
 
-            # 修正必要があれば中断（住所不備・運賃管理番号など）。dry_runより前に判定。
-            if _re.search(r"修正必要件数\s*([1-9]\d*)", body):
-                detail = _read_b2_fix_reason(b2)
-                raise B2Error(
-                    "B2取込みで修正が必要な行があります"
-                    + (f"：{detail}" if detail else "（住所・運賃管理番号・品名等）")
-                    + " " + _shot(b2, "need_fix"))
+            # 修正が必要な行があるか判定（住所不備・運賃管理番号など）。dry_runより前に判定。
+            # 以前は1件でも修正必要があると全件を中断していたが、それだと同じ日の
+            # 他の正常な注文まで巻き添えで発送できなくなる。修正必要な行はB2側で
+            # 自動的に選択解除されているため、発行可能な行が残っていればそれだけ
+            # 発行を進め、修正必要な行だけを保留として報告する。
+            fix_m = _re.search(r"修正必要件数\s*([0-9]+)", body)
+            fix_count = int(fix_m.group(1)) if fix_m else 0
+            good_m = _re.search(r"発行可能件数\s*([0-9]+)", body)
+            good_count = int(good_m.group(1)) if good_m else max(rows - fix_count, 0)
+
+            fix_detail = ""
+            if fix_count > 0:
+                fix_detail = _read_b2_fix_reason(b2)
+                if good_count <= 0:
+                    raise B2Error(
+                        "B2取込みで修正が必要な行があります"
+                        + (f"：{fix_detail}" if fix_detail else "（住所・運賃管理番号・品名等）")
+                        + " " + _shot(b2, "need_fix"))
+
+            def _hold_note() -> str:
+                if not fix_count:
+                    return ""
+                return (f"／{fix_count}件は修正が必要なため保留"
+                        + (f"：{fix_detail}" if fix_detail else "") + f"（{_shot(b2, 'need_fix')}）")
 
             if dry_run:
+                if fix_count:
+                    return {"issued": False, "pdf": None, "rows": rows,
+                            "message": f"[テスト] {good_count}件は発行可能です{_hold_note()}"}
                 return {"issued": False, "pdf": None, "rows": rows,
                         "message": f"[テスト] 取込み確認OK（{rows}件・発行はしていません）"}
 
-            # 全行を選択（ヘッダーのチェックボックス／効かなければ行ごと）
-            try:
-                b2.evaluate(
-                    """() => {
-                        const boxes=[...document.querySelectorAll('input[type=checkbox]')];
-                        const all=boxes.find(b=>b.className.includes('allCheck'));
-                        if(all && !all.checked) all.click();
-                        if([...document.querySelectorAll('input[type=checkbox]:checked')].length<=1){
-                            document.querySelectorAll('tbody tr input[type=checkbox]').forEach(b=>{if(!b.checked)b.click();});
-                        }
-                    }"""
-                )
-                b2.wait_for_timeout(1000)
-            except Exception:  # noqa: BLE001
+            if fix_count:
+                # 修正必要な行が残ったまま「全行選択」をやり直すと再びその行を
+                # 巻き込んでしまうため、選択操作はせずB2側の選択状態
+                # （発行可能な行だけが選択済み）のまま進める。
                 pass
+            else:
+                # 全行を選択（ヘッダーのチェックボックス／効かなければ行ごと）
+                try:
+                    b2.evaluate(
+                        """() => {
+                            const boxes=[...document.querySelectorAll('input[type=checkbox]')];
+                            const all=boxes.find(b=>b.className.includes('allCheck'));
+                            if(all && !all.checked) all.click();
+                            if([...document.querySelectorAll('input[type=checkbox]:checked')].length<=1){
+                                document.querySelectorAll('tbody tr input[type=checkbox]').forEach(b=>{if(!b.checked)b.click();});
+                            }
+                        }"""
+                    )
+                    b2.wait_for_timeout(1000)
+                except Exception:  # noqa: BLE001
+                    pass
 
             # ② → ③「印刷内容の確認へ」
             conf = b2.get_by_text(_re.compile("印刷内容の確認")).last
@@ -460,11 +521,14 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                     break
                 b2.wait_for_timeout(500)
             _shot(b2, "issue_done")
+            issued_rows = good_count if fix_count else rows
             if holder.get("d"):
                 return {"issued": True, "pdf": Path(holder["d"].path()).read_bytes(),
-                        "rows": rows, "message": f"発行しPDFを取得しました（{rows}件）"}
-            return {"issued": True, "pdf": None, "rows": rows,
-                    "message": f"発行しました（{rows}件）。PDFの自動取得はできませんでした（画面を確認）。"}
+                        "rows": issued_rows,
+                        "message": f"発行しPDFを取得しました（{issued_rows}件）{_hold_note()}"}
+            return {"issued": True, "pdf": None, "rows": issued_rows,
+                    "message": (f"発行しました（{issued_rows}件）。"
+                                f"PDFの自動取得はできませんでした（画面を確認）。{_hold_note()}")}
         finally:
             ctx.close()
             browser.close()
