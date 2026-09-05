@@ -18,14 +18,19 @@ from . import pdf_common as pc
 
 
 def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: float,
-                      issue_date: date, doc_no) -> bytes:
-    """請求書PDF(bytes)を作る。qtyは個数(5kg単位)、unit_priceは税込5kgあたり単価。"""
+                      issue_date: date, doc_no, amount: int | None = None) -> bytes:
+    """請求書PDF(bytes)を作る。qtyは個数(1個あたりの重量はunit_price側で決まる)。
+
+    amountを指定すると、税込合計をその金額に固定する（端数調整）。その場合、
+    明細行の単価・金額(税抜)は数量×単価のまま表示しつつ、消費税等の行で
+    差額を吸収して合計と一致させる（税抜金額合計＋消費税等＝税込合計は常に成立）。
+    """
     from reportlab.pdfgen import canvas as _canvas
 
     pc.ensure_font()
     unit_excl = round(unit_price / (1 + pc.TAX_RATE))
     line_excl = round(unit_excl * qty)
-    total = round(qty * unit_price)
+    total = amount if amount is not None else round(qty * unit_price)
     tax = total - line_excl
 
     buf = io.BytesIO()

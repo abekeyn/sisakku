@@ -27,8 +27,8 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter,
-                 komeful, logic, payslip, postal, quote, receipt, seed,
-                 shipping, shopify_api, ui, yamato)
+                 komeful, logic, payslip, paysheet, postal, quote, receipt,
+                 seed, shipping, shopify_api, square_pay, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -1400,6 +1400,13 @@ _PAYMENT_OPTS = {"振込": "bank", "現金": "cash", "その他（自由記述�
 
 def _receipt_button(key: str, p: dict) -> None:
     """領収書を発行するボタン＋ダウンロードボタン（未送信・送信済み共通）。"""
+    r_amount = st.number_input(
+        "領収書の金額（税込・端数調整したい場合はここで直接変更）", min_value=0,
+        value=int(p["amount"]), step=1, key=f"ramt_{key}",
+        help="請求書の金額と異なる金額（実際にご入金いただいた端数調整後の金額など）"
+             "で領収書を発行したい場合に変更してください。")
+    if r_amount != p["amount"]:
+        st.caption(f"請求金額は ¥{p['amount']:,} ですが、¥{r_amount:,} で発行します。")
     pm_label = st.selectbox("入金方法", list(_PAYMENT_OPTS), key=f"pm_{key}")
     payment_method = _PAYMENT_OPTS[pm_label]
     payment_note = ""
@@ -1408,7 +1415,7 @@ def _receipt_button(key: str, p: dict) -> None:
             "領収書に記載する注記", key=f"pmnote_{key}",
             placeholder="例：クレジットカード決済にて受領いたしました。")
     elif payment_method == "cash":
-        tax_excl = round(p["amount"] / (1 + billing.TAX_RATE))
+        tax_excl = round(r_amount / (1 + billing.TAX_RATE))
         if tax_excl >= receipt.STAMP_DUTY_THRESHOLD:
             st.caption("⚠ 税抜5万円以上の現金領収のため、印刷後に収入印紙の貼付が必要です"
                        "（領収書に貼付欄を印字します）。")
@@ -1418,7 +1425,7 @@ def _receipt_button(key: str, p: dict) -> None:
         client = billing.get_client(p["client_id"]) or {}
         pdf = receipt.build_receipt_pdf(
             invoice_to=client.get("invoice_to", p["client_name"]),
-            amount=p["amount"],
+            amount=r_amount,
             item_desc=client.get("item_desc", ""),
             issue_date=date.fromisoformat(p["issue_date"]),
             doc_no=str(p["doc_number"]),
@@ -1430,7 +1437,7 @@ def _receipt_button(key: str, p: dict) -> None:
         fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
         rid = billing.save_receipt(
             p["client_id"], date.fromisoformat(p["issue_date"]), p["doc_number"],
-            pdf, fname, payment_method, p["amount"])
+            pdf, fname, payment_method, r_amount)
         saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
         st.session_state[rk] = {
             "pdf": pdf, "filename": fname,
@@ -1481,18 +1488,28 @@ def _render_pending_card(key: str, p: dict) -> None:
         with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
             edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]),
                                   key=f"edate_{key}")
-            e1, e2 = st.columns(2)
-            ekg = e1.number_input("数量（kg）", min_value=0.0, step=5.0,
+            e0, e1, e2 = st.columns(3)
+            e_unit_kg = e0.number_input("単位（kg）", min_value=0.1, step=1.0,
+                                        value=float(p.get("unit_kg") or billing.UNIT_KG),
+                                        key=f"eunitkg_{key}",
+                                        help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
+            ekg = e1.number_input("数量（kg）", min_value=0.0, step=e_unit_kg,
                                   value=float(p["total_kg"]), key=f"ekg_{key}")
-            eprice = e2.number_input("単価（5kgあたり・税込／送料込）", min_value=0,
+            eprice = e2.number_input(f"単価（{e_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
                                      value=int(p.get("unit_price", 4000)),
                                      step=100, key=f"eprice_{key}")
-            if ekg > 0:
-                st.caption(f"ご請求額（税込）：¥{round(ekg / billing.UNIT_KG * eprice):,}")
+            ecalc = round(ekg / e_unit_kg * eprice) if ekg > 0 else 0
+            eamount = st.number_input(
+                "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
+                value=ecalc, step=1, key=f"eamount_{key}",
+                help="通常は数量×単価の自動計算のままで構いません。")
+            if ekg > 0 and eamount != ecalc:
+                st.caption(f"自動計算では ¥{ecalc:,} ですが、¥{eamount:,} で作り直します。")
             if st.button("この内容で作り直す", key=f"regen_{key}",
                         use_container_width=True, disabled=ekg <= 0):
-                r = billing.regenerate_pending(key, ekg / billing.UNIT_KG, eprice,
-                                               issue_date=edate)
+                r = billing.regenerate_pending(key, ekg / e_unit_kg, eprice,
+                                               issue_date=edate, unit_kg=e_unit_kg,
+                                               amount_override=eamount)
                 if r.get("ok"):
                     st.success(f"作り直しました（¥{r['amount']:,}）。")
                     st.rerun()
@@ -1542,17 +1559,27 @@ def _billing_issue() -> None:
                                 key="man_cid")
             mcli = billing.get_client(mcid) or {}
             mdate = m2.date_input("発行日", value=today(), key="man_date")
-            m4, m5 = st.columns(2)
-            mkg = m4.number_input("数量（kg）", min_value=0.0, step=5.0, value=0.0,
-                                  key="man_kg", help="5kgあたりの単価で請求額を計算します")
-            mprice = m5.number_input("単価（5kgあたり・税込／送料込）", min_value=0,
+            m3, m4, m5 = st.columns(3)
+            man_unit_kg = m3.number_input("単位（kg）", min_value=0.1, step=1.0,
+                                          value=float(mcli.get("unit_kg", billing.UNIT_KG)),
+                                          key="man_unit_kg",
+                                          help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
+            mkg = m4.number_input("数量（kg）", min_value=0.0, step=man_unit_kg, value=0.0,
+                                  key="man_kg", help="上の単位あたりの単価で請求額を計算します")
+            mprice = m5.number_input(f"単価（{man_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
                                      value=int(mcli.get("price_per_5kg", 4000)),
                                      step=100, key="man_price")
-            if mkg > 0:
-                st.caption(f"ご請求額（税込）：¥{round(mkg / billing.UNIT_KG * mprice):,}")
+            man_calc = round(mkg / man_unit_kg * mprice) if mkg > 0 else 0
+            man_amount = st.number_input(
+                "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
+                value=man_calc, step=1, key="man_amount",
+                help="通常は数量×単価の自動計算のままで構いません。")
+            if mkg > 0 and man_amount != man_calc:
+                st.caption(f"自動計算では ¥{man_calc:,} ですが、¥{man_amount:,} で作成します。")
             if st.button("作成する", type="primary", use_container_width=True,
                         disabled=mkg <= 0, key="man_create"):
-                r = billing.prepare_manual(mcid, mdate, mkg / billing.UNIT_KG, mprice)
+                r = billing.prepare_manual(mcid, mdate, mkg / man_unit_kg, mprice,
+                                           unit_kg=man_unit_kg, amount_override=man_amount)
                 if r.get("ok"):
                     st.success(f"作成しました（¥{r['amount']:,}）。下の一覧から内容を確認して送信してください。")
                     st.rerun()
@@ -1604,9 +1631,15 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
                                    opts, index=idx if opts else None,
                                    format_func=lambda i: cust_opts.get(i, str(i)),
                                    key=f"cu_{fid}")
-        price = st.number_input("単価（5kgあたり・税込／送料込）",
-                                value=int(c.get("price_per_5kg", 4000)), step=100,
-                                key=f"pr_{fid}")
+        pu1, pu2 = st.columns(2)
+        unit_kg = pu1.number_input("単位（kg）", min_value=0.1,
+                                   value=float(c.get("unit_kg", 5.0)), step=1.0,
+                                   key=f"uk_{fid}",
+                                   help="5kg以外に大口向けの30kg・60kgなども設定できます。"
+                                        "手入力での請求書作成・作り直し時の既定値です。")
+        price = pu2.number_input(f"単価（{unit_kg:g}kgあたり・税込／送料込）",
+                                 value=int(c.get("price_per_5kg", 4000)), step=100,
+                                 key=f"pr_{fid}")
         item = st.text_input("品名（請求書の明細行）",
                              c.get("item_desc", "令和7年度　福島県産 コシヒカリ (精米) 5㎏"),
                              key=f"im_{fid}")
@@ -1638,6 +1671,7 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
                 "id": cid.strip(), "name": name.strip(),
                 "invoice_to": invoice_to.strip(), "email": email.strip(),
                 "customer_id": customer_id, "price_per_5kg": int(price),
+                "unit_kg": float(unit_kg),
                 "item_desc": item, "subject_tmpl": subject, "body_tmpl": body,
                 "last_doc_no": int(doc_no), "folder": folder.strip(),
                 "local_xlsx": local_xlsx.strip(), "active": bool(active)})
@@ -1671,11 +1705,78 @@ def _billing_master() -> None:
 
 def view_billing() -> None:
     st.subheader("📨 請求")
-    tab_issue, tab_master = st.tabs(["請求書の発行・送信", "請求先マスタ"])
+    tab_issue, tab_pay, tab_master = st.tabs(
+        ["請求書の発行・送信", "支払い用QR", "請求先マスタ"])
     with tab_issue:
         _billing_issue()
+    with tab_pay:
+        _paysheet_issue()
     with tab_master:
         _billing_master()
+
+
+def _paysheet_issue() -> None:
+    """Squareの決済QRを載せた「お支払いのご案内」を1枚作る。
+
+    入力した品名・金額がそのままSquareの決済画面に出る。請求書とは切り離した
+    独立の紙にしているのは、システムに載っていない単発の卸や直売でも同じ手順で
+    使えるようにするため。
+    """
+    st.caption("QRを読み取ればその場でカード決済できる紙を作ります。"
+               "領収書はお支払いを確認してから発行してください。")
+    if not square_pay.is_configured():
+        st.warning("SquareのアクセストークンがSecretsに未設定のため、まだ使えません"
+                   "（SQUARE_ACCESS_TOKEN）。設定するとこのタブが動きます。")
+        return
+
+    # 請求先マスタから宛名・品名を引き継げるようにする（毎回打ち直さないため）
+    clients = [c for c in billing.get_clients() if c.get("active", True)]
+    opts = ["（手入力）"] + [c["name"] for c in clients]
+    picked = st.selectbox("請求先から取り込む", opts, key="ps_client")
+    src = next((c for c in clients if c["name"] == picked), None)
+
+    c1, c2 = st.columns([3, 2])
+    invoice_to = c1.text_input("宛名", value=(src or {}).get("invoice_to", ""),
+                               key="ps_to", placeholder="例：株式会社グラナダ")
+    issue_dt = c2.date_input("発行日", value=today(), key="ps_date")
+    c3, c4 = st.columns([3, 2])
+    item_name = c3.text_input("品名（Squareの決済画面にも出ます）",
+                              value=(src or {}).get("item_desc", ""),
+                              key="ps_item", placeholder="例：精米30kg（卸）")
+    amount = c4.number_input("金額（円・税込）", min_value=1, step=100, value=14500,
+                             key="ps_amount")
+    show_bank = st.checkbox("振込先も載せる", value=True, key="ps_bank")
+    note = st.text_input("注記（任意）", key="ps_note",
+                         value="本状は領収書ではありません。")
+
+    pk = "paysheet_pdf"
+    if st.button("🧾 お支払いのご案内を作成", key="ps_make", use_container_width=True):
+        if not item_name.strip():
+            st.error("品名を入力してください。")
+        else:
+            try:
+                link = square_pay.get_payment_link(item_name.strip(), int(amount))
+            except Exception as e:  # noqa: BLE001  通信/設定エラーは文面をそのまま出す
+                st.error(f"Squareの決済リンクを作れませんでした：{e}")
+                link = None
+            if link:
+                pdf = paysheet.build_pay_sheet_pdf(
+                    invoice_to=invoice_to.strip(), item_name=item_name.strip(),
+                    amount=int(amount), pay_url=link["url"], issue_date=issue_dt,
+                    note=note.strip(), show_bank=show_bank)
+                st.session_state[pk] = {
+                    "pdf": pdf, "url": link["url"],
+                    "filename": paysheet.pay_sheet_filename(
+                        issue_dt.isoformat(), invoice_to.strip()),
+                }
+
+    if st.session_state.get(pk):
+        d = st.session_state[pk]
+        st.success("作成しました。印刷して手渡すか、PDFのまま送ってください。")
+        st.caption(f"決済リンク： {d['url']}")
+        st.download_button("↓ PDFをダウンロード", d["pdf"], file_name=d["filename"],
+                           mime="application/pdf", key="ps_dl",
+                           use_container_width=True)
 
 
 def _month_end(y: int, mo: int) -> date:
