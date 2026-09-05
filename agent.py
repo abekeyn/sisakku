@@ -6,11 +6,21 @@
 2. アプリから「B2自動取得」の指示が来たら、ブラウザ自動操作で
    B2クラウドから発行済データを取得 → 照合 → 出荷完了 → BASE反映
 
+B2クラウド操作（Playwright）はどれも「発行・印刷」「集荷依頼」「過去取得」の
+別プロセス(python agent.py --b2 等)として起動し、常駐本体はそれを監視するだけ
+にしている。PCのスリープ／ネットワーク不調でブラウザ自動操作がまれに応答不能
+になることがあり、以前は常駐プロセス自体が巻き込まれて完全に停止し、手動で
+プロセスを再起動するまで何もできなくなっていた（2026-09-05に実際に発生）。
+別プロセス化しておけば、タイムアウトで確実に強制終了でき、常駐本体や他の
+定期処理（CSV書き出し・請求同期等）は影響を受けずに動き続ける。
+
 - 監視モード（常駐）:  python agent.py --watch
 - 1回だけ実行:        python agent.py
 - B2取得を今すぐ:     python agent.py --b2
 """
+import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +30,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import db, exporter  # noqa: E402
 
 INTERVAL = 6  # 監視間隔（秒）
+AGENT_PATH = str(Path(__file__).resolve())
+AGENT_DIR = str(Path(__file__).resolve().parent)
+
+# B2クラウド操作（Playwright）を子プロセスで実行する際の上限時間（秒）。
+# 通常は1〜2分で終わるが、ハング時に手動介入なしで自己回復できるよう上限を設ける。
+_JOB_TIMEOUTS = {
+    "b2_fetch": 360,
+    "b2_print": 360,
+    "b2_pickup": 240,
+    "b2_history": 900,
+}
+_JOBS: dict[str, dict] = {}  # name -> {"proc", "deadline", "result_key", "label"}
 
 
 def _progress(key: str):
@@ -28,6 +50,50 @@ def _progress(key: str):
         db.set_setting(key, {"pct": int(pct), "step": step,
                              "at": datetime.now().isoformat(timespec="seconds")})
     return cb
+
+
+def _kill_tree(pid: int) -> None:
+    """子プロセスと、その配下で起動されたブラウザ等をまとめて強制終了する。"""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True, timeout=15)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _launch_job(name: str, flag: str, result_key: str, label: str) -> None:
+    """B2クラウド操作を別プロセスで起動する（既に実行中なら何もしない）。"""
+    if name in _JOBS:
+        return
+    proc = subprocess.Popen(
+        [sys.executable, AGENT_PATH, flag], cwd=AGENT_DIR,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    _JOBS[name] = {"proc": proc, "deadline": time.time() + _JOB_TIMEOUTS[name],
+                   "result_key": result_key, "label": label}
+
+
+def _poll_jobs() -> None:
+    """実行中のB2操作を確認し、終わっていれば片付け、超過していれば強制終了する。
+
+    結果(*_result)自体は子プロセス側が完了時にDBへ書き込む。ここでは
+    タイムアウト検知と後始末（プロセスツリーの強制終了・失敗結果の記録）だけ行う。
+    """
+    for name in list(_JOBS):
+        job = _JOBS[name]
+        proc = job["proc"]
+        if proc.poll() is not None:
+            del _JOBS[name]
+            continue
+        if time.time() > job["deadline"]:
+            print(f'{job["label"]}：応答がないためタイムアウトで強制終了します', flush=True)
+            _kill_tree(proc.pid)
+            db.set_setting(job["result_key"], {
+                "ok": False, "at": datetime.now().isoformat(timespec="seconds"),
+                "summary": "タイムアウトしました（PCのスリープやネットワーク不調の可能性があります）。"
+                           "もう一度お試しください。",
+            })
+            del _JOBS[name]
 
 
 def _process_exports() -> int:
@@ -69,7 +135,7 @@ def _check_b2_request() -> bool:
     done = db.get_setting("b2_fetch_handled")
     if req and req != done:
         db.set_setting("b2_fetch_handled", req)
-        _run_b2_fetch()
+        _launch_job("b2_fetch", "--b2", "b2_fetch_result", "伝票番号の取得・出荷確定")
         return True
     return False
 
@@ -109,7 +175,7 @@ def _check_b2_print() -> bool:
     done = db.get_setting("b2_print_handled")
     if req and req != done:
         db.set_setting("b2_print_handled", req)
-        _run_b2_print()
+        _launch_job("b2_print", "--b2-print", "b2_print_result", "送り状の発行・印刷")
         return True
     return False
 
@@ -143,7 +209,7 @@ def _check_b2_history() -> bool:
     done = db.get_setting("b2_history_handled")
     if req and req != done:
         db.set_setting("b2_history_handled", req)
-        _run_b2_history()
+        _launch_job("b2_history", "--b2-history", "b2_history_result", "過去データの取得")
         return True
     return False
 
@@ -179,7 +245,7 @@ def _check_b2_pickup() -> bool:
     done = db.get_setting("b2_pickup_handled")
     if req and req != done:
         db.set_setting("b2_pickup_handled", req)
-        _run_b2_pickup()
+        _launch_job("b2_pickup", "--b2-pickup", "b2_pickup_result", "集荷依頼")
         return True
     return False
 
@@ -245,6 +311,15 @@ def main() -> None:
     if "--b2" in sys.argv:
         _run_b2_fetch()
         return
+    if "--b2-print" in sys.argv:
+        _run_b2_print()
+        return
+    if "--b2-pickup" in sys.argv:
+        _run_b2_pickup()
+        return
+    if "--b2-history" in sys.argv:
+        _run_b2_history()
+        return
     if "--pickup-explore" in sys.argv:
         # 集荷依頼ページの構造を調べる（本番前の調整用）
         from lib import b2_fetch
@@ -252,7 +327,6 @@ def main() -> None:
         print(r.get("message", ""))
         return
     if "--watch" in sys.argv:
-        import time
         print(f"常駐エージェント開始（{INTERVAL}秒ごとに監視）", flush=True)
         while True:
             try:
@@ -261,6 +335,7 @@ def main() -> None:
                 _check_b2_print()
                 _check_b2_pickup()
                 _check_b2_history()
+                _poll_jobs()
                 _check_granada_sync()
                 _check_receipt_sync()
             except Exception as e:  # noqa: BLE001  一時的なエラーで止めない
