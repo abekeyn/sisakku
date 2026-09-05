@@ -27,8 +27,8 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter,
-                 komeful, logic, payslip, paysheet, postal, quote, receipt,
-                 seed, shipping, shopify_api, square_pay, ui, yamato)
+                 komeful, logic, payslip, postal, quote, receipt,
+                 seed, shipping, shopify_api, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -1705,78 +1705,14 @@ def _billing_master() -> None:
 
 def view_billing() -> None:
     st.subheader("📨 請求")
-    tab_issue, tab_pay, tab_master = st.tabs(
-        ["請求書の発行・送信", "支払い用QR", "請求先マスタ"])
+    tab_issue, tab_master = st.tabs(["請求書の発行・送信", "請求先マスタ"])
     with tab_issue:
         _billing_issue()
-    with tab_pay:
-        _paysheet_issue()
     with tab_master:
         _billing_master()
 
-
-def _paysheet_issue() -> None:
-    """Squareの決済QRを載せた「お支払いのご案内」を1枚作る。
-
-    入力した品名・金額がそのままSquareの決済画面に出る。請求書とは切り離した
-    独立の紙にしているのは、システムに載っていない単発の卸や直売でも同じ手順で
-    使えるようにするため。
-    """
-    st.caption("QRを読み取ればその場でカード決済できる紙を作ります。"
-               "領収書はお支払いを確認してから発行してください。")
-    if not square_pay.is_configured():
-        st.warning("SquareのアクセストークンがSecretsに未設定のため、まだ使えません"
-                   "（SQUARE_ACCESS_TOKEN）。設定するとこのタブが動きます。")
-        return
-
-    # 請求先マスタから宛名・品名を引き継げるようにする（毎回打ち直さないため）
-    clients = [c for c in billing.get_clients() if c.get("active", True)]
-    opts = ["（手入力）"] + [c["name"] for c in clients]
-    picked = st.selectbox("請求先から取り込む", opts, key="ps_client")
-    src = next((c for c in clients if c["name"] == picked), None)
-
-    c1, c2 = st.columns([3, 2])
-    invoice_to = c1.text_input("宛名", value=(src or {}).get("invoice_to", ""),
-                               key="ps_to", placeholder="例：株式会社グラナダ")
-    issue_dt = c2.date_input("発行日", value=today(), key="ps_date")
-    c3, c4 = st.columns([3, 2])
-    item_name = c3.text_input("品名（Squareの決済画面にも出ます）",
-                              value=(src or {}).get("item_desc", ""),
-                              key="ps_item", placeholder="例：精米30kg（卸）")
-    amount = c4.number_input("金額（円・税込）", min_value=1, step=100, value=14500,
-                             key="ps_amount")
-    show_bank = st.checkbox("振込先も載せる", value=True, key="ps_bank")
-    note = st.text_input("注記（任意）", key="ps_note",
-                         value="本状は領収書ではありません。")
-
-    pk = "paysheet_pdf"
-    if st.button("🧾 お支払いのご案内を作成", key="ps_make", use_container_width=True):
-        if not item_name.strip():
-            st.error("品名を入力してください。")
-        else:
-            try:
-                link = square_pay.get_payment_link(item_name.strip(), int(amount))
-            except Exception as e:  # noqa: BLE001  通信/設定エラーは文面をそのまま出す
-                st.error(f"Squareの決済リンクを作れませんでした：{e}")
-                link = None
-            if link:
-                pdf = paysheet.build_pay_sheet_pdf(
-                    invoice_to=invoice_to.strip(), item_name=item_name.strip(),
-                    amount=int(amount), pay_url=link["url"], issue_date=issue_dt,
-                    note=note.strip(), show_bank=show_bank)
-                st.session_state[pk] = {
-                    "pdf": pdf, "url": link["url"],
-                    "filename": paysheet.pay_sheet_filename(
-                        issue_dt.isoformat(), invoice_to.strip()),
-                }
-
-    if st.session_state.get(pk):
-        d = st.session_state[pk]
-        st.success("作成しました。印刷して手渡すか、PDFのまま送ってください。")
-        st.caption(f"決済リンク： {d['url']}")
-        st.download_button("↓ PDFをダウンロード", d["pdf"], file_name=d["filename"],
-                           mime="application/pdf", key="ps_dl",
-                           use_container_width=True)
+# Square決済QR付き「支払いのご案内」機能（lib/paysheet.py・lib/square_pay.py）は
+# まだリポジトリ未登録のため、コミットするまで一旦ここから外している。
 
 
 def _month_end(y: int, mo: int) -> date:
