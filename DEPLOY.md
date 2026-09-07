@@ -56,6 +56,21 @@
    ```
 5. **Deploy** を押す。数分でURLが発行されます（例：`https://abe-rice.streamlit.app`）
 
+### 後から足せるSecrets（任意）
+
+必要になったら **アプリ画面右下 ⋮ → Settings → Secrets** に追記します。
+どれも未設定のままでアプリは動き、その機能だけが使えない状態になります。
+
+| キー | 使う機能 | 取得元 |
+|---|---|---|
+| `SQUARE_ACCESS_TOKEN` | 請求 → 支払い用QR（決済QR付きのお支払いのご案内） | Square開発者ダッシュボード → アプリケーション → Credentials → Production Access Token（`EAAA…`） |
+| `SQUARE_LOCATION_ID` | 同上（省略可。店舗が1つならトークンから自動取得） | Square開発者ダッシュボード → Locations |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `MAIL_FROM` | 請求書・見積書のメール送信 | 使っているメールサービスの設定 |
+
+> `SQUARE_ACCESS_TOKEN` は**決済に直結する認証情報**です。Secrets画面以外に貼らないこと
+> （GitHub・チャット・メモアプリなどに残さない）。漏れたときはSquare側でトークンを
+> 失効（Revoke）させて発行し直します。
+
 ---
 
 ## STEP 4. 最初の準備（公開後に1回だけ）
@@ -91,6 +106,9 @@
 
 ## 困ったとき
 - **ログインできない**：Secrets の `APP_PASSWORD` と入力が一致しているか確認
+- **「支払い用QR」タブが『未設定』と出る**：クラウド側のSecretsに `SQUARE_ACCESS_TOKEN`
+  が入っていない。PCのsecrets.tomlに入れてもクラウドには反映されないので、
+  Streamlit CloudのSecrets画面にも同じものを追記する
 - **データベースに繋がらない**：Supabaseは「Session pooler」のURIを使う／`【パスワード】`を置換したか確認
 - **顧客が空**：STEP4-2 のCSVアップロードを実施
 - **コードを直したら**：GitHub Desktop で Commit → Push すると、数分で自動的にクラウドへ反映
