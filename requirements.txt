@@ -9,3 +9,5 @@ playwright==1.60.0
 openpyxl==3.1.5
 # reportlab: 領収書PDFをアプリ内で即時生成（LibreOffice不要・日本語フォント埋め込み）
 reportlab==5.0.1
+# qrcode[pil]: 領収書に載せるSquare決済リンクのQRコード生成
+qrcode[pil]==8.2

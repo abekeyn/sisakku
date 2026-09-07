@@ -32,6 +32,10 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     ようにする（品名の"5kg"だけを見て全体の金額だと誤解されるのを防ぐ）。
     payment_method: "bank"(振込・既定) / "cash"(現金) / "other"(自由記述)。
     "other" のときは payment_note の内容をそのまま注記として使う。
+
+    支払い用のQRはここには刷らない（領収書は入金済みの証明なので、支払いを
+    促すQRが同居すると書類として矛盾する）。未入金の相手に渡す紙は
+    paysheet.build_pay_sheet_pdf() で別に作る。
     """
     from reportlab.pdfgen import canvas as _canvas
 

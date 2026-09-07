@@ -1,0 +1,11 @@
+{
+  "sections": {
+    "main": {
+      "type": "trial-set-page"
+    }
+  },
+  "order": [
+    "main"
+  ],
+  "layout": "rice-page"
+}

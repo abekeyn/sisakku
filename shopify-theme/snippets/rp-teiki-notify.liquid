@@ -1,0 +1,30 @@
+{%- comment -%}
+  定期便の受付開始お知らせ登録フォーム。
+  定期便商品を公開すると、呼び出し側の条件分岐で自動的に通常のクロスセルカードへ切り替わる。
+  登録者には teiki-waitlist タグが付くので、顧客管理から絞り込んで一斉案内できる。
+{%- endcomment -%}
+<div class="rp-notify" id="teiki-notify">
+  <div class="rp-notify-ttl">定期便は10月から受付開始します</div>
+  <p class="rp-notify-lead">
+    毎月・毎週お届けする定期便は、新米の収穫を待って10月から受付を開始します。
+    受付開始のご案内をご希望の方は、メールアドレスをご登録ください。準備ができ次第、いちばんにお知らせします。
+  </p>
+
+  {%- form 'customer', class: 'rp-notify-form' -%}
+    {%- if form.posted_successfully? -%}
+      <p class="rp-notify-done">ご登録ありがとうございます。受付開始が決まりましたらご案内をお送りします。</p>
+    {%- else -%}
+      {%- if form.errors -%}
+        <p class="rp-notify-err">{{ form.errors | default_errors }}</p>
+      {%- endif -%}
+      <input type="hidden" name="contact[tags]" value="teiki-waitlist">
+      <input type="email" name="contact[email]" aria-label="メールアドレス" placeholder="メールアドレス" required>
+      <button type="submit">お知らせを受け取る</button>
+    {%- endif -%}
+  {%- endform -%}
+
+  <p class="rp-notify-note">
+    ご登録は無料です。定期便のご案内以外には使用しません。配信はいつでも停止できます。
+    <a href="/policies/privacy-policy">プライバシーポリシー</a>
+  </p>
+</div>

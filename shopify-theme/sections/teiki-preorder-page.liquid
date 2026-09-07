@@ -1,0 +1,334 @@
+{% comment %}
+  阿部農園 琥珀米 週間定期便 予約ページ - 送料無料・単一バリアントの予約販売専用セクション
+{% endcomment %}
+<style>
+  #teiki-page-root {
+    --navy: #1c2c4d;
+    --navy-sub: #131e35;
+    --cream: #f6f4ef;
+    --beige: #efeae0;
+    --text-gray: #5a6472;
+    --sub-gray: #8a8574;
+    --sub-gray2: #8e9ab0;
+    --gold: #d4af5f;
+    --border: #ddd5c2;
+    --border-dark: #0e1628;
+    --offwhite: #e8e2d4;
+    background: var(--cream);
+    font-family: 'Noto Serif JP', serif;
+    color: var(--navy);
+  }
+  #teiki-page-root * { box-sizing: border-box; }
+  #teiki-page-root a { text-decoration: none; }
+  #teiki-page-root img { max-width: 100%; display: block; }
+  #teiki-page-root .label-en {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--gold);
+    font-size: 13px;
+  }
+  #teiki-page-root .placeholder-img {
+    width: 100%;
+    background: repeating-linear-gradient(135deg, #ede7d9 0px, #ede7d9 18px, #e3dcc9 18px, #e3dcc9 36px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #teiki-page-root .placeholder-img span {
+    font-family: monospace; font-size: 12px; color: var(--sub-gray); letter-spacing: 0.05em;
+  }
+
+  /* ---------- HEADER ---------- */
+  #teiki-page-root .rp-header {
+    background: var(--navy);
+    padding: 0 24px;
+    height: 64px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 50;
+  }
+  #teiki-page-root .rp-logo {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 16px; letter-spacing: 0.14em; color: var(--offwhite);
+    display: flex; align-items: center; gap: 10px;
+  }
+  #teiki-page-root .rp-logo img { height: 44px; width: auto; display: block; }
+  #teiki-page-root .rp-voice img.placeholder-img { object-fit: cover; }
+  #teiki-page-root .rp-nav { display: none; gap: 40px; }
+  #teiki-page-root .rp-nav a { font-size: 14px; color: var(--offwhite); letter-spacing: 0.04em; }
+  #teiki-page-root .rp-header-right { display: flex; align-items: center; gap: 16px; }
+
+  /* ---------- HERO ---------- */
+  #teiki-page-root .rp-hero {
+    max-width: 1000px; margin: 0 auto; padding: 40px 20px 60px;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #teiki-page-root .rp-hero.rp-in { opacity: 1; transform: translateY(0); }
+  #teiki-page-root .rp-gallery-main { height: 300px; width: 100%; object-fit: cover; }
+  #teiki-page-root .rp-panel { margin-top: 28px; text-align: center; }
+  #teiki-page-root .rp-preorder-badge {
+    display: inline-block; margin-top: 10px; padding: 5px 12px; background: var(--gold); color: var(--navy);
+    font-size: 12px; letter-spacing: 0.06em; border-radius: 3px;
+  }
+  #teiki-page-root .rp-title {
+    font-weight: 500; font-size: 24px; color: var(--navy); margin: 10px 0 0;
+  }
+  #teiki-page-root .rp-lead {
+    font-size: 14px; line-height: 1.9; color: var(--text-gray); margin: 14px auto 0; max-width: 520px;
+  }
+  #teiki-page-root .rp-divider { height: 1px; background: var(--border); margin: 22px auto; max-width: 320px; }
+  #teiki-page-root .rp-price-row { display: flex; align-items: baseline; justify-content: center; gap: 10px; }
+  #teiki-page-root .rp-price { font-size: 26px; color: var(--navy); }
+  #teiki-page-root .rp-price-note { font-size: 12px; color: var(--sub-gray); }
+  #teiki-page-root .rp-cta {
+    width: 100%; max-width: 320px; margin: 22px auto 0; padding: 16px 0; background: var(--navy); color: var(--offwhite);
+    border: none; border-radius: 4px; font-family: 'Noto Serif JP', serif; font-size: 15px;
+    letter-spacing: 0.06em; cursor: pointer; display: block;
+  }
+  #teiki-page-root .rp-cta:disabled { opacity: .6; cursor: default; }
+  #teiki-page-root .rp-milling-note { font-size: 12px; color: var(--sub-gray); line-height: 1.9; margin-top: 14px; }
+
+  /* ---------- INFO BAR ---------- */
+  #teiki-page-root .rp-quality {
+    background: var(--navy); padding: 36px 18px; display: grid; grid-template-columns: 1fr 1fr;
+    gap: 20px 0; opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #teiki-page-root .rp-quality.rp-in { opacity: 1; transform: translateY(0); }
+  #teiki-page-root .rp-quality-item { text-align: center; }
+  #teiki-page-root .rp-quality-item .label-en { font-size: 11px; }
+  #teiki-page-root .rp-quality-item .val { font-size: 13px; color: var(--offwhite); margin-top: 8px; }
+
+  /* ---------- PRODUCER VOICE ---------- */
+  #teiki-page-root .rp-voice {
+    padding: 56px 20px; display: flex; flex-direction: column; align-items: center; text-align: center;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #teiki-page-root .rp-voice.rp-in { opacity: 1; transform: translateY(0); }
+  #teiki-page-root .rp-voice .placeholder-img { width: 140px; height: 140px; border-radius: 50%; }
+  #teiki-page-root .rp-voice p { font-size: 16px; line-height: 1.85; color: var(--navy); margin-top: 16px; }
+  #teiki-page-root .rp-voice .who { font-size: 13px; color: var(--sub-gray); margin-top: 14px; }
+
+  /* ---------- SERVICE INFO ---------- */
+  #teiki-page-root .rp-shipinfo {
+    padding: 40px 20px; border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 24px;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #teiki-page-root .rp-shipinfo.rp-in { opacity: 1; transform: translateY(0); }
+  #teiki-page-root .rp-shipinfo .ttl { font-size: 12px; color: var(--navy); letter-spacing: 0.03em; }
+  #teiki-page-root .rp-shipinfo p { font-size: 12px; color: var(--sub-gray); line-height: 1.9; margin-top: 8px; }
+
+  /* ---------- CROSS SELL ---------- */
+  #teiki-page-root .rp-cross {
+    background: var(--navy); padding: 48px 18px;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #teiki-page-root .rp-cross.rp-in { opacity: 1; transform: translateY(0); }
+  #teiki-page-root .rp-cross-title { text-align: center; }
+  #teiki-page-root .rp-group-ttl {
+    font-size: 12px; color: var(--offwhite); letter-spacing: 0.05em; margin-top: 32px;
+    border-bottom: 1px solid var(--border-dark); padding-bottom: 10px;
+  }
+  #teiki-page-root .rp-group-grid { display: flex; flex-direction: column; gap: 22px; margin-top: 20px; }
+  #teiki-page-root .rp-card .placeholder-img.dark {
+    height: 180px;
+    background: repeating-linear-gradient(135deg, #1c2c4d 0px, #1c2c4d 18px, #22335c 18px, #22335c 36px);
+  }
+  #teiki-page-root .rp-card .placeholder-img.dark span { color: var(--sub-gray2); }
+  #teiki-page-root .rp-card-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; }
+  #teiki-page-root .rp-card-name { font-size: 14px; color: var(--offwhite); }
+  #teiki-page-root .rp-card-price { font-size: 14px; color: var(--offwhite); }
+  #teiki-page-root .rp-card-note { font-size: 10px; color: var(--sub-gray2); margin-top: 4px; }
+  #teiki-page-root .rp-card-link { font-size: 11px; color: var(--gold); margin-top: 4px; display: inline-block; }
+
+  /* ---------- FOOTER ---------- */
+  #teiki-page-root .rp-footer {
+    background: var(--navy); padding: 32px 20px; text-align: center; border-top: 1px solid var(--border-dark);
+  }
+  #teiki-page-root .rp-footer .rp-logo { font-size: 13px; justify-content: center; }
+  #teiki-page-root .rp-footer .rp-logo img { height: 52px; }
+  #teiki-page-root .rp-footer .addr { font-size: 10px; color: var(--sub-gray2); margin-top: 8px; }
+
+  /* ---------- DESKTOP ---------- */
+  @media (min-width: 900px) {
+    #teiki-page-root .rp-header { padding: 0 60px; height: 88px; }
+    #teiki-page-root .rp-logo { font-size: 20px; letter-spacing: 0.16em; }
+    #teiki-page-root .rp-logo img { height: 60px; }
+    #teiki-page-root .rp-nav { display: flex; }
+    #teiki-page-root .rp-hero { padding: 90px 60px; }
+    #teiki-page-root .rp-gallery-main { height: 360px; }
+    #teiki-page-root .rp-title { font-size: 30px; }
+    #teiki-page-root .rp-price { font-size: 30px; }
+    #teiki-page-root .rp-quality { grid-template-columns: 1fr 1fr; padding: 48px 60px; max-width: 700px; margin: 0 auto; }
+    #teiki-page-root .rp-quality-item { border-left: 1px solid var(--border-dark); padding: 0 16px; }
+    #teiki-page-root .rp-quality-item:first-child { border-left: none; }
+    #teiki-page-root .rp-voice { padding: 100px 60px; }
+    #teiki-page-root .rp-shipinfo { max-width: 900px; margin: 0 auto; padding: 48px 60px 100px; flex-direction: row; gap: 40px; }
+    #teiki-page-root .rp-shipinfo > div { flex: 1; }
+    #teiki-page-root .rp-cross { padding: 90px 60px; }
+    #teiki-page-root .rp-cross-inner { max-width: 1200px; margin: 0 auto; }
+    #teiki-page-root .rp-group-grid.g1 { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; }
+    #teiki-page-root .rp-group-grid.g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; }
+    #teiki-page-root .rp-card .placeholder-img.dark { height: 260px; }
+  }
+
+  #teiki-page-root .rp-footer-links {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 18px;
+    margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-dark);
+    max-width: 760px; margin-left: auto; margin-right: auto;
+  }
+  #teiki-page-root .rp-footer-links a {
+    font-size: 11px; color: var(--sub-gray2); line-height: 1.9; text-decoration: none;
+  }
+  #teiki-page-root .rp-footer-links a:hover { color: var(--gold); text-decoration: underline; }
+  #teiki-page-root .rp-shipinfo p a { color: var(--gold); text-decoration: underline; }
+</style>
+
+<div id="teiki-page-root">
+  <header class="rp-header">
+    <div class="rp-logo"><img src="{{ 'logo-farm-white.png' | asset_url }}" alt="阿部農園">阿部農園 ❘ 三百年続く米農家</div>
+    <nav class="rp-nav">
+      <a href="{{ shop.url }}/collections/all">お米一覧</a>
+      <a href="/pages/こだわり">こだわり</a>
+      <a href="/pages/送料と配送">送料と配送</a>
+    </nav>
+    <div class="rp-header-right">
+      <a href="{{ routes.cart_url }}" aria-label="カート">
+        <svg width="20" height="18" viewBox="0 0 22 20" fill="none"><path d="M1 1H4L6 14H18L20 5H6" stroke="#e8e2d4" stroke-width="1.3"/><circle cx="8" cy="18" r="1.4" fill="#e8e2d4"/><circle cx="16" cy="18" r="1.4" fill="#e8e2d4"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <section class="rp-hero rp-fade">
+    {% if product.featured_image %}
+      <img class="rp-gallery-main" src="{{ product.featured_image | image_url: width: 800 }}" alt="{{ product.title }}">
+    {% else %}
+      <img class="rp-gallery-main" src="{{ 'shukan-teiki-set.jpg' | asset_url }}" alt="{{ product.title }}">
+    {% endif %}
+
+    <div class="rp-panel">
+      <div class="label-en">AMBER RICE &mdash; RESERVE</div>
+      <div class="rp-preorder-badge">予約受付中</div>
+      <h1 class="rp-title">{{ product.title }}</h1>
+      <p class="rp-lead">毎週お届けする琥珀米の週間定期便です。1回のお届けは琥珀米【七日御膳】一回分（450g×2＝900g）。ご注文ごとに精米し、いつでも搗きたての一杯をお楽しみいただけます。送料込みの価格でご提供します。</p>
+      <div class="rp-divider"></div>
+
+      <div class="rp-price-row">
+        <span class="rp-price">¥{{ product.selected_or_first_available_variant.price | money_without_currency }}</span>
+        <span class="rp-price-note">（税込・送料無料・1回分 450g×2）</span>
+      </div>
+      <p class="rp-milling-note">毎週 ¥{{ product.selected_or_first_available_variant.price | money_without_currency }}（税込・送料込み）が自動で決済されます。スキップ・停止はマイページからいつでも無料で行えます。</p>
+
+      <button type="button" class="rp-cta" id="rp-add-cart" data-variant-id="{{ product.selected_or_first_available_variant.id }}" data-selling-plan-id="{{ product.selling_plan_groups.first.selling_plans.first.id }}">定期購入を申し込む</button>
+      <p class="rp-milling-note">9月下旬〜10月初旬の収穫次第で順次発送いたします。</p>
+    </div>
+  </section>
+
+  <section class="rp-quality rp-fade">
+    <div class="rp-quality-item"><div class="label-en">FREQUENCY</div><div class="val">毎週1回お届け</div></div>
+    <div class="rp-quality-item"><div class="label-en">QUANTITY</div><div class="val">450g×2（900g）／回</div></div>
+    <div class="rp-quality-item"><div class="label-en">SHIPPING</div><div class="val">送料込み</div></div>
+    <div class="rp-quality-item"><div class="label-en">CANCEL</div><div class="val">スキップ・解約は無料</div></div>
+  </section>
+
+  <section class="rp-voice rp-fade">
+    <img class="placeholder-img" src="{{ 'producer-portrait.jpg' | asset_url }}" alt="代表 阿部喜臣">
+    <div>
+      <div class="label-en">VOICE OF THE GROWER</div>
+      <p>「届けたいのは、お米じゃなくて、家族の幸せな時間なんです」</p>
+      <div class="who">代表　阿部　喜臣</div>
+    </div>
+  </section>
+
+  <section class="rp-shipinfo rp-fade">
+    <div>
+      <div class="ttl">サービス開始について</div>
+      <p>9月下旬から10月初旬の収穫次第で、ご予約順に精米・発送いたします。発送時期が近づきましたら別途ご連絡いたします。</p>
+    </div>
+    <div>
+      <div class="ttl">送料について</div>
+      <p>週間定期便は全国どこでも送料込みの価格です。</p>
+    </div>
+    <div>
+      <div class="ttl">お支払いとスキップ・解約について</div>
+      <p>1週間ごとに自動でお支払いが発生する定期購入です。次回お届けのスキップ、お届け間隔の変更、解約はマイページからいつでも無料で行えます。解約手数料や最低継続回数はありません。<a href="/account">マイページはこちら</a>／詳細は<a href="/policies/subscription-policy">定期購入について</a>をご確認ください。</p>
+    </div>
+    <div>
+      <div class="ttl">保存方法</div>
+      <p>開封後は密閉し、10℃以下の低温での保管をおすすめします。</p>
+    </div>
+  </section>
+
+  <section class="rp-cross rp-fade">
+    <div class="rp-cross-inner">
+      <div class="label-en rp-cross-title">OTHER VARIETIES</div>
+
+      <div class="rp-group-ttl">単発購入</div>
+      <div class="rp-group-grid g1">
+        {% render 'rp-cross-card', handle: '琥珀米お試しセット-七日御膳', name: '【予約】琥珀米【七日御膳】一回分', price: '¥1,200', note: '送料無料' %}
+      </div>
+
+      <div class="rp-group-ttl">定期便</div>
+      <div class="rp-group-grid g1">
+        {% render 'rp-cross-card', handle: '琥珀米-月間定期便', name: '【予約】琥珀米 月間定期便', price: '¥4,800', note: '送料込み' %}
+      </div>
+
+      <div class="rp-group-ttl">お米・ギフト</div>
+      <div class="rp-group-grid g1">
+        {% render 'rp-cross-card', handle: 'コシヒカリ', name: '【予約】琥珀米 コシヒカリ', price: '¥4,320〜', note: '送料無料' %}
+        {% render 'rp-cross-card', handle: '琥珀米-ギフト-〇-えん', name: '琥珀米 ギフト【〇（えん）】', price: '¥11,800', note: '送料込み' %}
+      </div>
+    </div>
+  </section>
+
+  <footer class="rp-footer">
+    <div class="rp-logo"><img src="{{ 'logo-farm-white.png' | asset_url }}" alt="阿部農園">ABE RICE FARM</div>
+    <div class="addr">福島県郡山市 ／ 十四代続く米農家のD2Cブランド</div>
+    {% render 'rp-footer-links' %}
+  </footer>
+</div>
+
+<script>
+(function(){
+  var root = document.getElementById('teiki-page-root');
+  if (!root) return;
+
+  var btn = document.getElementById('rp-add-cart');
+  btn.addEventListener('click', function(){
+    var originalText = btn.textContent;
+    btn.disabled = true;
+    var item = { id: parseInt(btn.dataset.variantId, 10), quantity: 1 };
+    if (btn.dataset.sellingPlanId) { item.selling_plan = parseInt(btn.dataset.sellingPlanId, 10); }
+    fetch('/cart/add.js', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [item] })
+    }).then(function(res){
+      if (!res.ok) throw new Error('add to cart failed');
+      return res.json();
+    }).then(function(){
+      btn.textContent = '定期購入に申し込みました';
+      document.dispatchEvent(new CustomEvent('cart:refresh'));
+      setTimeout(function(){ btn.textContent = originalText; btn.disabled = false; }, 2200);
+    }).catch(function(){
+      btn.textContent = 'エラーが発生しました';
+      setTimeout(function(){ btn.textContent = originalText; btn.disabled = false; }, 2200);
+    });
+  });
+
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting) { e.target.classList.add('rp-in'); io.unobserve(e.target); }
+    });
+  }, { threshold: 0.15 });
+  root.querySelectorAll('.rp-fade').forEach(function(el){ io.observe(el); });
+})();
+</script>
+
+{% schema %}
+{
+  "name": "週間定期便予約ページ",
+  "settings": [],
+  "presets": [
+    { "name": "週間定期便予約ページ" }
+  ]
+}
+{% endschema %}
