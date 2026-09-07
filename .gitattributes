@@ -1,0 +1,4 @@
+# Shopifyテーマは Shopify CLI が読み書きする正本。Windowsのcore.autocrlf=true で
+# CRLFに変換されると、次の shopify theme push/pull で全ファイルが「変更あり」に
+# 見えてしまうため、このフォルダだけ改行コードを変換しない。
+shopify-theme/** -text

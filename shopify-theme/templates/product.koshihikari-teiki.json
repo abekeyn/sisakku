@@ -1,0 +1,11 @@
+{
+  "sections": {
+    "main": {
+      "type": "koshihikari-teiki-page"
+    }
+  },
+  "order": [
+    "main"
+  ],
+  "layout": "rice-page"
+}

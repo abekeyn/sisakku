@@ -1,0 +1,13 @@
+{%- comment -%}
+  クロスセルカード。商品の実画像を使い、画像が無い商品はカードごと出さない。
+  引数: handle / name / price / note
+{%- endcomment -%}
+{%- assign xp = all_products[handle] -%}
+{%- if xp != blank and xp.featured_image != blank -%}
+  <div class="rp-card">
+    <img src="{{ xp.featured_image | image_url: width: 600 }}" alt="{{ name }}" loading="lazy">
+    <div class="rp-card-row"><span class="rp-card-name">{{ name }}</span><span class="rp-card-price">{{ price }}</span></div>
+    <div class="rp-card-note">{{ note }}</div>
+    <a class="rp-card-link" href="{{ xp.url }}">商品を見る ―</a>
+  </div>
+{%- endif -%}

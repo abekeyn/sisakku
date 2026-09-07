@@ -1,0 +1,11 @@
+{
+  "sections": {
+    "main": {
+      "type": "teiki-preorder-page"
+    }
+  },
+  "order": [
+    "main"
+  ],
+  "layout": "rice-page"
+}

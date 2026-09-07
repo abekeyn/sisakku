@@ -1,0 +1,408 @@
+{% comment %}
+  阿部農園 琥珀米【七日御膳】一回分 専用ページ - 単発購入・予約期間中は送料無料・単一バリアント
+{% endcomment %}
+<style>
+  #trial-page-root {
+    --navy: #1c2c4d;
+    --navy-sub: #131e35;
+    --cream: #f6f4ef;
+    --beige: #efeae0;
+    --text-gray: #5a6472;
+    --sub-gray: #8a8574;
+    --sub-gray2: #8e9ab0;
+    --gold: #d4af5f;
+    --border: #ddd5c2;
+    --border-dark: #0e1628;
+    --offwhite: #e8e2d4;
+    background: var(--cream);
+    font-family: 'Noto Serif JP', serif;
+    color: var(--navy);
+  }
+  #trial-page-root * { box-sizing: border-box; }
+  #trial-page-root a { text-decoration: none; }
+  #trial-page-root img { max-width: 100%; display: block; }
+  #trial-page-root .label-en {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--gold);
+    font-size: 13px;
+  }
+  #trial-page-root .placeholder-img {
+    width: 100%;
+    background: repeating-linear-gradient(135deg, #ede7d9 0px, #ede7d9 18px, #e3dcc9 18px, #e3dcc9 36px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #trial-page-root .placeholder-img span {
+    font-family: monospace; font-size: 12px; color: var(--sub-gray); letter-spacing: 0.05em;
+  }
+
+  /* ---------- HEADER ---------- */
+  #trial-page-root .rp-header {
+    background: var(--navy);
+    padding: 0 24px;
+    height: 64px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 50;
+  }
+  #trial-page-root .rp-logo {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 16px; letter-spacing: 0.14em; color: var(--offwhite);
+    display: flex; align-items: center; gap: 10px;
+  }
+  #trial-page-root .rp-logo img { height: 44px; width: auto; display: block; }
+  #trial-page-root .rp-voice img.placeholder-img { object-fit: cover; }
+  #trial-page-root .rp-nav { display: none; gap: 40px; }
+  #trial-page-root .rp-nav a { font-size: 14px; color: var(--offwhite); letter-spacing: 0.04em; }
+  #trial-page-root .rp-header-right { display: flex; align-items: center; gap: 16px; }
+
+  /* ---------- HERO ---------- */
+  #trial-page-root .rp-hero {
+    max-width: 1200px; margin: 0 auto; padding: 40px 20px 60px;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #trial-page-root .rp-hero.rp-in { opacity: 1; transform: translateY(0); }
+  #trial-page-root .rp-gallery-main { height: 340px; width: 100%; object-fit: cover; }
+  #trial-page-root .rp-panel { margin-top: 28px; }
+  #trial-page-root .rp-preorder-badge {
+    display: inline-block; margin-top: 10px; padding: 5px 12px; background: var(--gold); color: var(--navy);
+    font-size: 12px; letter-spacing: 0.06em; border-radius: 3px;
+  }
+  #trial-page-root .rp-title {
+    font-weight: 500; font-size: 24px; color: var(--navy); margin: 10px 0 0;
+  }
+  #trial-page-root .rp-lead {
+    font-size: 14px; line-height: 1.9; color: var(--text-gray); margin: 14px 0 0;
+  }
+  #trial-page-root .rp-divider { height: 1px; background: var(--border); margin: 22px 0; }
+  #trial-page-root .rp-price-row { display: flex; align-items: baseline; gap: 10px; }
+  #trial-page-root .rp-price { font-size: 26px; color: var(--navy); }
+  #trial-page-root .rp-price-note { font-size: 12px; color: var(--sub-gray); }
+  #trial-page-root .rp-sum-row {
+    display: flex; justify-content: space-between; font-size: 13px; color: var(--sub-gray);
+  }
+  #trial-page-root .rp-ship-row { margin-top: 22px; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  #trial-page-root .rp-total-row { padding-top: 12px; font-size: 15px; color: var(--navy); }
+  #trial-page-root .rp-cta {
+    width: 100%; margin-top: 22px; padding: 16px 0; background: var(--navy); color: var(--offwhite);
+    border: none; border-radius: 4px; font-family: 'Noto Serif JP', serif; font-size: 15px;
+    letter-spacing: 0.06em; cursor: pointer;
+  }
+  #trial-page-root .rp-cta:disabled { opacity: .6; cursor: default; }
+  #trial-page-root .rp-milling-note { font-size: 12px; color: var(--sub-gray); line-height: 1.9; margin-top: 14px; }
+
+  /* ---------- INFO BAR ---------- */
+  #trial-page-root .rp-quality {
+    background: var(--navy); padding: 36px 18px; display: grid; grid-template-columns: 1fr 1fr;
+    gap: 20px 0; opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #trial-page-root .rp-quality.rp-in { opacity: 1; transform: translateY(0); }
+  #trial-page-root .rp-quality-item { text-align: center; }
+  #trial-page-root .rp-quality-item .label-en { font-size: 11px; }
+  #trial-page-root .rp-quality-item .val { font-size: 13px; color: var(--offwhite); margin-top: 8px; }
+
+  /* ---------- PRODUCER VOICE ---------- */
+  #trial-page-root .rp-voice {
+    padding: 56px 20px; display: flex; flex-direction: column; align-items: center; text-align: center;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #trial-page-root .rp-voice.rp-in { opacity: 1; transform: translateY(0); }
+  #trial-page-root .rp-voice .placeholder-img { width: 140px; height: 140px; border-radius: 50%; }
+  #trial-page-root .rp-voice p { font-size: 16px; line-height: 1.85; color: var(--navy); margin-top: 16px; }
+  #trial-page-root .rp-voice .who { font-size: 13px; color: var(--sub-gray); margin-top: 14px; }
+
+  /* ---------- SERVICE INFO ---------- */
+  #trial-page-root .rp-shipinfo {
+    padding: 40px 20px; border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 24px;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #trial-page-root .rp-shipinfo.rp-in { opacity: 1; transform: translateY(0); }
+  #trial-page-root .rp-shipinfo .ttl { font-size: 12px; color: var(--navy); letter-spacing: 0.03em; }
+  #trial-page-root .rp-shipinfo p { font-size: 12px; color: var(--sub-gray); line-height: 1.9; margin-top: 8px; }
+
+  /* ---------- CROSS SELL ---------- */
+  #trial-page-root .rp-cross {
+    background: var(--navy); padding: 48px 18px;
+    opacity: 0; transform: translateY(24px); transition: opacity .9s ease, transform .9s ease;
+  }
+  #trial-page-root .rp-cross.rp-in { opacity: 1; transform: translateY(0); }
+  #trial-page-root .rp-cross-title { text-align: center; }
+  #trial-page-root .rp-group-ttl {
+    font-size: 12px; color: var(--offwhite); letter-spacing: 0.05em; margin-top: 32px;
+    border-bottom: 1px solid var(--border-dark); padding-bottom: 10px;
+  }
+  #trial-page-root .rp-group-grid { display: flex; flex-direction: column; gap: 22px; margin-top: 20px; }
+  #trial-page-root .rp-card .placeholder-img.dark {
+    height: 180px;
+    background: repeating-linear-gradient(135deg, #1c2c4d 0px, #1c2c4d 18px, #22335c 18px, #22335c 36px);
+  }
+  #trial-page-root .rp-card .placeholder-img.dark span { color: var(--sub-gray2); }
+  #trial-page-root .rp-card-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; }
+  #trial-page-root .rp-card-name { font-size: 14px; color: var(--offwhite); }
+  #trial-page-root .rp-card-price { font-size: 14px; color: var(--offwhite); }
+  #trial-page-root .rp-card-note { font-size: 10px; color: var(--sub-gray2); margin-top: 4px; }
+  #trial-page-root .rp-card-link { font-size: 11px; color: var(--gold); margin-top: 4px; display: inline-block; }
+
+  /* ---------- FOOTER ---------- */
+  #trial-page-root .rp-footer {
+    background: var(--navy); padding: 32px 20px; text-align: center; border-top: 1px solid var(--border-dark);
+  }
+  #trial-page-root .rp-footer .rp-logo { font-size: 13px; justify-content: center; }
+  #trial-page-root .rp-footer .rp-logo img { height: 52px; }
+  #trial-page-root .rp-footer .addr { font-size: 10px; color: var(--sub-gray2); margin-top: 8px; }
+
+  /* ---------- DESKTOP ---------- */
+  @media (min-width: 900px) {
+    #trial-page-root .rp-header { padding: 0 60px; height: 88px; }
+    #trial-page-root .rp-logo { font-size: 20px; letter-spacing: 0.16em; }
+    #trial-page-root .rp-logo img { height: 60px; }
+    #trial-page-root .rp-nav { display: flex; }
+    #trial-page-root .rp-hero {
+      padding: 90px 60px; display: grid; grid-template-columns: 520px 1fr; gap: 70px; align-items: start;
+    }
+    #trial-page-root .rp-gallery-main { height: 560px; }
+    #trial-page-root .rp-panel { margin-top: 0; }
+    #trial-page-root .rp-title { font-size: 32px; }
+    #trial-page-root .rp-price { font-size: 30px; }
+    #trial-page-root .rp-quality { grid-template-columns: 1fr 1fr 1fr 1fr; padding: 48px 60px; }
+    #trial-page-root .rp-quality-item { border-left: 1px solid var(--border-dark); padding: 0 16px; }
+    #trial-page-root .rp-quality-item:first-child { border-left: none; }
+    #trial-page-root .rp-voice { padding: 100px 60px; }
+    #trial-page-root .rp-shipinfo { max-width: 900px; margin: 0 auto; padding: 48px 60px 100px; flex-direction: row; gap: 40px; }
+    #trial-page-root .rp-shipinfo > div { flex: 1; }
+    #trial-page-root .rp-cross { padding: 90px 60px; }
+    #trial-page-root .rp-cross-inner { max-width: 1200px; margin: 0 auto; }
+    #trial-page-root .rp-group-grid.g1 { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; }
+    #trial-page-root .rp-group-grid.g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; }
+    #trial-page-root .rp-card .placeholder-img.dark { height: 260px; }
+  }
+
+  #trial-page-root .rp-footer-links {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 18px;
+    margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-dark);
+    max-width: 760px; margin-left: auto; margin-right: auto;
+  }
+  #trial-page-root .rp-footer-links a {
+    font-size: 11px; color: var(--sub-gray2); line-height: 1.9; text-decoration: none;
+  }
+  #trial-page-root .rp-footer-links a:hover { color: var(--gold); text-decoration: underline; }
+
+  /* ---------- TEIKI NOTIFY ---------- */
+  #trial-page-root .rp-notify { margin-top: 20px; }
+  #trial-page-root .rp-notify-ttl { font-size: 15px; color: var(--offwhite); line-height: 1.7; }
+  #trial-page-root .rp-notify-lead { font-size: 12px; color: var(--sub-gray2); line-height: 1.95; margin-top: 10px; }
+  #trial-page-root .rp-notify-form { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  #trial-page-root .rp-notify-form input[type="email"] {
+    flex: 1 1 200px; min-width: 0; padding: 13px 14px; border: 1px solid var(--sub-gray2);
+    border-radius: 4px; background: transparent; color: var(--offwhite);
+    font-family: 'Noto Serif JP', serif; font-size: 14px;
+  }
+  #trial-page-root .rp-notify-form input[type="email"]::placeholder { color: var(--sub-gray2); }
+  #trial-page-root .rp-notify-form input[type="email"]:focus { outline: none; border-color: var(--gold); }
+  #trial-page-root .rp-notify-form button {
+    flex: 0 0 auto; padding: 13px 22px; border: none; border-radius: 4px;
+    background: var(--gold); color: var(--navy);
+    font-family: 'Noto Serif JP', serif; font-size: 14px; letter-spacing: 0.04em; cursor: pointer;
+  }
+  #trial-page-root .rp-notify-done {
+    font-size: 13px; color: var(--gold); line-height: 1.9; margin-top: 16px;
+    border: 1px solid var(--gold); border-radius: 4px; padding: 12px 14px;
+  }
+  #trial-page-root .rp-notify-err { font-size: 12px; color: #e8a0a0; line-height: 1.9; flex: 1 1 100%; margin: 0; }
+  #trial-page-root .rp-notify-note { font-size: 10px; color: var(--sub-gray2); line-height: 1.9; margin-top: 12px; }
+  #trial-page-root .rp-notify-note a { color: var(--gold); text-decoration: underline; }
+  @media (min-width: 900px) {
+    #trial-page-root .rp-notify { max-width: 620px; }
+  }
+
+  /* ---------- CHECKOUT BUTTON ---------- */
+  #trial-page-root .rp-checkout {
+    display: none; width: 100%; margin-top: 10px; padding: 15px 0;
+    background: var(--gold); color: var(--navy); border: none; border-radius: 4px;
+    font-family: 'Noto Serif JP', serif; font-size: 15px; letter-spacing: 0.05em;
+    text-align: center; cursor: pointer; text-decoration: none;
+  }
+  #trial-page-root .rp-checkout.is-on { display: block; }
+  #trial-page-root .rp-sticky { flex-wrap: wrap; }
+  #trial-page-root .rp-sticky .rp-checkout { flex-basis: 100%; margin-top: 8px; padding: 13px 0; font-size: 14px; }
+</style>
+
+<div id="trial-page-root">
+  <header class="rp-header">
+    <div class="rp-logo"><img src="{{ 'logo-farm-white.png' | asset_url }}" alt="阿部農園">阿部農園 ❘ 三百年続く米農家</div>
+    <nav class="rp-nav">
+      <a href="{{ shop.url }}/collections/all">お米一覧</a>
+      <a href="/pages/こだわり">こだわり</a>
+      <a href="/pages/送料と配送">送料と配送</a>
+    </nav>
+    <div class="rp-header-right">
+      <a href="{{ routes.cart_url }}" aria-label="カート">
+        <svg width="20" height="18" viewBox="0 0 22 20" fill="none"><path d="M1 1H4L6 14H18L20 5H6" stroke="#e8e2d4" stroke-width="1.3"/><circle cx="8" cy="18" r="1.4" fill="#e8e2d4"/><circle cx="16" cy="18" r="1.4" fill="#e8e2d4"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <section class="rp-hero rp-fade">
+    {% if product.featured_image %}
+      <img class="rp-gallery-main" src="{{ product.featured_image | image_url: width: 800 }}" alt="{{ product.title }}">
+    {% else %}
+      <img class="rp-gallery-main" src="{{ 'trial-set.jpg' | asset_url }}" alt="{{ product.title }}">
+    {% endif %}
+
+    <div class="rp-panel">
+      <div class="label-en">AMBER RICE &mdash; TRIAL SET</div>
+      <div class="rp-preorder-badge">予約受付中</div>
+      <h1 class="rp-title">{{ product.title }}</h1>
+      <p class="rp-lead">琥珀米を一度味わっていただくための一回分です。450gの小袋を2つ、専用の化粧箱に入れてお届けします。定期便をご検討の際は、まずこちらでお確かめください。</p>
+      <div class="rp-divider"></div>
+
+      <div class="rp-price-row">
+        <span class="rp-price">¥{{ product.selected_or_first_available_variant.price | money_without_currency }}</span>
+        <span class="rp-price-note">（税込・送料無料）</span>
+      </div>
+
+      <div class="rp-sum-row rp-ship-row">
+        <span>配送料</span>
+        <span>無料（全国一律）</span>
+      </div>
+      <div class="rp-sum-row rp-total-row">
+        <span>小計（送料込み）</span>
+        <span>¥{{ product.selected_or_first_available_variant.price | money_without_currency }}</span>
+      </div>
+
+      <button type="button" class="rp-cta" id="rp-add-cart" data-variant-id="{{ product.selected_or_first_available_variant.id }}">カートに入れる</button>
+      <a class="rp-checkout" id="rp-checkout" href="{{ routes.cart_url }}">カートを見る・レジに進む →</a>
+      <p class="rp-milling-note">9月下旬〜10月初旬の収穫次第で順次発送いたします。</p>
+    </div>
+  </section>
+
+  <section class="rp-quality rp-fade">
+    <div class="rp-quality-item"><div class="label-en">GRADE</div><div class="val">一等米のみ</div></div>
+    <div class="rp-quality-item"><div class="label-en">QUANTITY</div><div class="val">450g×2（900g）</div></div>
+    <div class="rp-quality-item"><div class="label-en">SHIPPING</div><div class="val">送料無料</div></div>
+    <div class="rp-quality-item"><div class="label-en">ORIGIN</div><div class="val">福島県郡山市</div></div>
+  </section>
+
+  <section class="rp-voice rp-fade">
+    <img class="placeholder-img" src="{{ 'producer-portrait.jpg' | asset_url }}" alt="代表 阿部喜臣">
+    <div>
+      <div class="label-en">VOICE OF THE GROWER</div>
+      <p>「届けたいのは、お米じゃなくて、家族の幸せな時間なんです」</p>
+      <div class="who">代表　阿部　喜臣</div>
+    </div>
+  </section>
+
+  <section class="rp-shipinfo rp-fade">
+    <div>
+      <div class="ttl">お届けについて</div>
+      <p>9月下旬から10月初旬の収穫次第で、ご予約順に精米・発送いたします。発送時期が近づきましたら別途ご連絡いたします。</p>
+    </div>
+    <div>
+      <div class="ttl">送料について</div>
+      <p>新米ご予約期間中は、全国どこでも送料無料でお届けします。沖縄・離島を含め、追加の送料はいただきません。</p>
+    </div>
+    <div>
+      <div class="ttl">保存方法</div>
+      <p>開封後は密閉し、10℃以下の低温での保管をおすすめします。</p>
+    </div>
+  </section>
+
+  <section class="rp-cross rp-fade">
+    <div class="rp-cross-inner">
+      <div class="label-en rp-cross-title">OTHER VARIETIES</div>
+
+      <div class="rp-group-ttl">定期便</div>
+      {% assign teiki_open = false %}
+      {% unless all_products['琥珀米-月間定期便'] == blank and all_products['琥珀米-週間定期-七日御膳'] == blank %}
+        {% assign teiki_open = true %}
+      {% endunless %}
+      {% if teiki_open %}
+        <div class="rp-group-grid g1">
+          {% render 'rp-cross-card', handle: '琥珀米-月間定期便', name: '【予約】琥珀米 月間定期便', price: '¥4,800', note: '送料込み' %}
+          {% render 'rp-cross-card', handle: '琥珀米-週間定期-七日御膳', name: '【予約】琥珀米 週間定期【七日御膳】', price: '¥1,200', note: '送料込み' %}
+        </div>
+      {% else %}
+        {% render 'rp-teiki-notify' %}
+      {% endif %}
+
+      {% if teiki_open %}
+        <div class="rp-group-ttl">お米・ギフト</div>
+        <div class="rp-group-grid g1">
+          {% render 'rp-cross-card', handle: 'コシヒカリ', name: '【予約】琥珀米 コシヒカリ', price: '¥4,320〜', note: '送料無料' %}
+          {% render 'rp-cross-card', handle: '琥珀米-ギフト-〇-えん', name: '琥珀米 ギフト【〇（えん）】', price: '¥11,800', note: '送料込み' %}
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <footer class="rp-footer">
+    <div class="rp-logo"><img src="{{ 'logo-farm-white.png' | asset_url }}" alt="阿部農園">ABE RICE FARM</div>
+    <div class="addr">福島県郡山市 ／ 十四代続く米農家のD2Cブランド</div>
+    {% render 'rp-footer-links' %}
+  </footer>
+</div>
+
+<script>
+(function(){
+  var root = document.getElementById('trial-page-root');
+  if (!root) return;
+
+  var btn = document.getElementById('rp-add-cart');
+  btn.addEventListener('click', function(){
+    var originalText = btn.textContent;
+    btn.disabled = true;
+    fetch('/cart/add.js', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ id: parseInt(btn.dataset.variantId, 10), quantity: 1 }] })
+    }).then(function(res){
+      if (!res.ok) throw new Error('add to cart failed');
+      return res.json();
+    }).then(function(){
+      btn.textContent = 'カートに追加しました';
+      document.dispatchEvent(new CustomEvent('cart:refresh'));
+      rpRefreshCheckout();
+      setTimeout(function(){ btn.textContent = originalText; btn.disabled = false; }, 2200);
+    }).catch(function(){
+      btn.textContent = 'エラーが発生しました';
+      setTimeout(function(){ btn.textContent = originalText; btn.disabled = false; }, 2200);
+    });
+  });
+
+
+  function rpRefreshCheckout() {
+    fetch('/cart.js', { headers: { 'Accept': 'application/json' } })
+      .then(function(r){ return r.json(); })
+      .then(function(c){
+        var on = c.item_count > 0;
+        ['rp-checkout', 'rp-checkout-sticky'].forEach(function(id){
+          var el = document.getElementById(id);
+          if (!el) return;
+          el.classList.toggle('is-on', on);
+          if (on) el.textContent = 'カートを見る・レジに進む（' + c.item_count + '点）→';
+        });
+      })
+      .catch(function(){});
+  }
+  rpRefreshCheckout();
+  document.addEventListener('cart:refresh', rpRefreshCheckout);
+
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting) { e.target.classList.add('rp-in'); io.unobserve(e.target); }
+    });
+  }, { threshold: 0.15 });
+  root.querySelectorAll('.rp-fade').forEach(function(el){ io.observe(el); });
+})();
+</script>
+
+{% schema %}
+{
+  "name": "七日御膳一回分ページ",
+  "settings": [],
+  "presets": [
+    { "name": "七日御膳一回分ページ" }
+  ]
+}
+{% endschema %}

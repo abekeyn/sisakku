@@ -1,0 +1,473 @@
+<title>米価格 早見計算表</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Zen+Old+Mincho:wght@600;700&family=Roboto+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root{
+  --ground:#EDEFE9;
+  --surface:#FFFFFF;
+  --surface-2:#F6F7F2;
+  --ink:#191D1A;
+  --ink-2:#4A524B;
+  --muted:#7B8379;
+  --line:#D6DBCF;
+  --line-strong:#B9C0B0;
+  --accent:#1F3C74;
+  --accent-soft:#E4EAF6;
+  --on-accent:#FFFFFF;
+  --gain:#3C7443;
+  --gain-soft:#E2EDE1;
+  --loss:#A2452A;
+  --loss-soft:#F5E4DC;
+  --shadow:0 1px 2px rgba(25,29,26,.05), 0 8px 24px -16px rgba(25,29,26,.28);
+
+  --f-display:"Zen Old Mincho","Yu Mincho","Hiragino Mincho ProN",serif;
+  --f-body:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic UI",system-ui,sans-serif;
+  --f-mono:"Roboto Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#121513;
+    --surface:#1A1E1B;
+    --surface-2:#212622;
+    --ink:#E9EDE4;
+    --ink-2:#B3BBAF;
+    --muted:#8B937F;
+    --line:#2C332D;
+    --line-strong:#3D453D;
+    --accent:#8FAEEA;
+    --accent-soft:#1E2739;
+    --on-accent:#101418;
+    --gain:#82C58C;
+    --gain-soft:#1C2A1E;
+    --loss:#E29070;
+    --loss-soft:#2E1F19;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#121513;
+  --surface:#1A1E1B;
+  --surface-2:#212622;
+  --ink:#E9EDE4;
+  --ink-2:#B3BBAF;
+  --muted:#8B937F;
+  --line:#2C332D;
+  --line-strong:#3D453D;
+  --accent:#8FAEEA;
+  --accent-soft:#1E2739;
+  --on-accent:#101418;
+  --gain:#82C58C;
+  --gain-soft:#1C2A1E;
+  --loss:#E29070;
+  --loss-soft:#2E1F19;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--ground);
+  color:var(--ink);
+  font-family:var(--f-body);
+  font-size:15px;
+  line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:40px 24px 72px}
+
+header{
+  display:flex;flex-direction:column;gap:8px;
+  padding-bottom:26px;margin-bottom:28px;
+  border-bottom:2px solid var(--line-strong);
+}
+.eyebrow{
+  font-size:11px;letter-spacing:.24em;color:var(--muted);font-weight:500;
+}
+h1{
+  font-family:var(--f-display);font-weight:700;
+  font-size:clamp(28px,4.4vw,40px);line-height:1.25;
+  margin:0;letter-spacing:.02em;text-wrap:balance;
+}
+.lede{margin:2px 0 0;color:var(--ink-2);max-width:62ch;font-size:14px}
+
+.cols{display:grid;grid-template-columns:326px minmax(0,1fr);gap:28px;align-items:start}
+@media(max-width:880px){.cols{grid-template-columns:1fr;gap:22px}}
+
+.panel{
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:4px;box-shadow:var(--shadow);
+}
+.rail{position:sticky;top:24px;padding:20px}
+@media(max-width:880px){.rail{position:static}}
+
+.panel-title{
+  font-family:var(--f-display);font-size:15px;font-weight:600;
+  margin:0 0 16px;padding-bottom:10px;border-bottom:1px solid var(--line);
+  letter-spacing:.06em;
+}
+.panel-title.flush{padding:20px 20px 10px;margin:0}
+
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+.field:last-child{margin-bottom:0}
+label,.lbl{font-size:12px;font-weight:500;color:var(--ink-2);letter-spacing:.04em}
+.hint{font-size:11px;color:var(--muted);line-height:1.5}
+.hint b{color:var(--ink-2);font-weight:700}
+.inputrow{display:flex;align-items:stretch;border:1px solid var(--line-strong);border-radius:3px;background:var(--surface-2);overflow:hidden}
+.inputrow:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.inputrow input{
+  flex:1;min-width:0;border:0;background:transparent;color:var(--ink);
+  font-family:var(--f-mono);font-size:17px;font-weight:500;
+  padding:9px 10px;text-align:right;font-variant-numeric:tabular-nums;
+}
+.inputrow input:focus{outline:none}
+.inputrow input::-webkit-outer-spin-button,.inputrow input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.inputrow input[type=number]{-moz-appearance:textfield}
+.unit{
+  display:flex;align-items:center;padding:0 10px;
+  background:var(--surface);border-left:1px solid var(--line);
+  font-size:12px;color:var(--muted);white-space:nowrap;
+}
+
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line-strong);border-radius:3px;overflow:hidden}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg label{
+  text-align:center;padding:8px 4px;cursor:pointer;font-size:13px;font-weight:500;
+  background:var(--surface-2);color:var(--ink-2);transition:background .15s,color .15s;
+}
+.seg label+label{border-left:1px solid var(--line-strong)}
+.seg input:checked+label{background:var(--accent);color:var(--on-accent)}
+.seg input:focus-visible+label{outline:2px solid var(--accent);outline-offset:-2px}
+
+.stack{display:flex;flex-direction:column;gap:20px;min-width:0}
+.stack>*{min-width:0}
+
+.hero{padding:24px 24px 22px}
+.hero .cap{font-size:12px;letter-spacing:.1em;color:var(--muted);margin-bottom:2px}
+.bignum{
+  font-family:var(--f-mono);font-weight:700;
+  font-size:clamp(34px,6.2vw,54px);line-height:1.1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;
+}
+.bignum.pos{color:var(--gain)}
+.bignum.neg{color:var(--loss)}
+.pill{
+  display:inline-block;margin-top:8px;padding:3px 10px;border-radius:999px;
+  font-size:12px;font-weight:700;font-family:var(--f-mono);
+}
+.pill.pos{background:var(--gain-soft);color:var(--gain)}
+.pill.neg{background:var(--loss-soft);color:var(--loss)}
+.hero .note{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6}
+
+.bars{margin-top:20px;padding-top:18px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:12px}
+.bar-row{display:grid;grid-template-columns:78px minmax(0,1fr) auto;gap:12px;align-items:center}
+.bar-lbl{font-size:12px;color:var(--ink-2);font-weight:500}
+.bar-track{height:14px;background:var(--surface-2);border-radius:2px;overflow:hidden}
+.bar-fill{height:100%;width:0;border-radius:2px;transition:width .35s cubic-bezier(.4,0,.2,1)}
+.bar-fill.a{background:var(--accent)}
+.bar-fill.b{background:var(--line-strong)}
+.bar-val{font-family:var(--f-mono);font-size:13px;font-variant-numeric:tabular-nums;color:var(--ink)}
+
+.tiles{display:flex;flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.tile{background:var(--surface);padding:14px 16px;flex:1 1 136px;min-width:136px}
+.tile .k{font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:4px}
+.tile .v{font-family:var(--f-mono);font-size:20px;font-weight:500;font-variant-numeric:tabular-nums}
+.tile .s{font-size:11px;color:var(--muted);margin-top:2px}
+
+.bd{padding:6px 20px 14px}
+.bd table{width:100%;border-collapse:collapse}
+.bd th,.bd td{padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;text-align:left}
+.bd th{overflow-wrap:anywhere}
+.bd th{font-weight:400;color:var(--ink-2)}
+.bd td{font-family:var(--f-mono);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;padding-left:12px}
+.bd tr.total th{font-weight:700;color:var(--ink)}
+.bd tr.total td{font-weight:700;font-size:15px}
+.bd tr:last-child th,.bd tr:last-child td{border-bottom:0}
+
+.tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.chart{width:100%;border-collapse:collapse;font-size:13px;min-width:700px}
+table.chart th,table.chart td{padding:8px 12px;text-align:right;white-space:nowrap}
+table.chart thead th{
+  font-size:11px;color:var(--muted);font-weight:500;letter-spacing:.04em;
+  border-bottom:1px solid var(--line-strong);
+}
+table.chart thead th:first-child,table.chart tbody td:first-child{text-align:left}
+table.chart tbody td{font-family:var(--f-mono);font-variant-numeric:tabular-nums;border-bottom:1px solid var(--line)}
+table.chart tbody tr:hover td{background:var(--surface-2)}
+table.chart tbody tr.here td{background:var(--accent-soft);font-weight:700}
+table.chart tbody tr.here td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+table.chart tbody tr:last-child td{border-bottom:0}
+td.g{color:var(--gain)}
+td.r{color:var(--loss)}
+
+.subhead{font-family:var(--f-body);font-weight:400;font-size:12px;color:var(--muted);letter-spacing:0}
+
+footer{margin-top:32px;font-size:12px;color:var(--muted);line-height:1.9}
+footer b{color:var(--ink-2);font-weight:500}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">阿部農園 ／ 出荷先くらべ</div>
+    <h1>米価格 早見計算表</h1>
+    <p class="lede">30kgあたりの提示額を入れると、農協に出した場合といくら変わるかを計算します。白米納品のときは精米で減るぶんを差し引いて、玄米ベースにそろえて比べます。</p>
+  </header>
+
+  <div class="cols">
+    <form class="panel rail" id="f" autocomplete="off">
+      <h2 class="panel-title">条件を入れる</h2>
+
+      <div class="field">
+        <span class="lbl">納品のかたち</span>
+        <div class="seg">
+          <input type="radio" name="shape" id="f-hak" value="haku" checked><label for="f-hak">白米</label>
+          <input type="radio" name="shape" id="f-gen" value="gen"><label for="f-gen">玄米</label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="price">提示された価格（30kgあたり）</label>
+        <div class="inputrow">
+          <input type="number" id="price" value="16000" step="500" min="0">
+          <span class="unit">円 / 30kg</span>
+        </div>
+      </div>
+
+      <div class="field" id="yield-field">
+        <label for="yld">精米歩留まり</label>
+        <div class="inputrow">
+          <input type="number" id="yld" value="92" step="0.5" min="50" max="100">
+          <span class="unit">%</span>
+        </div>
+        <span class="hint">玄米100kgから取れる白米の量。品種と設備で90〜92%が目安。</span>
+      </div>
+
+      <div class="field" id="cost-field">
+        <label for="cost">精米コスト</label>
+        <div class="inputrow">
+          <input type="number" id="cost" value="0" step="5" min="0">
+          <span class="unit">円 / kg</span>
+        </div>
+        <span class="hint">精米機の電気代・手間賃など。わからなければ0のままで。</span>
+      </div>
+
+      <div class="field">
+        <label for="mat">資材・送料（30kgあたり）</label>
+        <div class="inputrow">
+          <input type="number" id="mat" value="0" step="100" min="0">
+          <span class="unit">円 / 30kg</span>
+        </div>
+        <span class="hint">米袋・段ボール・送料など、<b>30kg 1口</b>ごとにかかる分。</span>
+      </div>
+
+      <div class="field">
+        <label for="qty">数量（納品する量）</label>
+        <div class="inputrow">
+          <input type="number" id="qty" value="10" step="1" min="0">
+          <span class="unit" id="qty-unit">t 白米</span>
+        </div>
+        <span class="hint" id="qty-hint">実際に売り渡す白米の量。必要な玄米はここから逆算します。</span>
+      </div>
+
+      <div class="field">
+        <label for="ja">農協の概算金（60kgあたり）</label>
+        <div class="inputrow">
+          <input type="number" id="ja" value="18000" step="500" min="0">
+          <span class="unit">円 / 玄米60kg</span>
+        </div>
+        <span class="hint">概算金は<b>玄米</b>での価格。この表はすべて玄米ベースにそろえて比べています。</span>
+      </div>
+    </form>
+
+    <div class="stack">
+
+      <section class="panel hero">
+        <div class="cap">農協に出すのと比べて</div>
+        <div class="bignum" id="diff">—</div>
+        <div><span class="pill" id="diffpct">—</span></div>
+        <p class="note" id="hero-note"></p>
+
+        <div class="bars">
+          <div class="bar-row">
+            <span class="bar-lbl">この取引</span>
+            <div class="bar-track"><div class="bar-fill a" id="bar-a"></div></div>
+            <span class="bar-val" id="rev-a">—</span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-lbl">農協</span>
+            <div class="bar-track"><div class="bar-fill b" id="bar-b"></div></div>
+            <span class="bar-val" id="rev-b">—</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="tiles">
+        <div class="tile"><div class="k">この取引の単価</div><div class="v" id="t-unit">—</div><div class="s" id="t-unit-s">—</div></div>
+        <div class="tile"><div class="k">5kgあたり</div><div class="v" id="t-5kg">—</div><div class="s" id="t-5kg-s">—</div></div>
+        <div class="tile"><div class="k">玄米換算の手取り</div><div class="v" id="t-net">—</div><div class="s">円 / kg（玄米）</div></div>
+        <div class="tile"><div class="k">農協の概算金</div><div class="v" id="t-ja">—</div><div class="s" id="t-ja-s">円 / kg（玄米）</div></div>
+        <div class="tile"><div class="k">1kgあたりの差</div><div class="v" id="t-gap">—</div><div class="s">円 / kg（玄米）</div></div>
+      </div>
+
+      <section class="panel">
+        <div class="bd">
+          <table><tbody id="bd-body"></tbody></table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title flush">早見表 <span class="subhead">30kgの提示額ごとに、いまの条件で比べたもの</span></h2>
+        <div class="tblwrap">
+          <table class="chart">
+            <thead>
+              <tr>
+                <th>30kg提示額</th>
+                <th>5kg換算</th>
+                <th>単価</th>
+                <th>玄米換算</th>
+                <th>農協比</th>
+                <th>差 / kg</th>
+                <th id="th-total">数量あたりの差額</th>
+              </tr>
+            </thead>
+            <tbody id="chart-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer>
+        <b>見かたのメモ</b><br>
+        ・白米は精米で目減りするので、単価だけ見ると高く見えます。この表は<b>玄米に換算してそろえて</b>比べています。<br>
+        ・数量は<b>納品する量</b>。白米◯tを売るには玄米はそれ以上必要なので、農協側もその<b>逆算した玄米量</b>で比べています。<br>
+        ・農協の<b>概算金は玄米での価格</b>。白米で売るときは、精米で目減りするぶんを戻してから比べないと過大評価になります。<br>
+        ・農協は基本的に全量引き取り。相手先の<b>数量保証・支払いサイト・等級条件・契約の継続性</b>まで含めて判断してください。<br>
+        ・<b>資材・送料</b>は30kg 1口あたり。米袋・段ボール・送料をまとめて入れてください。検査料や手数料もここに足せます。
+      </footer>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var yen = function(n){ return '¥' + Math.round(n).toLocaleString('ja-JP'); };
+  var dec = function(n){ return (Math.round(n*10)/10).toLocaleString('ja-JP',{minimumFractionDigits:1,maximumFractionDigits:1}); };
+  var sgn = function(n){ return n > 0 ? '+' : (n < 0 ? '−' : ''); };
+
+  function read(){
+    var haku = $('f-hak').checked;
+    return {
+      haku: haku,
+      price: parseFloat($('price').value) || 0,
+      y: haku ? (parseFloat($('yld').value) || 92) / 100 : 1,
+      cost: haku ? (parseFloat($('cost').value) || 0) : 0,
+      mat: parseFloat($('mat').value) || 0,
+      qty: (parseFloat($('qty').value) || 0) * 1000,
+      ja: (parseFloat($('ja').value) || 0) / 60
+    };
+  }
+
+  function calc(s, price){
+    var unit  = price / 30;
+    var ship  = s.qty;              // 納品する量（白米モードなら白米）
+    var brown = s.y ? ship / s.y : 0; // それに必要な玄米
+    var rev   = ship * unit;
+    var lots  = ship / 30;            // 30kg 何口ぶんか
+    var cMill = ship * s.cost;        // 精米
+    var cMat  = lots * s.mat;         // 資材・送料
+    var cost  = cMill + cMat;
+    var net   = rev - cost;
+    var netPer = brown ? net / brown : 0;
+    var jaRev = brown * s.ja;
+    return {
+      unit: unit, per5: unit * 5, ship: ship, brown: brown, lots: lots, rev: rev,
+      cMill: cMill, cMat: cMat, cost: cost, net: net, netPer: netPer,
+      jaRev: jaRev, diff: net - jaRev,
+      pct: jaRev ? (net - jaRev) / jaRev * 100 : 0,
+      gap: netPer - s.ja
+    };
+  }
+
+  function costNote(s, r){
+    var a = [];
+    if (r.cMill > 0) a.push('精米 ' + s.cost + '円/kg');
+    if (r.cMat > 0)  a.push('資材・送料 ' + s.mat.toLocaleString('ja-JP') + '円/30kg');
+    return a.length ? a.join('、') + ' を引いた手取りで比べています。' : '';
+  }
+
+  function render(){
+    var s = read();
+    $('yield-field').style.display = s.haku ? '' : 'none';
+    $('cost-field').style.display  = s.haku ? '' : 'none';
+    $('qty-unit').textContent = s.haku ? 't 白米' : 't 玄米';
+    $('qty-hint').textContent = s.haku
+      ? '実際に売り渡す白米の量。必要な玄米はここから逆算します。'
+      : '売り渡す玄米の量。';
+
+    var r = calc(s, s.price);
+    var t = s.qty / 1000;
+
+    var d = $('diff');
+    d.textContent = (r.diff >= 0 ? '+' : '−') + yen(Math.abs(r.diff));
+    d.className = 'bignum ' + (r.diff >= 0 ? 'pos' : 'neg');
+
+    var p = $('diffpct');
+    p.textContent = sgn(r.pct) + Math.abs(r.pct).toFixed(1) + '%';
+    p.className = 'pill ' + (r.diff >= 0 ? 'pos' : 'neg');
+
+    $('hero-note').textContent = s.haku
+      ? '白米 ' + t.toLocaleString('ja-JP') + 't を納品する場合。これには玄米 ' + (r.brown/1000).toFixed(2)
+        + 't（' + Math.round(r.brown).toLocaleString('ja-JP') + 'kg）が要るので、その玄米を農協に出した場合との比較です。'
+        + costNote(s, r)
+      : '玄米 ' + t.toLocaleString('ja-JP') + 't をそのまま納品した場合。' + costNote(s, r);
+
+    var mx = Math.max(r.net, r.jaRev, 1);
+    $('bar-a').style.width = Math.max(0, r.net / mx * 100) + '%';
+    $('bar-b').style.width = Math.max(0, r.jaRev / mx * 100) + '%';
+    $('rev-a').textContent = yen(r.net);
+    $('rev-b').textContent = yen(r.jaRev);
+
+    $('t-unit').textContent = dec(r.unit);
+    $('t-unit-s').textContent = '円 / kg（' + (s.haku ? '白米' : '玄米') + '）';
+    $('t-5kg').textContent = yen(r.per5);
+    $('t-5kg-s').textContent = '（' + (s.haku ? '白米' : '玄米') + '5kg・30kg提示額 ÷ 6）';
+    $('t-net').textContent = dec(r.netPer);
+    $('t-ja').textContent = dec(s.ja);
+    $('t-ja-s').textContent = '円 / kg（玄米）・5kgで ' + yen(s.ja * 5);
+    var g = $('t-gap');
+    g.textContent = sgn(r.gap) + dec(Math.abs(r.gap));
+    g.style.color = r.gap >= 0 ? 'var(--gain)' : 'var(--loss)';
+
+    var html = '<tr><th>この取引の売上（' + (s.haku ? '白米' : '玄米') + ' ' + Math.round(r.ship).toLocaleString('ja-JP') + 'kg）</th><td>' + yen(r.rev) + '</td></tr>';
+    if (r.cMill > 0) html += '<tr><th>精米コスト（' + s.cost + '円/kg）</th><td>−' + yen(r.cMill) + '</td></tr>';
+    if (r.cMat > 0) html += '<tr><th>資材・送料（' + s.mat.toLocaleString('ja-JP') + '円 × ' + Math.round(r.lots).toLocaleString('ja-JP') + '口）</th><td>−' + yen(r.cMat) + '</td></tr>';
+    html += '<tr><th>農協の概算金（' + (s.haku ? '必要な玄米 ' : '玄米 ') + Math.round(r.brown).toLocaleString('ja-JP') + 'kg）</th><td>−' + yen(r.jaRev) + '</td></tr>';
+    html += '<tr class="total"><th>差額</th><td style="color:' + (r.diff >= 0 ? 'var(--gain)' : 'var(--loss)') + '">'
+         + (r.diff >= 0 ? '+' : '−') + yen(Math.abs(r.diff)) + '</td></tr>';
+    $('bd-body').innerHTML = html;
+
+    $('th-total').textContent = (s.haku ? '白米' : '玄米') + t.toLocaleString('ja-JP') + 't の差額';
+    var near = Math.round(s.price / 500) * 500;
+    var out = '';
+    for (var pr = 12000; pr <= 21000; pr += 500){
+      var c = calc(s, pr);
+      out += '<tr' + (pr === near ? ' class="here"' : '') + '>'
+        + '<td>' + yen(pr) + '</td>'
+        + '<td>' + yen(c.per5) + '</td>'
+        + '<td>' + dec(c.unit) + '</td>'
+        + '<td>' + dec(c.netPer) + '</td>'
+        + '<td class="' + (c.pct >= 0 ? 'g' : 'r') + '">' + sgn(c.pct) + Math.abs(c.pct).toFixed(0) + '%</td>'
+        + '<td class="' + (c.gap >= 0 ? 'g' : 'r') + '">' + sgn(c.gap) + dec(Math.abs(c.gap)) + '</td>'
+        + '<td class="' + (c.diff >= 0 ? 'g' : 'r') + '">' + (c.diff >= 0 ? '+' : '−') + yen(Math.abs(c.diff)) + '</td>'
+        + '</tr>';
+    }
+    $('chart-body').innerHTML = out;
+  }
+
+  $('f').addEventListener('input', render);
+  $('f').addEventListener('change', render);
+  render();
+})();
+</script>
