@@ -27,7 +27,7 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bootstrap, db, exporter,
-                 komeful, logic, payslip, postal, quote, receipt,
+                 komeful, ledger, logic, payslip, postal, quote, receipt,
                  seed, shipping, shopify_api, ui, yamato)
 
 ui.setup_page()
@@ -1150,7 +1150,8 @@ def view_settings():
             st.rerun()
 
         st.divider()
-        ui.section("全データの初期化", "注文・顧客・設定をすべて消去します（元に戻せません）")
+        ui.section("全データの初期化",
+                   "注文・顧客・設定をすべて消去します（元に戻せません）。帳簿（食糧法第48条）の手入力記録は3年間の保存義務があるため消しません")
         confirm = st.text_input('「リセット」と入力すると実行できます', "")
         if st.button("全データをリセット", disabled=(confirm != "リセット")):
             db.reset_all()
@@ -2229,6 +2230,313 @@ def view_quote() -> None:
         _quote_mail_master()
 
 
+
+# ===========================================================================
+# 📒 帳簿（食糧法第48条：うるち/もち × 玄米/精米 の買受・販売・在庫）
+# ===========================================================================
+_LEDGER_KIND_LABELS = list(ledger.ENTRY_KINDS.values())
+_LEDGER_LABEL_TO_KIND = {v: k for k, v in ledger.ENTRY_KINDS.items()}
+
+
+def _ledger_fy_picker() -> tuple[int, date, date]:
+    """年度（4/1〜翌3/31）を選ぶ。必要なら任意の期間も指定できる。"""
+    cur = ledger.fy_of(today())
+    years = list(range(cur + 1, cur - 6, -1))
+    c1, c2 = st.columns([2, 3])
+    fy = c1.selectbox("年度", years, index=years.index(cur),
+                      format_func=ledger.fy_label, key="ledger_fy")
+    start, end = ledger.fy_range(fy)
+    custom = c2.checkbox("期間を自分で指定する", key="ledger_custom",
+                         help="通常は年度（4月1日〜翌年3月31日）のままで構いません。")
+    if custom:
+        c3, c4 = st.columns(2)
+        start = c3.date_input("開始日", start, key="ledger_start")
+        end = c4.date_input("終了日", end, key="ledger_end")
+    return fy, start, end
+
+
+def _ledger_summary(fy: int, start: date, end: date) -> None:
+    flags = ledger.load_flags()
+    orders_all = db.list_orders()
+    entries = db.list_ledger_entries()
+    s = ledger.summarize(orders_all, entries, start, end, flags)
+    j = s["judge"]
+
+    ui.section("20精米トンの判定（法第47条）",
+               "玄米は「玄米量×0.91」で精米換算。無償譲渡と、自家生産米を"
+               "届出事業者へ出荷・販売した分は判定から除いています。")
+    k1, k2, k3 = st.columns(3)
+    k1.markdown(ui.kpi("判定対象", f'{j["対象_精米トン"]:.3f}', "精米トン"),
+                unsafe_allow_html=True)
+    k2.markdown(ui.kpi("出荷・販売の合計", f'{j["全体_精米換算kg"]:,.0f}', "精米換算kg"),
+                unsafe_allow_html=True)
+    k3.markdown(ui.kpi("判定から除外",
+                       f'{j["除外_無償譲渡kg"] + j["除外_届出事業者kg"]:,.0f}',
+                       f'無償譲渡 {j["除外_無償譲渡kg"]:,.0f} ／ '
+                       f'届出事業者向け {j["除外_届出事業者kg"]:,.0f}（精米換算kg）'),
+                unsafe_allow_html=True)
+    if j["超過"]:
+        st.warning(f'**{j["届出要否"]}** — 年間20精米トン以上のため、事業開始前の届出が必要です。')
+    else:
+        st.info(f'**{j["届出要否"]}** — 20精米トンに満たない場合の届出は任意です。')
+
+    st.divider()
+    ui.section("種類別の数量（kg）",
+               "「種類」＝うるち／もち、玄米／精米（農水省Q&A A12）。"
+               "最低限の記載事項は ①買受数量 ②販売数量 ③在庫数量 です。")
+    # 実地棚卸をしていない区分は値が無い。数値列のままだと "None" と表示されるので、
+    # その2列だけ文字列（未実施は「—」）にする。
+    nullable = ("期末在庫kg(実地)", "差異kg")
+    rows = [{c: (ledger.fmt(r[c]) if c in nullable else r[c])
+             for c in ledger.SUMMARY_COLS} for r in s["rows"]]
+    cfg = {c: st.column_config.NumberColumn(c, format="%.1f")
+           for c in ledger.SUMMARY_COLS[1:] if c not in nullable}
+    cfg.update({c: st.column_config.TextColumn(c) for c in nullable})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                 column_config=cfg)
+    st.caption("販売数量は注文データから自動集計しています。"
+               "期首在庫・買受数量・自家生産入庫・とう精・実地棚卸は"
+               "「買受・在庫の入力」タブで記録してください。"
+               "在庫数量は実地棚卸があればその値、無ければ帳簿計算値です。")
+    for w in s["warnings"]:
+        st.warning(w)
+
+    st.divider()
+    ui.section("年度単位で保存する",
+               "帳簿は3年間の保存義務があります（不備・虚偽・未保存は20万円以下の過料）。")
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "📄 帳簿CSVをダウンロード",
+        ledger.build_csv(fy, s, entries, flags),
+        file_name=ledger.csv_filename(fy), mime="text/csv",
+        use_container_width=True,
+    )
+    if c2.button("📕 帳簿PDFを作成", use_container_width=True, type="primary"):
+        st.session_state["ledger_pdf"] = (fy, ledger.build_pdf(fy, s, entries, flags))
+    saved = st.session_state.get("ledger_pdf")
+    if saved and saved[0] == fy:
+        c2.download_button("↓ 帳簿PDFを開く / 保存", saved[1],
+                           file_name=ledger.pdf_filename(fy),
+                           mime="application/pdf", use_container_width=True)
+
+    with st.expander(f'販売明細（{len(s["details"])}件）'):
+        if s["details"]:
+            st.dataframe(pd.DataFrame([{
+                "日付": r["日付"], "顧客": r["顧客"], "商品": r["商品"], "個数": r["個数"],
+                "うるち/もち": r["うるち/もち"], "玄米kg": r["玄米kg"], "精米kg": r["精米kg"],
+                "精米換算kg": r["精米換算kg"], "20トン判定": r["20トン判定"],
+                "除外理由": r["除外理由"],
+            } for r in s["details"]]), use_container_width=True, hide_index=True)
+        else:
+            st.caption("この期間の販売はありません。")
+
+
+def _ledger_entry_form(start: date, end: date) -> None:
+    ui.section("記録を追加する",
+               "注文データから分からない分（仕入・収穫の入庫・とう精・棚卸）を入れます。"
+               "注文データは書き換えません。")
+    with st.form("ledger_add", clear_on_submit=True):
+        c1, c2, c3 = st.columns([2, 3, 2])
+        d = c1.date_input("日付", min(max(today(), start), end))
+        kind_label = c2.selectbox("区分", _LEDGER_KIND_LABELS)
+        rice = c3.selectbox("うるち／もち", list(ledger.RICE_TYPES))
+        c4, c5, c6 = st.columns(3)
+        form = c4.selectbox("玄米／精米", list(ledger.FORMS),
+                            help="「とう精」は玄米を投入して精米を得る記録なので、この欄は使いません。")
+        qty = c5.number_input("数量kg", min_value=0.0, step=10.0, format="%.1f")
+        qty_out = c6.number_input("とう精の産出kg（精米）", min_value=0.0, step=10.0,
+                                  format="%.1f",
+                                  help="区分が「とう精」のときだけ使います（玄米◯kgを搗いて精米◯kg）。")
+        c7, c8 = st.columns([2, 3])
+        party = c7.text_input("相手方（仕入先など）", "")
+        note = c8.text_input("備考", "")
+        minus = st.checkbox("マイナス（在庫を減らす）として記録する",
+                            help="「その他増減」でロス・自家消費などを差し引くときに使います。")
+        if st.form_submit_button("記録する", type="primary"):
+            kind = _LEDGER_LABEL_TO_KIND[kind_label]
+            if qty <= 0 and not (kind == "mill" and qty_out > 0):
+                st.error("数量kgを入れてください。")
+            else:
+                db.add_ledger_entry({
+                    "entry_date": d.isoformat(), "kind": kind,
+                    "rice_type": rice, "form": "玄米" if kind == "mill" else form,
+                    "qty_kg": -qty if (minus and kind == "adjust") else qty,
+                    "qty_out_kg": qty_out if kind == "mill" else 0.0,
+                    "counterparty": party.strip(), "note": note.strip(),
+                })
+                st.success("記録しました。")
+                st.rerun()
+
+    st.divider()
+    ui.section("この期間の記録", f"{start:%Y/%m/%d}〜{end:%Y/%m/%d}")
+    st.caption("期首在庫は、期間開始日より前の直近の「在庫（実地棚卸）」から自動で引きます"
+               "（期間外なのでこの一覧には出ません）。")
+    entries = [e for e in db.list_ledger_entries()
+               if start <= (ledger.parse_date(e.get("entry_date")) or date(1, 1, 1)) <= end]
+    if not entries:
+        st.caption("まだ記録がありません。")
+        return
+
+    df = pd.DataFrame([{
+        "ID": e["id"], "日付": ledger.parse_date(e["entry_date"]),
+        "区分": ledger.ENTRY_KINDS.get(e["kind"], e["kind"]),
+        "うるち/もち": e.get("rice_type") or "うるち",
+        "玄米/精米": e.get("form") or "玄米",
+        "数量kg": float(e.get("qty_kg") or 0),
+        "とう精産出kg": float(e.get("qty_out_kg") or 0),
+        "相手方": e.get("counterparty") or "", "備考": e.get("note") or "",
+        "削除": False,
+    } for e in entries])
+    edited = st.data_editor(
+        df, use_container_width=True, hide_index=True, num_rows="fixed",
+        column_config={
+            "ID": st.column_config.NumberColumn("ID", disabled=True),
+            "日付": st.column_config.DateColumn("日付", format="YYYY/MM/DD"),
+            "区分": st.column_config.SelectboxColumn("区分", options=_LEDGER_KIND_LABELS),
+            "うるち/もち": st.column_config.SelectboxColumn(
+                "うるち/もち", options=list(ledger.RICE_TYPES)),
+            "玄米/精米": st.column_config.SelectboxColumn(
+                "玄米/精米", options=list(ledger.FORMS)),
+            "数量kg": st.column_config.NumberColumn("数量kg", step=1.0, format="%.1f"),
+            "とう精産出kg": st.column_config.NumberColumn("とう精産出kg", step=1.0,
+                                                    format="%.1f"),
+            "削除": st.column_config.CheckboxColumn("削除"),
+        },
+        key="ledger_editor",
+    )
+    if st.button("記録を保存", type="primary"):
+        n_upd = n_del = 0
+        for _, r in edited.iterrows():
+            eid = int(r["ID"])
+            if r["削除"]:
+                db.delete_ledger_entry(eid)
+                n_del += 1
+                continue
+            kind = _LEDGER_LABEL_TO_KIND.get(r["区分"], "buy")
+            db.update_ledger_entry(eid, {
+                "entry_date": pd.to_datetime(r["日付"]).date().isoformat(),
+                "kind": kind, "rice_type": r["うるち/もち"],
+                "form": "玄米" if kind == "mill" else r["玄米/精米"],
+                "qty_kg": float(r["数量kg"] or 0),
+                "qty_out_kg": float(r["とう精産出kg"] or 0) if kind == "mill" else 0.0,
+                "counterparty": r["相手方"] or "", "note": r["備考"] or "",
+            })
+            n_upd += 1
+        st.success(f"{n_upd}件を保存、{n_del}件を削除しました。")
+        st.rerun()
+
+
+def _ledger_classify(start: date, end: date) -> None:
+    flags = ledger.load_flags()
+
+    ui.section("事業者", "帳簿の表題に印字されます。")
+    c1, c2 = st.columns([2, 3])
+    name = c1.text_input("事業者名", flags.get("business_name", ""), key="ledger_biz")
+    own = c2.checkbox("販売する米はすべて自家生産米", value=bool(flags.get("own_production")),
+                      key="ledger_own",
+                      help="Q&A A8の「届出事業者へ出荷・販売した分の除外」は自家生産米が前提です。"
+                           "仕入れた米を転売している場合はオフにしてください。")
+    if st.button("保存", key="ledger_save_biz"):
+        flags["business_name"] = name.strip()
+        flags["own_production"] = bool(own)
+        ledger.save_flags(flags)
+        st.success("保存しました。")
+        st.rerun()
+
+    st.divider()
+    ui.section("商品の うるち／もち",
+               "帳簿の「種類」に使います。未設定は商品名から自動判定（既定はうるち）。")
+    prods = db.list_products(active_only=False)
+    prow = pd.DataFrame([{
+        "商品名": p["name"], "区分": p["category"],
+        "うるち/もち": ledger.product_rice_type(p["name"], flags),
+    } for p in prods])
+    edited = st.data_editor(
+        prow, use_container_width=True, hide_index=True, num_rows="fixed",
+        column_config={
+            "商品名": st.column_config.TextColumn("商品名", disabled=True),
+            "区分": st.column_config.TextColumn("区分", disabled=True),
+            "うるち/もち": st.column_config.SelectboxColumn(
+                "うるち/もち", options=list(ledger.RICE_TYPES)),
+        },
+        key="ledger_rice_editor",
+    )
+    if st.button("うるち／もちを保存", type="primary", key="ledger_save_rice"):
+        keep = dict(flags.get("rice_type_by_product") or {})
+        keep.update({str(r["商品名"]): r["うるち/もち"] for _, r in edited.iterrows()})
+        flags["rice_type_by_product"] = keep
+        ledger.save_flags(flags)
+        st.success("保存しました。")
+        st.rerun()
+
+    st.divider()
+    ui.section("届出事業者の取引先",
+               "JA・米卸・米穀店など、第47条の届出をしている相手。自家生産米をここへ"
+               "出荷・販売した分は20精米トンの判定から外れます（Q&A A8）。")
+    custs = db.list_customers()
+    by_id = {c["id"]: c["name"] for c in custs}
+    picked = st.multiselect(
+        "届出事業者にあたる取引先", list(by_id), key="ledger_todokede",
+        default=[cid for cid in (flags.get("todokede_customers") or []) if cid in by_id],
+        format_func=lambda cid: by_id.get(cid, str(cid)),
+    )
+    if st.button("届出事業者を保存", type="primary", key="ledger_save_td"):
+        flags["todokede_customers"] = sorted(int(x) for x in picked)
+        ledger.save_flags(flags)
+        st.success("保存しました。")
+        st.rerun()
+
+    st.divider()
+    ui.section("無償譲渡の注文",
+               "贈答・サンプルなど代金を受け取っていない分。20精米トンの判定に含めません（Q&A A4）。")
+    details = ledger.sales_detail(db.list_orders(), start, end, flags)
+    if not details:
+        st.caption("この期間の販売はありません。")
+        return
+    free = set(flags.get("free_orders") or [])
+    fdf = pd.DataFrame([{
+        "ID": r["注文ID"], "日付": r["日付"], "顧客": r["顧客"], "商品": r["商品"],
+        "個数": r["個数"], "精米換算kg": r["精米換算kg"],
+        "無償譲渡": r["注文ID"] in free,
+    } for r in details])
+    fedit = st.data_editor(
+        fdf, use_container_width=True, hide_index=True, num_rows="fixed",
+        column_config={
+            "ID": st.column_config.NumberColumn("ID", disabled=True),
+            "日付": st.column_config.DateColumn("日付", format="YYYY/MM/DD", disabled=True),
+            "顧客": st.column_config.TextColumn("顧客", disabled=True),
+            "商品": st.column_config.TextColumn("商品", disabled=True),
+            "個数": st.column_config.NumberColumn("個数", disabled=True),
+            "精米換算kg": st.column_config.NumberColumn("精米換算kg", format="%.1f",
+                                                   disabled=True),
+            "無償譲渡": st.column_config.CheckboxColumn("無償譲渡"),
+        },
+        key="ledger_free_editor",
+    )
+    if st.button("無償譲渡の指定を保存", type="primary", key="ledger_save_free"):
+        shown = {int(r["ID"]) for _, r in fedit.iterrows()}
+        checked = {int(r["ID"]) for _, r in fedit.iterrows() if r["無償譲渡"]}
+        # 画面に出ていない期間の指定は消さない（差分で持つ）
+        flags["free_orders"] = sorted((free - shown) | checked)
+        ledger.save_flags(flags)
+        st.success("保存しました。")
+        st.rerun()
+
+
+def view_ledger() -> None:
+    st.subheader("📒 帳簿（食糧法第48条）")
+    st.caption("届出事業者は帳簿を備え、種類別に①買受数量②販売数量③在庫数量を記載して"
+               "3年間保存する義務があります。")
+    fy, start, end = _ledger_fy_picker()
+    tab_sum, tab_entry, tab_class = st.tabs(
+        ["年度の帳簿", "買受・在庫の入力", "区分の設定"])
+    with tab_sum:
+        _ledger_summary(fy, start, end)
+    with tab_entry:
+        _ledger_entry_form(start, end)
+    with tab_class:
+        _ledger_classify(start, end)
+
 # 通知リンク（?tab=billing）から開かれたら請求タブを初期選択
 if "nav" not in st.session_state and st.query_params.get("tab") == "billing":
     st.session_state["nav"] = "請求"
@@ -2250,5 +2558,7 @@ elif view == "請求":
     view_billing()
 elif view == "給与":
     view_payroll()
+elif view == "帳簿":
+    view_ledger()
 else:
     view_settings()
