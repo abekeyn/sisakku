@@ -85,6 +85,23 @@ orders = Table(
     Column("created_at", String(64)),
 )
 
+# 食糧法第48条の帳簿のうち、注文データからは分からない分（買受＝仕入・自家生産
+# 入庫・とう精・実地棚卸）を手入力でためる。注文側は一切書き換えず、この差分を
+# 重ねて帳簿を作る。
+ledger_entries = Table(
+    "ledger_entries", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("entry_date", String(32)),          # YYYY-MM-DD
+    Column("kind", String(16)),                # buy/produce/mill/stock/adjust
+    Column("rice_type", String(8)),            # うるち / もち
+    Column("form", String(8)),                 # 玄米 / 精米
+    Column("qty_kg", Float, default=0),
+    Column("qty_out_kg", Float, default=0),    # とう精の産出（精米kg）
+    Column("counterparty", String(255), default=""),
+    Column("note", Text, default=""),
+    Column("created_at", String(64)),
+)
+
 export_jobs = Table(
     "export_jobs", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -457,6 +474,48 @@ def delete_order(order_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 帳簿の手入力 (ledger_entries)
+# ---------------------------------------------------------------------------
+_LEDGER_FIELDS = ("entry_date", "kind", "rice_type", "form",
+                  "qty_kg", "qty_out_kg", "counterparty", "note")
+
+
+@_cacheable(ttl=45)
+def list_ledger_entries():
+    with get_engine().connect() as c:
+        rows = c.execute(
+            select(ledger_entries).order_by(ledger_entries.c.entry_date,
+                                            ledger_entries.c.id)
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def add_ledger_entry(data: dict) -> int:
+    vals = {f: data.get(f) for f in _LEDGER_FIELDS}
+    vals["created_at"] = datetime.now().isoformat()
+    with get_engine().begin() as c:
+        res = c.execute(insert(ledger_entries).values(**vals))
+    clear_cache()
+    return res.inserted_primary_key[0]
+
+
+def update_ledger_entry(entry_id: int, data: dict) -> None:
+    vals = {f: data[f] for f in _LEDGER_FIELDS if f in data}
+    if not vals:
+        return
+    with get_engine().begin() as c:
+        c.execute(update(ledger_entries)
+                  .where(ledger_entries.c.id == entry_id).values(**vals))
+    clear_cache()
+
+
+def delete_ledger_entry(entry_id: int) -> None:
+    with get_engine().begin() as c:
+        c.execute(delete(ledger_entries).where(ledger_entries.c.id == entry_id))
+    clear_cache()
+
+
+# ---------------------------------------------------------------------------
 # CSV出力ジョブ (export_jobs)
 # ---------------------------------------------------------------------------
 def enqueue_export(filename: str, content_b64: str) -> int:
@@ -488,6 +547,11 @@ def mark_export_done(job_id: int, path: str) -> None:
 # 全データ初期化
 # ---------------------------------------------------------------------------
 def reset_all() -> None:
+    """注文・顧客・商品・設定を消去する。
+
+    ledger_entries（食糧法第48条の帳簿）は**意図的に残す**。帳簿は3年間の
+    保存義務があり、消すと過料の対象になり得るため、初期化では触らない。
+    """
     with get_engine().begin() as c:
         for t in (orders, customers, products, settings, export_jobs):
             c.execute(delete(t))
