@@ -5,6 +5,7 @@
 - 🏠 ホーム : 今日やること。精米キュー → 発送キュー → 出荷 まで一画面で完結
 - 📋 注文   : 全注文の検索・編集・削除・状態変更
 - 👤 顧客   : 顧客マスタの検索・追加・編集・削除
+- 💰 収支   : 価格くらべ・生産原価・年間収支
 - ⚙ 設定   : 送り主・商品・CSV取込・BASE連携・データ管理
 追加・編集はすべてモーダル（ダイアログ）で行い、画面遷移しない。
 """
@@ -26,9 +27,10 @@ def today() -> date:
 def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
-from lib import (analytics, base_api, billing, bootstrap, db, exporter,
-                 komeful, ledger, logic, payslip, paysheet, postal, quote,
-                 receipt, seed, shipping, shopify_api, square_pay, ui, yamato)
+from lib import (analytics, base_api, billing, bootstrap, costing, db,
+                 exporter, komeful, ledger, logic, payslip, paysheet, postal,
+                 quote, receipt, seed, shipping, shopify_api, square_pay, ui,
+                 yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -2679,6 +2681,325 @@ def view_ledger() -> None:
     with tab_class:
         _ledger_classify(start, end)
 
+# ===========================================================================
+# 💰 収支（価格くらべ ／ 生産原価 ／ 年間収支 ／ 既定値）
+# ===========================================================================
+_COSTING_KEYS = ("cst_form", "cst_price", "cst_qty", "cst_yield", "cst_mill",
+                 "cst_mat", "cst_ja", "cst_area", "cst_per10a", "cst_genmai")
+
+
+def _cost_reseed() -> None:
+    """既定値を保存したら、入力欄を新しい既定値で引き直す。"""
+    for k in _COSTING_KEYS:
+        st.session_state.pop(k, None)
+
+
+def _cost_kpi_row(items) -> None:
+    cols = st.columns(len(items))
+    for col, (label, value, sub, yen) in zip(cols, items):
+        col.markdown(ui.kpi(label, value, sub, yen=yen), unsafe_allow_html=True)
+
+
+def _costing_price(s: dict) -> None:
+    st.caption("30kg いくらで出すか。農協の概算金と同じ土俵（玄米ベース）で"
+               "比べます。白米で売るなら精米で目減りするぶんを戻して計算します。")
+
+    c1, c2, c3 = st.columns([2, 3, 2])
+    form = c1.segmented_control("納品のかたち", ["白米", "玄米"],
+                                default=s["form"], key="cst_form") or s["form"]
+    haku = form == "白米"
+    price = c2.number_input("提示した価格（30kgあたり・円）", min_value=0.0,
+                            value=float(s["price_30kg"]), step=500.0,
+                            format="%.0f", key="cst_price")
+    qty_t = c3.number_input(f"数量（t・{'白米' if haku else '玄米'}）", min_value=0.0,
+                            value=float(s["qty_t"]), step=1.0, format="%.2f",
+                            key="cst_qty",
+                            help="実際に売り渡す量。必要な玄米は歩留まりから逆算します。")
+
+    with st.expander("歩留まり・コスト・農協の概算金", expanded=False):
+        d1, d2 = st.columns(2)
+        yld = d1.number_input("精米歩留まり（%）", min_value=50.0, max_value=100.0,
+                              value=float(s["yield_pct"]), step=0.5, format="%.1f",
+                              key="cst_yield",
+                              help="玄米100kgから取れる白米の量。90〜92%が目安。")
+        ja = d2.number_input("農協の概算金（玄米60kgあたり・円）", min_value=0.0,
+                             value=float(s["ja_per_60kg"]), step=500.0,
+                             format="%.0f", key="cst_ja",
+                             help="概算金は玄米での価格です。")
+        d3, d4 = st.columns(2)
+        mill = d3.number_input("精米コスト（円/kg）", min_value=0.0,
+                               value=float(s["milling_per_kg"]), step=5.0,
+                               format="%.0f", key="cst_mill",
+                               help="精米機の電気代・手間賃など。玄米納品なら使いません。")
+        mat = d4.number_input("資材・送料（円/30kg 1口）", min_value=0.0,
+                              value=float(s["material_per_30kg"]), step=100.0,
+                              format="%.0f", key="cst_mat",
+                              help="米袋・段ボール・送料・検査料など、30kg 1口ごとの分。")
+        st.caption("ここを毎回入れ直すのが面倒なら、『既定値』タブで保存できます。")
+
+    cur = dict(s, form=form, price_30kg=price, qty_t=qty_t, yield_pct=yld,
+               ja_per_60kg=ja, milling_per_kg=mill, material_per_30kg=mat)
+    r = costing.quote(price, cur)
+
+    st.write("")
+    _cost_kpi_row([
+        ("農協との差額", f"{r['差額']:+,.0f}", f"{r['差率']:+.1f}%", True),
+        ("玄米換算の手取り", f"{r['玄米換算単価']:,.1f}",
+         f"農協 {r['農協単価']:,.1f} 円/kg との差 {r['kg差']:+,.1f}", True),
+        ("5kgあたり", f"{r['5kg']:,.0f}", f"{form}5kg・提示額 ÷ 6", True),
+        ("この取引の単価", f"{r['単価']:,.1f}", f"円/kg（{form}）", True),
+    ])
+
+    st.write("")
+    ui.section("内訳", f"{form} {r['納品量kg']:,.0f}kg を納品した場合")
+    rows = [(f"この取引の売上（{form} {r['納品量kg']:,.0f}kg）", r["売上"])]
+    if r["精米コスト"] > 0:
+        rows.append((f"精米コスト（{mill:,.0f}円/kg）", -r["精米コスト"]))
+    if r["資材送料"] > 0:
+        rows.append((f"資材・送料（{mat:,.0f}円 × {r['口数']:,.0f}口）", -r["資材送料"]))
+    label = "必要な玄米" if haku else "玄米"
+    rows.append((f"農協の概算金（{label} {r['必要玄米kg']:,.0f}kg）", -r["農協収入"]))
+    rows.append(("差額", r["差額"]))
+    st.dataframe(
+        pd.DataFrame([{"項目": n, "金額": f"¥{v:+,.0f}"} for n, v in rows]),
+        use_container_width=True, hide_index=True)
+    if haku:
+        st.caption(f"白米 {r['納品量kg']:,.0f}kg を作るには玄米 {r['必要玄米kg']:,.0f}kg が要ります。"
+                   "農協側はその玄米量で比べています。")
+
+    ui.section("早見表", "30kgの提示額ごとに、いまの条件で比べたもの")
+    near = round(price / 500) * 500
+    tbl = pd.DataFrame([{
+        "": "▶" if int(x["30kg提示額"]) == int(near) else "",
+        "30kg提示額": f"¥{x['30kg提示額']:,.0f}",
+        "5kg換算": f"¥{x['5kg換算']:,.0f}",
+        "単価": f"{x['単価']:,.1f}",
+        "玄米換算": f"{x['玄米換算']:,.1f}",
+        "農協比": f"{x['農協比']:+.0f}%",
+        "差/kg": f"{x['差/kg']:+,.1f}",
+        f"{qty_t:g}t の差額": f"¥{x['差額']:+,.0f}",
+    } for x in costing.quote_table(cur)])
+    st.dataframe(tbl, use_container_width=True, hide_index=True, height=560)
+    st.caption("単価は納品物1kgあたり、玄米換算はコストを引いた後の玄米1kgあたりの手取りです。")
+
+
+def _costing_cost(s: dict) -> None:
+    st.caption("年間にかかる生産費を入れると、玄米1kgあたりの原価が出ます。"
+               "この原価が『年間収支』タブの売上原価になります。")
+
+    ui.section("生産量")
+    c1, c2, c3 = st.columns(3)
+    area = c1.number_input("作付面積（a）", min_value=0.0, value=float(s["area_a"]),
+                           step=10.0, format="%.1f", key="cst_area",
+                           help="1反＝10a、1ha＝100a。")
+    per10a = c2.number_input("単収（玄米kg / 10a）", min_value=0.0,
+                             value=float(s["yield_per_10a"]), step=10.0,
+                             format="%.0f", key="cst_per10a",
+                             help="1俵＝60kgなので、9俵/反なら540kgです。")
+    genmai = c3.number_input("玄米生産量を直接入れる（kg）", min_value=0.0,
+                             value=float(s["genmai_kg"]), step=100.0,
+                             format="%.0f", key="cst_genmai",
+                             help="0 のままなら 面積 × 単収 で計算します。")
+
+    ui.section("年間の生産費", "使わない費目は 0 のままで構いません。行の追加・削除もできます。")
+    edited = st.data_editor(
+        pd.DataFrame(s["cost_items"]),
+        num_rows="dynamic", use_container_width=True, hide_index=True,
+        column_config={
+            "費目": st.column_config.TextColumn("費目", width="medium"),
+            "年額": st.column_config.NumberColumn("年額（円）", format="%d", min_value=0),
+        },
+        key="cst_items",
+    )
+    items = []
+    for _, r in edited.iterrows():
+        name = "" if pd.isna(r["費目"]) else str(r["費目"]).strip()
+        if not name:
+            continue
+        amount = 0.0 if pd.isna(r["年額"]) else float(r["年額"])
+        items.append({"費目": name, "年額": amount})
+
+    cur = dict(s, area_a=area, yield_per_10a=per10a, genmai_kg=genmai,
+               cost_items=items)
+    p = costing.production(cur)
+
+    st.write("")
+    src = f"{p['反数']:,.1f}反 × {p['単収']:,.0f}kg" if p["面積由来"] else "直接入力"
+    _cost_kpi_row([
+        ("年間の生産原価", f"{p['年間原価']:,.0f}", f"{len(items)} 費目", True),
+        ("玄米生産量", f"{p['玄米生産量kg']:,.0f} kg", src, False),
+        ("玄米1kgあたり原価", f"{p['原価kg']:,.1f}", "この単価で売上原価を出します", True),
+        ("60kgあたり原価", f"{p['原価kg'] * 60:,.0f}", "農協の概算金と同じ単位", True),
+    ])
+
+    if p["玄米生産量kg"] <= 0:
+        st.warning("作付面積と単収（または玄米生産量）を入れると、1kgあたりの原価が出ます。")
+    elif p["年間原価"] <= 0:
+        st.info("生産費を入れると、1kgあたりの原価が出ます。")
+    else:
+        ja60 = float(s["ja_per_60kg"])
+        gap = ja60 - p["原価kg"] * 60
+        st.caption(f"農協の概算金 ¥{ja60:,.0f}/60kg なら、60kgあたり {gap:+,.0f}円 "
+                   f"（{'原価を上回る' if gap >= 0 else '原価割れ'}）。")
+        paid = [i for i in items if i["年額"] > 0]
+        if paid:
+            ui.section("費目の内訳")
+            df = pd.DataFrame(sorted(paid, key=lambda x: -x["年額"]))
+            df["割合"] = df["年額"] / p["年間原価"] * 100
+            chart = alt.Chart(df).mark_bar(
+                cornerRadiusTopRight=6, cornerRadiusBottomRight=6,
+                color=_gold_gradient(horizontal=True)).encode(
+                y=alt.Y("費目:N", sort=None,
+                        axis=alt.Axis(title=None, labelColor=_AX_LBL,
+                                      domainColor=_AX_LINE, tickColor=_AX_LINE)),
+                x=alt.X("年額:Q", axis=None),
+                tooltip=[alt.Tooltip("費目:N"),
+                         alt.Tooltip("年額:Q", format=",.0f"),
+                         alt.Tooltip("割合:Q", format=".1f", title="割合%")],
+            ).properties(height=max(180, 26 * len(df))).configure_view(stroke=None)
+            st.altair_chart(chart, use_container_width=True)
+
+    if st.button("この内容を保存", type="primary", key="cst_save_cost"):
+        costing.save(cur)
+        _cost_reseed()
+        st.success("保存しました。")
+        st.rerun()
+
+
+def _costing_annual(s: dict) -> None:
+    cur_fy = ledger.fy_of(today())
+    years = list(range(cur_fy + 1, cur_fy - 6, -1))
+    fy = st.selectbox("年度", years, index=years.index(cur_fy),
+                      format_func=ledger.fy_label, key="cst_fy")
+    start, end = ledger.fy_range(fy)
+    st.caption(f"{start:%Y/%m/%d} 〜 {end:%Y/%m/%d}　"
+               "売上は注文の実績、原価は『生産原価』タブの単価から按分した概算です。")
+
+    orders = db.list_orders()
+    flags = ledger.load_flags()
+    a = costing.annual(orders, start, end, flags, s)
+    p = a["生産"]
+
+    if p["原価kg"] <= 0:
+        st.warning("『生産原価』タブで生産量と生産費を入れると、利益まで出ます。"
+                   "いまは売上だけ表示しています。")
+
+    _cost_kpi_row([
+        ("年度の売上", f"{a['売上']:,.0f}", f"{a['件数']:,} 件", True),
+        ("差引利益", f"{a['差引利益']:+,.0f}",
+         f"売上の {a['差引利益'] / a['売上'] * 100:+.0f}%" if a["売上"] else "—", True),
+        ("玄米1kgあたり原価", f"{p['原価kg']:,.1f}", "生産原価タブより", True),
+        ("玄米1kgあたり手取り", f"{a['手取り単価']:,.1f}",
+         f"原価との差 {a['手取り単価'] - p['原価kg']:+,.1f}", True),
+    ])
+
+    st.write("")
+    ui.section("損益（概算）")
+    v = a["販売量"]
+    rows = [
+        (f"売上（{a['件数']:,}件）", a["売上"]),
+        (f"売上原価（玄米換算 {v['玄米換算kg']:,.0f}kg × ¥{p['原価kg']:,.1f}）", -a["売上原価"]),
+    ]
+    if a["精米コスト"] > 0:
+        rows.append((f"精米コスト（精米 {v['精米kg']:,.0f}kg）", -a["精米コスト"]))
+    if a["資材送料"] > 0:
+        rows.append((f"資材・送料（{v['口数']:,.0f}口）", -a["資材送料"]))
+    rows.append(("差引利益", a["差引利益"]))
+    st.dataframe(
+        pd.DataFrame([{"項目": n, "金額": f"¥{x:+,.0f}"} for n, x in rows]),
+        use_container_width=True, hide_index=True)
+
+    ui.section("農協に出した場合とのくらべ")
+    st.dataframe(pd.DataFrame([
+        {"項目": f"売った量（玄米換算 {v['玄米換算kg']:,.0f}kg）を農協に出したら",
+         "金額": f"¥{a['農協収入']:,.0f}"},
+        {"項目": "直販で得た手取り（売上 − 精米・資材送料）",
+         "金額": f"¥{a['売上'] - a['精米コスト'] - a['資材送料']:,.0f}"},
+        {"項目": "直販による上乗せ", "金額": f"¥{a['直販上乗せ']:+,.0f}"},
+        {"項目": f"参考：年間生産量 {p['玄米生産量kg']:,.0f}kg を全量農協に出したら",
+         "金額": f"¥{a['農協全量']:,.0f}"},
+    ]), use_container_width=True, hide_index=True)
+
+    if p["玄米生産量kg"] > 0:
+        ui.section("生産量と販売量")
+        sold = v["玄米換算kg"]
+        _cost_kpi_row([
+            ("年間の生産量", f"{p['玄米生産量kg']:,.0f} kg", "玄米ベース", False),
+            ("売った量", f"{sold:,.0f} kg",
+             f"生産量の {sold / p['玄米生産量kg'] * 100:.0f}%", False),
+            ("残り（在庫・自家消費など）", f"{a['在庫kg']:,.0f} kg", "玄米ベース", False),
+            ("原価をまかなう販売量",
+             f"{a['損益分岐kg']:,.0f} kg" if a["損益分岐kg"] else "—",
+             "いまの手取り単価で", False),
+        ])
+        if a["損益分岐kg"] > 0:
+            done = min(1.0, sold / a["損益分岐kg"])
+            st.progress(done, text=f"損益分岐まで {done * 100:.0f}%")
+
+    mrows = costing.monthly(orders, start, end)
+    if mrows:
+        ui.section("月別の売上")
+        st.altair_chart(_sales_bar_chart(mrows), use_container_width=True)
+
+
+def _costing_defaults(s: dict) -> None:
+    st.caption("よく使う条件をここに保存しておくと、『価格くらべ』タブが"
+               "毎回この値で開きます。")
+    with st.form("cst_defaults"):
+        c1, c2 = st.columns(2)
+        form = c1.selectbox("納品のかたち", ["白米", "玄米"],
+                            index=0 if s["form"] == "白米" else 1)
+        price = c2.number_input("提示した価格（30kgあたり・円）", min_value=0.0,
+                                value=float(s["price_30kg"]), step=500.0, format="%.0f")
+        c3, c4 = st.columns(2)
+        qty = c3.number_input("数量（t）", min_value=0.0, value=float(s["qty_t"]),
+                              step=1.0, format="%.2f")
+        yld = c4.number_input("精米歩留まり（%）", min_value=50.0, max_value=100.0,
+                              value=float(s["yield_pct"]), step=0.5, format="%.1f")
+        c5, c6 = st.columns(2)
+        mill = c5.number_input("精米コスト（円/kg）", min_value=0.0,
+                               value=float(s["milling_per_kg"]), step=5.0, format="%.0f")
+        mat = c6.number_input("資材・送料（円/30kg 1口）", min_value=0.0,
+                              value=float(s["material_per_30kg"]), step=100.0,
+                              format="%.0f")
+        ja = st.number_input("農協の概算金（玄米60kgあたり・円）", min_value=0.0,
+                             value=float(s["ja_per_60kg"]), step=500.0, format="%.0f",
+                             help="概算金は玄米での価格です。60kgあたりで入れてください。")
+        if st.form_submit_button("既定値として保存", type="primary"):
+            costing.save(dict(s, form=form, price_30kg=price, qty_t=qty,
+                              yield_pct=yld, milling_per_kg=mill,
+                              material_per_30kg=mat, ja_per_60kg=ja))
+            _cost_reseed()
+            st.success("保存しました。")
+            st.rerun()
+
+    st.divider()
+    st.caption("生産量と生産費の既定値は『生産原価』タブで保存します。")
+    p = costing.production(s)
+    st.dataframe(pd.DataFrame([
+        {"項目": "作付面積", "値": f"{s['area_a']:,.1f} a（{s['area_a'] / 10:,.1f}反）"},
+        {"項目": "単収", "値": f"{s['yield_per_10a']:,.0f} kg / 10a"},
+        {"項目": "年間玄米生産量", "値": f"{p['玄米生産量kg']:,.0f} kg"},
+        {"項目": "年間の生産原価", "値": f"¥{p['年間原価']:,.0f}"},
+        {"項目": "玄米1kgあたり原価", "値": f"¥{p['原価kg']:,.1f}"},
+    ]), use_container_width=True, hide_index=True)
+
+
+def view_costing() -> None:
+    st.subheader("💰 収支")
+    s = costing.load()
+    tab_price, tab_cost, tab_year, tab_def = st.tabs(
+        ["価格くらべ", "生産原価", "年間収支", "既定値"])
+    with tab_price:
+        _costing_price(s)
+    with tab_cost:
+        _costing_cost(s)
+    with tab_year:
+        _costing_annual(s)
+    with tab_def:
+        _costing_defaults(s)
+
+
 # 通知リンク（?tab=billing）から開かれたら請求タブを初期選択
 if "nav" not in st.session_state and st.query_params.get("tab") == "billing":
     st.session_state["nav"] = "請求"
@@ -2702,5 +3023,7 @@ elif view == "給与":
     view_payroll()
 elif view == "帳簿":
     view_ledger()
+elif view == "収支":
+    view_costing()
 else:
     view_settings()

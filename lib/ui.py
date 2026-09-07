@@ -830,7 +830,8 @@ def kpi(label: str, value: str, sub: str = "", yen: bool = False) -> str:
             f'<div class="kpi-val">{head}{value}</div>{sub_html}</div>')
 
 
-VIEWS = ["ホーム", "注文", "顧客", "分析", "見積", "請求", "給与", "帳簿", "設定"]
+VIEWS = ["ホーム", "注文", "顧客", "分析", "収支", "見積", "請求", "給与", "帳簿",
+         "設定"]
 
 
 def render_nav() -> str:

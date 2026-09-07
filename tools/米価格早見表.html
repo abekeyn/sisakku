@@ -212,7 +212,7 @@ footer b{color:var(--ink-2);font-weight:500}
   <header>
     <div class="eyebrow">阿部農園 ／ 出荷先くらべ</div>
     <h1>米価格 早見計算表</h1>
-    <p class="lede">30kgあたりの提示額を入れると、農協に出した場合といくら変わるかを計算します。白米納品のときは精米で減るぶんを差し引いて、玄米ベースにそろえて比べます。</p>
+    <p class="lede">30kgあたりいくらで出すかを入れると、農協に出した場合といくら変わるかを計算します。白米納品のときは精米で減るぶんを差し引いて、玄米ベースにそろえて比べます。</p>
   </header>
 
   <div class="cols">
@@ -228,7 +228,7 @@ footer b{color:var(--ink-2);font-weight:500}
       </div>
 
       <div class="field">
-        <label for="price">提示された価格（30kgあたり）</label>
+        <label for="price">提示した価格（30kgあたり）</label>
         <div class="inputrow">
           <input type="number" id="price" value="16000" step="500" min="0">
           <span class="unit">円 / 30kg</span>
@@ -451,7 +451,7 @@ footer b{color:var(--ink-2);font-weight:500}
     $('th-total').textContent = (s.haku ? '白米' : '玄米') + t.toLocaleString('ja-JP') + 't の差額';
     var near = Math.round(s.price / 500) * 500;
     var out = '';
-    for (var pr = 12000; pr <= 21000; pr += 500){
+    for (var pr = 12000; pr <= 30000; pr += 500){
       var c = calc(s, pr);
       out += '<tr' + (pr === near ? ' class="here"' : '') + '>'
         + '<td>' + yen(pr) + '</td>'
