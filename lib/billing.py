@@ -192,6 +192,11 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
                 "name": client["name"], "warning": s["warning"]}
 
     doc_no = int(client.get("last_doc_no", 0)) + 1
+    # 番号は作成した時点で予約する（送信時まで待つと、送信前の下書きが複数
+    # あった場合に同じ番号を払い出してしまう。実際に佳ざわ様で2件の下書き
+    # 請求書が両方260001になる不具合が発生した）。
+    client["last_doc_no"] = doc_no
+    upsert_client(client)
     price = client.get("price_per_5kg", 4000)
     workdir = Path(workdir)
     xlsx = workdir / f"invoice_{client['id']}_{target_ym}.xlsx"
@@ -276,6 +281,11 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
     target_ym = issue_date.strftime("%Y-%m")
     doc_no = int(client.get("last_doc_no", 0)) + 1
+    # 番号は作成した時点で予約する（送信時まで待つと、送信前の下書きが複数
+    # あった場合に同じ番号を払い出してしまう。実際に佳ざわ様で2件の下書き
+    # 請求書が両方260001になる不具合が発生した）。
+    client["last_doc_no"] = doc_no
+    upsert_client(client)
     unit_kg = unit_kg or client.get("unit_kg") or UNIT_KG
     amount = amount_override if amount_override is not None else int(round(qty * unit_price))
     pdf = invoice_pdf.build_invoice_pdf(
@@ -350,9 +360,9 @@ def send_pending(pending_key: str) -> dict:
               f"⚠️ {p['client_name']} {m}月分の送信に失敗：{msg}",
               priority="high", tags="warning")
         return {"ok": False, "msg": msg}
-    # 書類番号を確定（マスタのlast_doc_noを更新）
-    client["last_doc_no"] = p["doc_number"]
-    upsert_client(client)
+    # 書類番号は作成時点で既に予約済み（prepare_client/prepare_manual）なので、
+    # ここでは更新しない。送信時に更新すると、送信前に他の下書きが新しい番号を
+    # 既に払い出していた場合、番号を巻き戻して次回また重複させてしまう。
     p["status"] = "sent"
     p["sent_at"] = datetime.now().isoformat(timespec="seconds")
     p["synced_to_xlsx"] = False
