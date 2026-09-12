@@ -378,6 +378,19 @@ def discard_pending(pending_key: str) -> None:
 
 # ===== 領収書：発行記録とPC側フォルダ保存 ==========================================
 RECEIPTS_KEY = "billing_receipts"  # {receipt_id: {...}}
+RECEIPT_SEQ_KEY = "billing_receipt_seq"  # 領収書専用の通し番号（最後に払い出した番号）
+
+
+def next_receipt_no() -> int:
+    """領収書専用の通し番号を1つ払い出す（請求書のdoc_numberとは独立の採番）。
+
+    以前は請求書のdoc_numberをそのまま流用していたため、請求先ごとに別々に
+    採番される請求書番号（どの請求先も最初の請求書は260001）とかぶり、
+    領収書だけを見ると連番になっていなかった（例：全件260001）。
+    """
+    n = int(db.get_setting(RECEIPT_SEQ_KEY) or 260000) + 1
+    db.set_setting(RECEIPT_SEQ_KEY, n)
+    return n
 
 
 def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,

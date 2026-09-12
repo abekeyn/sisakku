@@ -1426,12 +1426,16 @@ def _receipt_button(key: str, p: dict) -> None:
     rk = f"receipt_pdf_{key}"
     if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
         client = billing.get_client(p["client_id"]) or {}
+        # 領収書の書類番号は請求書のdoc_numberとは別の専用の通し番号を払い出す
+        # （請求先ごとに独立した請求書番号をそのまま流用すると、領収書だけを
+        # 見たときに連番になっていなかったため）。
+        receipt_no = billing.next_receipt_no()
         pdf = receipt.build_receipt_pdf(
             invoice_to=client.get("invoice_to", p["client_name"]),
             amount=r_amount,
             item_desc=client.get("item_desc", ""),
             issue_date=date.fromisoformat(p["issue_date"]),
-            doc_no=str(p["doc_number"]),
+            doc_no=str(receipt_no),
             payment_method=payment_method, payment_note=payment_note,
             qty=p.get("qty", 1), total_kg=p.get("total_kg"),
         )
@@ -1439,7 +1443,7 @@ def _receipt_button(key: str, p: dict) -> None:
         # 控えが残るようにするため（給与明細タブと同じ挙動）。
         fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
         rid = billing.save_receipt(
-            p["client_id"], date.fromisoformat(p["issue_date"]), p["doc_number"],
+            p["client_id"], date.fromisoformat(p["issue_date"]), receipt_no,
             pdf, fname, payment_method, r_amount)
         saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
         st.session_state[rk] = {
