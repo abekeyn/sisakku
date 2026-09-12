@@ -5,9 +5,11 @@
 金額と品名を渡すと Square Checkout API で決済リンクを作り、そのURLを
 QRコード画像（PNG）にして返す。
 
-同じ品名・同じ金額のリンクは作り直さず使い回す（DBのsettingsにキャッシュ）。
-発行のたびに新しいリンクが増えると、Square側の管理画面が使い捨てリンクで
-埋まって「どれが生きているのか」が分からなくなるため。
+リンクは発行のたびに必ず新しく作る。APIで作った決済リンクは1回しか
+支払えない（Square公式: "The buyer can use the payment link only once."）
+ため、同じ品名・金額で使い回すと、先に誰かが払った後の紙が「払えないQR」
+になってしまう。1枚1リンクにしておけば、リンクごとの注文(order)の状態で
+その紙が入金済みかどうかも判定できる。
 
 必要なシークレット（.streamlit/secrets.toml もしくは環境変数）:
   SQUARE_ACCESS_TOKEN … Square開発者ダッシュボードで発行する本番アクセストークン
@@ -17,15 +19,12 @@ from __future__ import annotations
 
 import io
 import uuid
-from datetime import datetime
-
-from . import config, db
+from . import config
 
 API_BASE = "https://connect.squareup.com/v2"
 # Square APIはバージョン固定が必須。上げるときは実機で決済画面まで確認すること。
 API_VERSION = "2026-08-19"
 CURRENCY = "JPY"          # 円は最小単位が1円なので、金額はそのままの整数で渡す
-LINKS_KEY = "square_payment_links"   # settingsテーブルのキャッシュキー
 TIMEOUT = 20
 
 
@@ -80,14 +79,6 @@ def resolve_location_id() -> str:
     raise SquareError("有効な店舗が見つかりませんでした。SQUARE_LOCATION_IDを設定してください。")
 
 
-def _cache() -> dict:
-    return db.get_setting(LINKS_KEY) or {}
-
-
-def _cache_key(name: str, amount: int) -> str:
-    return f"{name.strip()}|{int(amount)}"
-
-
 def create_payment_link(name: str, amount: int, note: str = "") -> dict:
     """Squareに決済リンクを新規作成して {"url", "id", "name", "amount"} を返す。
 
@@ -126,28 +117,46 @@ def create_payment_link(name: str, amount: int, note: str = "") -> dict:
     url = link.get("url")
     if not url:
         raise SquareError("決済リンクのURLが応答に含まれていませんでした。")
-    return {"url": url, "id": link.get("id", ""), "name": name, "amount": amount}
+    return {"url": url, "id": link.get("id", ""), "order_id": link.get("order_id", ""),
+            "name": name, "amount": amount}
 
 
-def get_payment_link(name: str, amount: int, note: str = "") -> dict:
-    """品名・金額に対応する決済リンクを返す（あれば使い回し、無ければ作成）。"""
-    key = _cache_key(name, amount)
-    cache = _cache()
-    if hit := cache.get(key):
-        if hit.get("url"):
-            return hit
-    made = create_payment_link(name, amount, note=note)
-    made["created_at"] = datetime.now().isoformat(timespec="seconds")
-    cache[key] = made
-    db.set_setting(LINKS_KEY, cache)
-    return made
+def link_order_id(link_id: str) -> str:
+    """決済リンクIDから、そのリンクに紐づく注文IDを引く（履歴の補完用）。"""
+    import requests
+    resp = requests.get(f"{API_BASE}/online-checkout/payment-links/{link_id}",
+                        headers=_headers(), timeout=TIMEOUT)
+    if not resp.ok:
+        raise SquareError(f"決済リンクを取得できませんでした（{_api_error(resp)}）")
+    return (resp.json().get("payment_link") or {}).get("order_id", "")
 
 
-def forget_payment_link(name: str, amount: int) -> None:
-    """キャッシュを捨てて、次回また新しいリンクを作らせる。"""
-    cache = _cache()
-    if cache.pop(_cache_key(name, amount), None) is not None:
-        db.set_setting(LINKS_KEY, cache)
+def payment_states(order_ids: list[str]) -> dict[str, dict]:
+    """注文IDごとの入金状況を {order_id: {"paid", "state", "paid_at", "paid_amount"}} で返す。
+
+    決済リンクの注文は、払われると DRAFT→OPEN に変わり Tender（支払い記録）が
+    付く。state だけでなく Tender の有無で判定するのは、手動で完了扱いにされた
+    未入金の注文を「入金済み」と誤表示しないため。
+    """
+    import requests
+
+    ids = [i for i in dict.fromkeys(order_ids) if i]
+    out: dict[str, dict] = {}
+    for i in range(0, len(ids), 100):          # batch-retrieve は1回100件まで
+        resp = requests.post(f"{API_BASE}/orders/batch-retrieve", headers=_headers(),
+                             json={"order_ids": ids[i:i + 100]}, timeout=TIMEOUT)
+        if not resp.ok:
+            raise SquareError(f"入金状況を取得できませんでした（{_api_error(resp)}）")
+        for o in resp.json().get("orders", []):
+            tenders = o.get("tenders") or []
+            out[o["id"]] = {
+                "state": o.get("state", ""),
+                "paid": bool(tenders) and o.get("state") in ("OPEN", "COMPLETED"),
+                "paid_at": min((t.get("created_at", "") for t in tenders), default=""),
+                "paid_amount": sum((t.get("amount_money") or {}).get("amount", 0)
+                                   for t in tenders),
+            }
+    return out
 
 
 def qr_png(url: str, box_size: int = 10) -> bytes:

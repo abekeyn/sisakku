@@ -1728,8 +1728,9 @@ def _paysheet_issue() -> None:
     st.caption("QRを読み取ればその場でカード決済できる紙を作ります。"
                "領収書はお支払いを確認してから発行してください。")
     if not square_pay.is_configured():
-        st.warning("SquareのアクセストークンがSecretsに未設定のため、まだ使えません"
+        st.warning("SquareのアクセストークンがSecretsに未設定のため、新しい紙は作れません"
                    "（SQUARE_ACCESS_TOKEN）。設定するとこのタブが動きます。")
+        _paysheet_history()   # 履歴はDBの記録なので、トークンが無くても見られるようにする
         return
 
     # 請求先マスタから宛名・品名を引き継げるようにする（毎回打ち直さないため）
@@ -1758,7 +1759,8 @@ def _paysheet_issue() -> None:
             st.error("品名を入力してください。")
         else:
             try:
-                link = square_pay.get_payment_link(item_name.strip(), int(amount))
+                # 決済リンクは1回しか払えないので、紙1枚ごとに必ず新しく作る
+                link = square_pay.create_payment_link(item_name.strip(), int(amount))
             except Exception as e:  # noqa: BLE001  通信/設定エラーは文面をそのまま出す
                 st.error(f"Squareの決済リンクを作れませんでした：{e}")
                 link = None
@@ -1767,6 +1769,8 @@ def _paysheet_issue() -> None:
                     invoice_to=invoice_to.strip(), item_name=item_name.strip(),
                     amount=int(amount), pay_url=link["url"], issue_date=issue_dt,
                     note=note.strip(), show_bank=show_bank)
+                paysheet.add_history(invoice_to.strip(), item_name.strip(), int(amount),
+                                     issue_dt, link, note=note.strip(), show_bank=show_bank)
                 st.session_state[pk] = {
                     "pdf": pdf, "url": link["url"],
                     "filename": paysheet.pay_sheet_filename(
@@ -1775,11 +1779,76 @@ def _paysheet_issue() -> None:
 
     if st.session_state.get(pk):
         d = st.session_state[pk]
-        st.success("作成しました。印刷して手渡すか、PDFのまま送ってください。")
+        st.success("作成しました（下の発行履歴にも記録済み）。"
+                   "印刷して手渡すか、PDFのまま送ってください。")
         st.caption(f"決済リンク： {d['url']}")
         st.download_button("↓ PDFをダウンロード", d["pdf"], file_name=d["filename"],
                            mime="application/pdf", key="ps_dl",
                            use_container_width=True)
+
+    _paysheet_history()
+
+
+def _fmt_paid_at(iso: str) -> str:
+    """SquareのUTC時刻（例 2026-09-10T03:12:45.123Z）を日本時間の表示にする。"""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.astimezone(JST).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso
+
+
+def _paysheet_history() -> None:
+    """発行した「お支払いのご案内」の一覧・入金状況・PDF再ダウンロード。
+
+    入金状況は自動では問い合わせない。タブはこの画面を開くたびに全部描画される
+    ため、ここでSquareを呼ぶと請求画面の操作のたびに通信が発生してしまう。
+    """
+    st.divider()
+    st.markdown("#### 発行履歴")
+    hist = paysheet.get_history()
+    if not hist:
+        st.caption("まだ発行した紙はありません。")
+        return
+
+    unpaid = sum(1 for r in hist if not r.get("paid"))
+    c1, c2 = st.columns([3, 2])
+    c1.caption(f"全{len(hist)}件／未入金 {unpaid}件。入金状況は右のボタンで"
+               "Squareに確認します（カード決済分のみ。振込の入金はここには出ません）。")
+    if c2.button("🔄 入金状況を確認", key="ps_refresh", use_container_width=True,
+                 disabled=not square_pay.is_configured()):
+        try:
+            n = paysheet.refresh_payments()
+            st.success(f"確認しました。新たに入金を確認：{n}件")
+            hist = paysheet.get_history()
+        except Exception as e:  # noqa: BLE001  通信/権限エラーは文面をそのまま出す
+            st.error(f"Squareに確認できませんでした：{e}")
+
+    st.dataframe(
+        pd.DataFrame([{
+            "発行日": r["issue_date"],
+            "宛名": r["invoice_to"] or "（宛名なし）",
+            "品名": r["item_name"],
+            "金額": r["amount"],
+            "入金": "✅ 入金済み" if r.get("paid") else "未入金",
+            "入金日時": _fmt_paid_at(r.get("paid_at", "")),
+            "決済リンク": r["url"],
+        } for r in hist]),
+        hide_index=True, use_container_width=True,
+        column_config={
+            "金額": st.column_config.NumberColumn(format="¥%d"),
+            "決済リンク": st.column_config.LinkColumn(),
+        })
+
+    by_label = {f"{r['issue_date']}　{r['invoice_to'] or '（宛名なし）'}　"
+                f"{r['item_name']}　¥{r['amount']:,}": r for r in hist}
+    pick = st.selectbox("PDFを再ダウンロード", list(by_label), key="ps_hist_pick")
+    pdf, fname = paysheet.rebuild_pdf(by_label[pick])
+    st.download_button("↓ 選んだ紙のPDFをダウンロード", pdf, file_name=fname,
+                       mime="application/pdf", key="ps_hist_dl",
+                       use_container_width=True)
 
 
 def _month_end(y: int, mo: int) -> date:
