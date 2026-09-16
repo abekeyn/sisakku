@@ -11,3 +11,5 @@ openpyxl==3.1.5
 reportlab==5.0.1
 # qrcode[pil]: 領収書に載せるSquare決済リンクのQRコード生成
 qrcode[pil]==8.2
+# pypdfium2: 請求書・見積書PDFのその場プレビュー（ページを画像化して表示）
+pypdfium2==5.13.0

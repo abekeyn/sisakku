@@ -97,35 +97,24 @@ def _addr_len_hint(addr: str) -> None:
 
 
 def _pdf_preview(b64: str, height: int = 480) -> None:
-    """PDFをその場でプレビュー表示する。
+    """PDFをその場でプレビュー表示する（各ページをPNG画像に変換して表示）。
 
-    <iframe src="data:application/pdf;base64,...">は一部環境（Chromeなど）で
-    「このページはChromeによってブロックされています」と表示され開けないことが
-    あるため、base64をJSで一度Blob化してblob: URLをiframeに渡す方式にする
-    （data: URIを直接iframeのsrcに渡すより安定して表示できる）。
+    以前はiframeにdata: URIやblob: URLを渡してブラウザ内蔵のPDFビューアで
+    表示していたが、data: URIはChromeにブロックされ、blob: URLへ切り替えた
+    後も、Streamlitのcomponents.html()が常にsandbox化したiframe内に描画する
+    ため、その中でさらにネイティブPDFビューアをiframe表示しようとすると
+    サンドボックスの制限で何も表示されない（エラーも出ない）ことがあった。
+    ブラウザのPDFビューアに頼らず、Python側でページを画像化して st.image()
+    で表示すれば、この手の環境差の影響を受けずに確実に表示できる。
     """
-    import streamlit.components.v1 as components
-    components.html(
-        f"""
-        <div style="width:100%;height:{height}px;border:1px solid #ddd;
-                    border-radius:8px;overflow:hidden;">
-          <iframe id="pdfframe" style="width:100%;height:100%;border:none;"></iframe>
-        </div>
-        <script>
-          const b64 = "{b64}";
-          const byteChars = atob(b64);
-          const byteNumbers = new Array(byteChars.length);
-          for (let i = 0; i < byteChars.length; i++) {{
-              byteNumbers[i] = byteChars.charCodeAt(i);
-          }}
-          const byteArray = new Uint8Array(byteNumbers);
-          const blob = new Blob([byteArray], {{type: 'application/pdf'}});
-          const url = URL.createObjectURL(blob);
-          document.getElementById('pdfframe').src = url;
-        </script>
-        """,
-        height=height + 2,
-    )
+    import base64 as _b64
+
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(_b64.b64decode(b64))
+    for i in range(len(pdf)):
+        img = pdf[i].render(scale=2.0).to_pil()
+        st.image(img, use_container_width=True)
 
 
 # ===========================================================================
