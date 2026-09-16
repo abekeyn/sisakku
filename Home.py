@@ -1470,7 +1470,8 @@ def _render_pending_card(key: str, p: dict) -> None:
     import base64
 
     with st.container(border=True):
-        st.markdown(f"### {p['client_name']}　{p['month']}月分")
+        issue_d = date.fromisoformat(p["issue_date"])
+        st.markdown(f"### {p['client_name']}　{issue_d.month}月{issue_d.day}日発行分")
         c1, c2, c3 = st.columns(3)
         c1.metric("ご請求額（税込）", f"¥{p['amount']:,}")
         c2.metric("数量", f"{p['qty']:g} 個")
@@ -1523,27 +1524,45 @@ def _render_pending_card(key: str, p: dict) -> None:
                 else:
                     st.error(r.get("msg", "作り直せませんでした。"))
 
+        has_email = "@" in (p.get("email") or "")
         ck = f"confirm_{key}"
         if st.session_state.get(ck):
-            st.markdown(f"**{p['email']} へ送信します。よろしいですか？**")
+            if has_email:
+                st.markdown(f"**{p['email']} へ送信します。よろしいですか？**")
+            else:
+                st.markdown("**メール送信はせず、この内容で最終確定します。よろしいですか？**"
+                             "（手渡し・郵送等の請求先のため）")
             cc1, cc2 = st.columns(2)
-            if cc1.button("✅ はい、送信する", type="primary",
+            if cc1.button("✅ はい、確定する", type="primary",
                           key=f"yes_{key}", use_container_width=True):
-                with st.spinner("送信中…"):
-                    r = billing.send_pending(key)
+                with st.spinner("確定しています…"):
+                    r = billing.send_pending(key) if has_email else billing.confirm_pending(key)
                 if r.get("ok"):
+                    saved = billing.sync_invoices()  # PCならこの場で発行書類フォルダへ保存
                     st.session_state.pop(ck, None)
-                    st.success("送信しました。スマホにも完了通知を送りました。")
+                    path = next((s["path"] for s in saved if s.get("key") == key), "")
+                    msg = "送信しました。" if has_email else "確定しました。"
+                    client = billing.get_client(p["client_id"]) or {}
+                    if path:
+                        msg += f" {path} に保存済みです。"
+                    elif billing.folder_configured(client):
+                        msg += " 次回PC起動時に「発行書類」フォルダへ保存されます。"
+                    st.success(msg + "スマホにも完了通知を送りました。")
+                    if not path and not billing.folder_configured(client):
+                        st.warning("この請求先は保存先フォルダが未設定のため、PCには保存されません。"
+                                   "下の「請求先マスタ」で保存先フォルダ名を設定してください。")
                     st.balloons()
                     st.rerun()
                 else:
-                    st.error(f"送信できませんでした：{r.get('msg')}")
+                    st.error(f"確定できませんでした：{r.get('msg')}")
             if cc2.button("やめる", key=f"no_{key}", use_container_width=True):
                 st.session_state.pop(ck, None)
                 st.rerun()
         else:
             b1, b2 = st.columns([3, 1])
-            if b1.button(f"この内容で {p['email']} へ送信する", type="primary",
+            label = (f"この内容で {p['email']} へ送信する" if has_email
+                     else "この内容で最終確定する（発行書類フォルダへ保存）")
+            if b1.button(label, type="primary",
                          key=f"send_{key}", use_container_width=True):
                 st.session_state[ck] = True
                 st.rerun()
@@ -1610,13 +1629,29 @@ def _billing_issue() -> None:
         tabs = st.tabs([f"{name}（{len(by_client[name])}）" for name in names])
         for tab, name in zip(tabs, names):
             with tab:
-                for key, p in by_client[name]:
-                    _render_pending_card(key, p)
+                items = by_client[name]
+                # 同じ請求先に複数月分たまっているときは、月ごとにもタブを分ける
+                # （どちらも「9月分」のように見えて実は発行日が違う下書きが混在する
+                # ことがあり、月だけでは区別しづらいため）。
+                by_month: dict[str, list] = {}
+                for key, p in items:
+                    by_month.setdefault(p.get("target_ym") or p["issue_date"][:7], []).append((key, p))
+                ym_keys = sorted(by_month, reverse=True)
+                if len(ym_keys) > 1:
+                    mtabs = st.tabs([f"{int(ym[5:7])}月分（{len(by_month[ym])}）" for ym in ym_keys])
+                    for mtab, ym in zip(mtabs, ym_keys):
+                        with mtab:
+                            for key, p in by_month[ym]:
+                                _render_pending_card(key, p)
+                else:
+                    for key, p in items:
+                        _render_pending_card(key, p)
 
     if sent_items:
         with st.expander(f"送信済み（{len(sent_items)}件）"):
             for key, p in sent_items:
-                st.write(f"✅ {p['client_name']} {p['month']}月分 ¥{p['amount']:,} "
+                sd = date.fromisoformat(p["issue_date"])
+                st.write(f"✅ {p['client_name']} {sd.month}月{sd.day}日発行分 ¥{p['amount']:,} "
                          f"／ 書類番号 {p['doc_number']} ／ {p.get('sent_at', '')}")
                 _receipt_button(key, p)
                 st.divider()

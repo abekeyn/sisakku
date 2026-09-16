@@ -339,14 +339,33 @@ def prepare_all(target_ym: str | None = None, soffice: str = "soffice",
     return {"target_ym": target_ym, "prepared": prepared, "skipped": skipped}
 
 
+def _finalize_pending(pending_key: str, p: dict, allp: dict) -> None:
+    """確定済みとして記録する（送信・手渡し確定の共通処理）。
+
+    書類番号は作成時点で既に予約済み（prepare_client/prepare_manual）なので、
+    ここでは更新しない。確定時に更新すると、確定前に他の下書きが新しい番号を
+    既に払い出していた場合、番号を巻き戻して次回また重複させてしまう。
+    """
+    p["status"] = "sent"
+    p["sent_at"] = datetime.now().isoformat(timespec="seconds")
+    p["synced_to_xlsx"] = False
+    p["synced_to_folder"] = False
+    allp[pending_key] = p
+    _save_pendings(allp)
+    hist = db.get_setting(HISTORY_KEY) or []
+    hist.append({k: p[k] for k in ("client_id", "client_name", "target_ym",
+                                   "doc_number", "amount", "sent_at")})
+    db.set_setting(HISTORY_KEY, hist)
+
+
 def send_pending(pending_key: str) -> dict:
-    """承認待ち1件を顧客へ送信し、書類番号を確定。pending_key='client:ym'。"""
+    """承認待ち1件をメールで顧客へ送信し、確定する。pending_key='client:ym'。"""
     allp = get_pendings()
     p = allp.get(pending_key)
     if not p:
         return {"ok": False, "msg": "対象の請求書が見つかりません"}
     if p.get("status") == "sent":
-        return {"ok": False, "msg": "既に送信済みです"}
+        return {"ok": False, "msg": "既に確定済みです"}
     client = get_client(p["client_id"])
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
@@ -360,23 +379,36 @@ def send_pending(pending_key: str) -> dict:
               f"⚠️ {p['client_name']} {m}月分の送信に失敗：{msg}",
               priority="high", tags="warning")
         return {"ok": False, "msg": msg}
-    # 書類番号は作成時点で既に予約済み（prepare_client/prepare_manual）なので、
-    # ここでは更新しない。送信時に更新すると、送信前に他の下書きが新しい番号を
-    # 既に払い出していた場合、番号を巻き戻して次回また重複させてしまう。
-    p["status"] = "sent"
-    p["sent_at"] = datetime.now().isoformat(timespec="seconds")
-    p["synced_to_xlsx"] = False
-    allp[pending_key] = p
-    _save_pendings(allp)
-    hist = db.get_setting(HISTORY_KEY) or []
-    hist.append({k: p[k] for k in ("client_id", "client_name", "target_ym",
-                                   "doc_number", "amount", "sent_at")})
-    db.set_setting(HISTORY_KEY, hist)
+    _finalize_pending(pending_key, p, allp)
     _ntfy("Invoice: SENT",
           f"✅ {p['client_name']} {m}月分を送信しました。\n"
           f"金額 ¥{p['amount']:,} / 宛先 {p['email']} / 書類番号 {p['doc_number']}",
           tags="white_check_mark")
     return {"ok": True, "msg": msg, "pending": p}
+
+
+def confirm_pending(pending_key: str) -> dict:
+    """メール送信を伴わずに最終確定する（手渡し・郵送などメール宛先が無い請求先向け）。
+
+    確定した時点で書類番号は動かさず、そのままローカルの発行書類フォルダへ
+    保存できるようにする（sync_invoices）。呼び出し側でsync_invoices()を
+    続けて呼ぶこと（PC上ならその場で保存、クラウドなら常駐エージェントが
+    次回のポーリングで保存する）。
+    """
+    allp = get_pendings()
+    p = allp.get(pending_key)
+    if not p:
+        return {"ok": False, "msg": "対象の請求書が見つかりません"}
+    if p.get("status") == "sent":
+        return {"ok": False, "msg": "既に確定済みです"}
+    if not get_client(p["client_id"]):
+        return {"ok": False, "msg": "請求先マスタが見つかりません"}
+    _finalize_pending(pending_key, p, allp)
+    _ntfy("Invoice: CONFIRMED",
+          f"✅ {p['client_name']} {p['month']}月分を確定しました（手渡し・郵送等）。\n"
+          f"金額 ¥{p['amount']:,} / 書類番号 {p['doc_number']}",
+          tags="white_check_mark")
+    return {"ok": True, "pending": p}
 
 
 def discard_pending(pending_key: str) -> None:
@@ -504,6 +536,41 @@ def sync_receipts() -> list[dict]:
                     "path": str(path)})
     if changed:
         db.set_setting(RECEIPTS_KEY, receipts)
+    return out
+
+
+def sync_invoices() -> list[dict]:
+    """【PC側】確定済み（送信・最終確定）だが未保存の請求書PDFを
+    クライアントのローカルフォルダ（発行書類/○○様/）へ書き出す。
+
+    Excel台帳（local_xlsx）を使っている請求先は sync_local_xlsx() 側で
+    台帳への追記とあわせてPDFも出力されるため、ここでは対象外にする
+    （二重に書き出さないため）。folder のみ設定している、手渡し・郵送中心の
+    請求先が対象。
+    """
+    out = []
+    allp = get_pendings()
+    changed = False
+    for key, p in allp.items():
+        if p.get("status") != "sent" or p.get("synced_to_folder"):
+            continue
+        client = get_client(p["client_id"]) or {}
+        if (client.get("local_xlsx") or "").strip():
+            continue
+        folder = receipts_folder(client)
+        if not folder:
+            continue  # ローカルフォルダ未設定の請求先はPDFダウンロードのみ（クラウド保管）
+        d = p["issue_date"].replace("-", "")
+        fname = f"{d}_{_folder_label(folder)}_請求書.pdf"
+        path = folder / fname
+        path.write_bytes(base64.b64decode(p["pdf_b64"]))
+        p["synced_to_folder"] = True
+        p["synced_at"] = datetime.now().isoformat(timespec="seconds")
+        changed = True
+        out.append({"key": key, "client": client.get("name", p["client_id"]),
+                    "path": str(path)})
+    if changed:
+        _save_pendings(allp)
     return out
 
 

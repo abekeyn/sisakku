@@ -274,15 +274,22 @@ _receipt_next_check = 0.0  # 次に領収書同期を確認するUNIX時刻（�
 
 
 def _check_receipt_sync() -> None:
-    """クラウドで発行された領収書・給与明細PDFをローカルフォルダへ書き出す。
+    """クラウドで発行された請求書・領収書・給与明細PDFをローカルフォルダへ書き出す。
 
-    領収書は各請求先の発行書類/○○様/、給与明細は発行書類/給与明細/。
+    請求書・領収書は各請求先の発行書類/○○様/、給与明細は発行書類/給与明細/。
     DB側の synced_to_folder で冪等。5分ごとに確認。"""
     global _receipt_next_check
     import time as _t
     if _t.time() < _receipt_next_check:
         return
     _receipt_next_check = _t.time() + 300
+    try:
+        from lib import billing
+        synced = billing.sync_invoices()
+        for s in synced:
+            print("請求書をフォルダへ保存:", s.get("client"), s.get("path"), flush=True)
+    except Exception as e:  # noqa: BLE001
+        print("請求書フォルダ同期をスキップ（次回再試行）:", e, flush=True)
     try:
         from lib import billing
         synced = billing.sync_receipts()
