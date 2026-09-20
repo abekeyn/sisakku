@@ -486,7 +486,7 @@ def _editor(m: dict, cfg: dict) -> None:
         st.success(st.session_state.pop("stk_flash"))
 
     st.divider()
-    ui.section("② 入庫・その他の増減を記録する", "収穫・仕入・とう精・ロス／サンプルなどによる増減")
+    ui.section("② 入庫・移動・その他の増減を記録する", "収穫・仕入・とう精・保管場所の移動・ロス／サンプルなど")
     _entry_form(cfg, locs, varieties)
 
     st.divider()
@@ -497,6 +497,7 @@ def _editor(m: dict, cfg: dict) -> None:
 _KIND_LABELS = {
     "produce": "自家生産入庫（収穫）", "buy": "買受（仕入）",
     "adjust": "その他の増減（＋/−）", "mill": "とう精（玄米→精米）",
+    "move": "保管場所の移動（外部倉庫→自宅など）",
 }
 
 
@@ -510,10 +511,13 @@ def _entry_form(cfg: dict, locs: list[str], varieties: list[str]) -> None:
         c4, c5, c6 = st.columns(3)
         form = c4.selectbox("形態", ["玄米", "精米"], help="とう精のときは「投入する玄米」の形態は玄米固定です。")
         dl = cfg["default_location"].get("玄米")
-        loc = c5.selectbox("保管場所", locs or [""], index=(locs.index(dl) if dl in locs else 0),
+        loc = c5.selectbox("保管場所（移動のときは移動元）", locs or [""], index=(locs.index(dl) if dl in locs else 0),
                            help="とう精のときは玄米を取り出す場所。")
-        qty = c6.number_input("数量（kg）", step=1.0, format="%.1f",
-                              help="とう精のときは投入する玄米kg。増減は＋/−で入力できます。")
+        to_loc = c6.selectbox("移動先（「保管場所の移動」のときだけ使います）", [""] + locs,
+                              index=0, help="例：外部倉庫から自宅の冷蔵庫へ移した分")
+        c7, _c8 = st.columns(2)
+        qty = c7.number_input("数量（kg）", step=1.0, format="%.1f",
+                              help="とう精のときは投入する玄米kg。移動のときは移す量。増減は＋/−で入力できます。")
         out_kg = st.number_input("（とう精のみ）できた精米kg", min_value=0.0, step=1.0, format="%.1f")
         note = st.text_input("メモ（任意）", placeholder="例：令和8年産 収穫分／JAから仕入")
         if st.form_submit_button("記録する", type="primary"):
@@ -521,6 +525,8 @@ def _entry_form(cfg: dict, locs: list[str], varieties: list[str]) -> None:
                 st.error("数量を入れてください。")
             elif kind == "mill" and out_kg <= 0:
                 st.error("とう精は、できた精米kgも入れてください。")
+            elif kind == "move" and (not to_loc or to_loc == loc or qty < 0):
+                st.error("移動は、移動元と違う移動先を選び、数量はプラスで入れてください。")
             else:
                 flags = ledger.load_flags()
                 db.add_ledger_entry({
@@ -528,7 +534,8 @@ def _entry_form(cfg: dict, locs: list[str], varieties: list[str]) -> None:
                     "rice_type": ledger.product_rice_type(var, flags),
                     "form": "玄米" if kind == "mill" else form,
                     "qty_kg": float(qty), "qty_out_kg": float(out_kg) if kind == "mill" else 0,
-                    "counterparty": "", "note": note, "location": loc, "variety": var})
+                    "counterparty": "", "note": note, "location": loc, "variety": var,
+                    "to_location": to_loc if kind == "move" else ""})
                 st.success("記録しました。")
                 st.rerun()
 
@@ -538,10 +545,9 @@ def _history_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
     if not entries:
         st.caption("まだ記録がありません。")
         return
-    kind_lbl = {**ledger.ENTRY_KINDS}
     rows = [{"id": e["id"], "日付": ledger.parse_date(e["entry_date"]) or date.today(),
-             "種別": kind_lbl.get(e["kind"], e["kind"]), "形態": e.get("form") or "玄米",
-             "品種": e.get("variety") or "", "保管場所": e.get("location") or "",
+             "種別": ledger.kind_label(e["kind"]), "形態": e.get("form") or "玄米",
+             "品種": e.get("variety") or "", "保管場所": e.get("location") or "", "移動先": e.get("to_location") or "",
              "数量kg": float(e.get("qty_kg") or 0), "精米産出kg": float(e.get("qty_out_kg") or 0),
              "メモ": e.get("note") or ""} for e in entries]
     df = pd.DataFrame(rows)
@@ -554,6 +560,7 @@ def _history_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
             "形態": st.column_config.SelectboxColumn("形態", options=["玄米", "精米"]),
             "品種": st.column_config.SelectboxColumn("品種", options=[""] + varieties),
             "保管場所": st.column_config.SelectboxColumn("保管場所", options=[""] + locs),
+            "移動先": st.column_config.SelectboxColumn("移動先", options=[""] + locs, help="保管場所の移動のみ"),
             "数量kg": st.column_config.NumberColumn("数量(kg)", format="%.1f"),
             "精米産出kg": st.column_config.NumberColumn("精米産出(kg)", format="%.1f", help="とう精のみ"),
         })
@@ -569,11 +576,13 @@ def _history_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
             new = {
                 "entry_date": pd.Timestamp(r["日付"]).date().isoformat(), "form": r["形態"],
                 "variety": r["品種"] or "", "location": r["保管場所"] or "",
+                "to_location": r["移動先"] or "",
                 "qty_kg": float(r["数量kg"] or 0), "qty_out_kg": float(r["精米産出kg"] or 0),
                 "note": r["メモ"] or ""}
             o = orig[i]
             if (new["entry_date"] != o["日付"].isoformat() or new["form"] != o["形態"]
                     or new["variety"] != o["品種"] or new["location"] != o["保管場所"]
+                    or new["to_location"] != o["移動先"]
                     or abs(new["qty_kg"] - o["数量kg"]) > 1e-9 or abs(new["qty_out_kg"] - o["精米産出kg"]) > 1e-9
                     or new["note"] != o["メモ"]):
                 db.update_ledger_entry(i, new)

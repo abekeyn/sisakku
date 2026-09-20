@@ -240,6 +240,10 @@ def compute_stock(entries, out_rows, cfg, as_of: date) -> dict[tuple, float]:
         k = _entry_key(e, cfg)
         if kind in ("buy", "produce", "adjust"):
             events.append((d, k, _f(e.get("qty_kg"))))
+        elif kind == "move":
+            to = e.get("to_location") or UNSET_LOC
+            events.append((d, k, -_f(e.get("qty_kg"))))
+            events.append((d, (k[0], k[1], to), _f(e.get("qty_kg"))))
         elif kind == "mill":
             events.append((d, ("玄米", k[1], k[2]), -_f(e.get("qty_kg"))))
             events.append((d, ("精米", k[1], _default_loc("精米", cfg)), _f(e.get("qty_out_kg"))))

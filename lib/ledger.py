@@ -47,6 +47,14 @@ ENTRY_KINDS = {
     "adjust": "その他増減",
 }
 
+# 在庫画面だけで使う種別（帳簿の入力欄には出さない。数量の増減ではないので帳簿の集計には影響しない）
+EXTRA_KIND_LABELS = {"move": "保管場所の移動"}
+
+
+def kind_label(kind) -> str:
+    return ENTRY_KINDS.get(kind) or EXTRA_KIND_LABELS.get(kind) or (kind or "")
+
+
 EXCL_FREE = "無償譲渡"
 EXCL_TODOKEDE = "届出事業者へ出荷（自家生産米）"
 
@@ -446,7 +454,7 @@ def build_csv(fy: int, summary: dict, entries, flags: dict) -> bytes:
         d = parse_date(e.get("entry_date"))
         if d is None or not (start <= d <= end):
             continue
-        w.writerow([f"{d:%Y/%m/%d}", ENTRY_KINDS.get(e.get("kind"), e.get("kind")),
+        w.writerow([f"{d:%Y/%m/%d}", kind_label(e.get("kind")),
                     e.get("rice_type") or "", e.get("form") or "",
                     _num(e.get("qty_kg") or 0),
                     _num(e.get("qty_out_kg") or 0) if e.get("kind") == "mill" else "",
@@ -575,7 +583,7 @@ def build_pdf(fy: int, summary: dict, entries, flags: dict) -> bytes:
                "相手方", "備考"],
               [68, 104, 58, 58, 66, 72, 140, 208],
               [[f'{parse_date(e["entry_date"]):%Y/%m/%d}',
-                ENTRY_KINDS.get(e.get("kind"), e.get("kind") or ""),
+                kind_label(e.get("kind")),
                 e.get("rice_type") or "", e.get("form") or "",
                 fmt(float(e.get("qty_kg") or 0)),
                 fmt(float(e.get("qty_out_kg") or 0)) if e.get("kind") == "mill" else "",

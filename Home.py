@@ -2542,7 +2542,7 @@ def _ledger_entry_form(start: date, end: date) -> None:
 
     df = pd.DataFrame([{
         "ID": e["id"], "日付": ledger.parse_date(e["entry_date"]),
-        "区分": ledger.ENTRY_KINDS.get(e["kind"], e["kind"]),
+        "区分": ledger.kind_label(e["kind"]),
         "うるち/もち": e.get("rice_type") or "うるち",
         "玄米/精米": e.get("form") or "玄米",
         "数量kg": float(e.get("qty_kg") or 0),
