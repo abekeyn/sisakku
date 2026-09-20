@@ -226,35 +226,41 @@ def _entry_key(e: dict) -> tuple[str, str]:
     return rt, fm
 
 
-def opening_stock(entries, start: date) -> dict[tuple[str, str], float | None]:
-    """期首在庫＝期間開始日より前の、直近の実地棚卸。無ければ None。"""
-    latest: dict[tuple[str, str], tuple[date, float]] = {}
+def _latest_counts(entries, in_range):
+    """実地棚卸のうち、（種類・保管場所・品種）ごとに範囲内で最も新しいものを拾う。
+
+    保管場所・品種を分けて棚卸した場合は、その合計が種類別の在庫数量になる。
+    どちらも空欄なら従来どおり種類ごとに直近の1件になる。
+    returns {(うるち/もち, 玄米/精米): (合計kg, 最新日)}
+    """
+    latest: dict[tuple, tuple[date, float]] = {}
     for e in entries:
         if e.get("kind") != "stock":
             continue
         d = parse_date(e.get("entry_date"))
-        if d is None or d >= start:
+        if d is None or not in_range(d):
             continue
-        k = _entry_key(e)
+        k = _entry_key(e) + ((e.get("location") or ""), (e.get("variety") or ""))
         if k not in latest or d >= latest[k][0]:
             latest[k] = (d, float(e.get("qty_kg") or 0))
-    return {k: (latest[k][1] if k in latest else None) for k in KINDS_OF_RICE}
+    out: dict[tuple[str, str], tuple[float, date]] = {}
+    for (rt, fm, _loc, _var), (d, qty) in latest.items():
+        tot, last = out.get((rt, fm), (0.0, d))
+        out[(rt, fm)] = (tot + qty, max(last, d))
+    return out
+
+
+def opening_stock(entries, start: date) -> dict[tuple[str, str], float | None]:
+    """期首在庫＝期間開始日より前の、直近の実地棚卸。無ければ None。"""
+    got = _latest_counts(entries, lambda d: d < start)
+    return {k: (got[k][0] if k in got else None) for k in KINDS_OF_RICE}
 
 
 def closing_stock_counted(entries, start: date, end: date):
     """期末在庫（実地）＝期間内の直近の実地棚卸。無ければ None。"""
-    latest: dict[tuple[str, str], tuple[date, float]] = {}
-    for e in entries:
-        if e.get("kind") != "stock":
-            continue
-        d = parse_date(e.get("entry_date"))
-        if d is None or not (start <= d <= end):
-            continue
-        k = _entry_key(e)
-        if k not in latest or d >= latest[k][0]:
-            latest[k] = (d, float(e.get("qty_kg") or 0))
-    return ({k: (latest[k][1] if k in latest else None) for k in KINDS_OF_RICE},
-            {k: (latest[k][0] if k in latest else None) for k in KINDS_OF_RICE})
+    got = _latest_counts(entries, lambda d: start <= d <= end)
+    return ({k: (got[k][0] if k in got else None) for k in KINDS_OF_RICE},
+            {k: (got[k][1] if k in got else None) for k in KINDS_OF_RICE})
 
 
 # ---------------------------------------------------------------------------

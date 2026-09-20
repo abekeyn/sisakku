@@ -29,8 +29,8 @@ def now_iso() -> str:
 
 from lib import (analytics, base_api, billing, bootstrap, costing, db,
                  exporter, komeful, ledger, logic, payslip, paysheet, postal,
-                 quote, receipt, seed, shipping, shopify_api, square_pay, ui,
-                 yamato)
+                 quote, receipt, seed, shipping, shopify_api, square_pay,
+                 stock_ui, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -3110,6 +3110,8 @@ elif view == "注文":
     view_orders()
 elif view == "顧客":
     view_customers()
+elif view == "在庫":
+    stock_ui.render()
 elif view == "分析":
     view_analytics()
 elif view == "見積":

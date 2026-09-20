@@ -100,6 +100,8 @@ ledger_entries = Table(
     Column("counterparty", String(255), default=""),
     Column("note", Text, default=""),
     Column("created_at", String(64)),
+    Column("location", String(64), default=""),   # 保管場所（在庫画面用。実地棚卸は場所・品種ごとの合計が帳簿の在庫になる）
+    Column("variety", String(64), default=""),    # 品種（同上）
 )
 
 export_jobs = Table(
@@ -164,6 +166,11 @@ def init_db() -> None:
     if "addr_updated_at" not in ccols:
         with engine.begin() as c:
             c.execute(text("ALTER TABLE customers ADD COLUMN addr_updated_at VARCHAR(64) DEFAULT ''"))
+    lcols = [c["name"] for c in _inspect(engine).get_columns("ledger_entries")]
+    for col in ("location", "variety"):
+        if col not in lcols:
+            with engine.begin() as c:
+                c.execute(text(f"ALTER TABLE ledger_entries ADD COLUMN {col} VARCHAR(64) DEFAULT ''"))
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +484,8 @@ def delete_order(order_id: int) -> None:
 # 帳簿の手入力 (ledger_entries)
 # ---------------------------------------------------------------------------
 _LEDGER_FIELDS = ("entry_date", "kind", "rice_type", "form",
-                  "qty_kg", "qty_out_kg", "counterparty", "note")
+                  "qty_kg", "qty_out_kg", "counterparty", "note",
+                  "location", "variety")
 
 
 @_cacheable(ttl=45)
@@ -492,6 +500,8 @@ def list_ledger_entries():
 
 def add_ledger_entry(data: dict) -> int:
     vals = {f: data.get(f) for f in _LEDGER_FIELDS}
+    for f in ("location", "variety"):
+        vals[f] = vals[f] or ""
     vals["created_at"] = datetime.now().isoformat()
     with get_engine().begin() as c:
         res = c.execute(insert(ledger_entries).values(**vals))
