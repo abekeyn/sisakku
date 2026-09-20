@@ -1390,16 +1390,56 @@ def view_analytics():
 _PAYMENT_OPTS = {"振込": "bank", "現金": "cash", "その他（自由記述）": "other"}
 
 
+def _flash(msg: str, level: str = "success") -> None:
+    """再描画（st.rerun）のあとにも残るメッセージを予約する。"""
+    st.session_state["bill_flash"] = (level, msg)
+
+
+def _show_flash() -> None:
+    item = st.session_state.pop("bill_flash", None)
+    if item:
+        getattr(st, item[0])(item[1])
+
+
+_PM_LABEL = {v: k for k, v in _PAYMENT_OPTS.items()}
+
+
+def _saved_note(client: dict, path: str) -> str:
+    if path:
+        return f"{path} に保存済みです。"
+    if billing.folder_configured(client):
+        return "次回PC起動時に「発行書類」フォルダへ保存されます。"
+    return "この請求先は保存先フォルダが未設定のため、PCには保存されません（システム上には残ります）。"
+
+
 def _receipt_button(key: str, p: dict) -> None:
-    """領収書を発行するボタン＋ダウンロードボタン（未送信・送信済み共通）。"""
+    """領収書の発行・再発行と、発行済みの領収書の呼び出し（ダウンロード・プレビュー）。"""
+    import base64
+
+    client = billing.get_client(p["client_id"]) or {}
+    issued = billing.receipts_for(key, p)
+    for rid, r in issued:
+        with st.container(border=True):
+            st.markdown(f"**発行済みの領収書**　番号 {r['doc_number']}　¥{int(r['amount']):,}　"
+                        f"{_PM_LABEL.get(r.get('payment_method'), '')}　（{r.get('created_at', '')[:10]} 発行）")
+            st.caption("PCへ保存済み：" + (r.get("synced_path") or "まだ保存されていません"))
+            st.download_button("↓ 領収書PDFをダウンロード / 印刷", base64.b64decode(r["pdf_b64"]),
+                               file_name=r.get("filename") or "receipt.pdf", mime="application/pdf",
+                               key=f"rdl_{key}_{rid}", use_container_width=True)
+            if st.toggle("プレビューを表示", key=f"rpv_{key}_{rid}"):
+                _pdf_preview(r["pdf_b64"])
+
+    st.markdown("**領収書を再発行**（金額・入金方法を直す）" if issued else "**領収書を発行**")
     r_amount = st.number_input(
         "領収書の金額（税込・端数調整したい場合はここで直接変更）", min_value=0,
-        value=int(p["amount"]), step=1, key=f"ramt_{key}",
+        value=int(issued[0][1]["amount"]) if issued else int(p["amount"]), step=1, key=f"ramt_{key}",
         help="請求書の金額と異なる金額（実際にご入金いただいた端数調整後の金額など）"
              "で領収書を発行したい場合に変更してください。")
     if r_amount != p["amount"]:
         st.caption(f"請求金額は ¥{p['amount']:,} ですが、¥{r_amount:,} で発行します。")
-    pm_label = st.selectbox("入金方法", list(_PAYMENT_OPTS), key=f"pm_{key}")
+    pm_label = st.selectbox("入金方法", list(_PAYMENT_OPTS), key=f"pm_{key}",
+                            index=list(_PAYMENT_OPTS.values()).index(issued[0][1].get("payment_method"))
+                            if issued and issued[0][1].get("payment_method") in _PAYMENT_OPTS.values() else 0)
     payment_method = _PAYMENT_OPTS[pm_label]
     payment_note = ""
     if payment_method == "other":
@@ -1411,47 +1451,78 @@ def _receipt_button(key: str, p: dict) -> None:
         if tax_excl >= receipt.STAMP_DUTY_THRESHOLD:
             st.caption("⚠ 税抜5万円以上の現金領収のため、印刷後に収入印紙の貼付が必要です"
                        "（領収書に貼付欄を印字します）。")
+    if issued:
+        st.caption("再発行すると、書類番号はそのまま・システム上の記録とPCのファイルも同じものを更新します"
+                   "（重複して増えません）。")
 
-    rk = f"receipt_pdf_{key}"
-    if st.button("📄 領収書を発行", key=f"recbtn_{key}", use_container_width=True):
-        client = billing.get_client(p["client_id"]) or {}
-        # 領収書の書類番号は請求書のdoc_numberとは別の専用の通し番号を払い出す
-        # （請求先ごとに独立した請求書番号をそのまま流用すると、領収書だけを
-        # 見たときに連番になっていなかったため）。
-        receipt_no = billing.next_receipt_no()
+    if st.button("📄 領収書を再発行" if issued else "📄 領収書を発行", key=f"recbtn_{key}",
+                 use_container_width=True):
+        issue_d = date.fromisoformat(p["issue_date"])
+        # 書類番号は請求書とは別の領収書専用の通し番号。同じ請求書の再発行なら前回と同じ番号。
+        receipt_no = billing.receipt_doc_no(p["client_id"], issue_d, key)
         pdf = receipt.build_receipt_pdf(
             invoice_to=client.get("invoice_to", p["client_name"]),
             amount=r_amount,
             item_desc=client.get("item_desc", ""),
-            issue_date=date.fromisoformat(p["issue_date"]),
+            issue_date=issue_d,
             doc_no=str(receipt_no),
             payment_method=payment_method, payment_note=payment_note,
             qty=p.get("qty", 1), total_kg=p.get("total_kg"),
         )
-        # 発行した時点で記録＋フォルダ保存まで済ませる。ダウンロードし忘れても
-        # 控えが残るようにするため（給与明細タブと同じ挙動）。
+        # 発行した時点で記録＋フォルダ保存まで済ませる（ダウンロードし忘れても控えが残る）。
         fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
-        rid = billing.save_receipt(
-            p["client_id"], date.fromisoformat(p["issue_date"]), receipt_no,
-            pdf, fname, payment_method, r_amount)
+        rid = billing.save_receipt(p["client_id"], issue_d, receipt_no, pdf, fname,
+                                   payment_method, r_amount, invoice_key=key)
         saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
-        st.session_state[rk] = {
-            "pdf": pdf, "filename": fname,
-            "path": next((s["path"] for s in saved if s.get("id") == rid), ""),
-        }
-    if st.session_state.get(rk):
-        rdata = st.session_state[rk]
-        if rdata["path"]:
-            st.success(f"発行しました。{rdata['path']} に保存済みです。")
-        elif billing.folder_configured(billing.get_client(p["client_id"]) or {}):
-            st.success("発行しました。次回PC起動時に「発行書類」フォルダへ保存されます。")
+        path = next((s["path"] for s in saved if s.get("id") == rid), "")
+        _flash(("再発行しました。" if issued else "発行しました。") + _saved_note(client, path))
+        st.rerun()
+
+
+def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
+    """発行日・数量・単価を直して作り直す（allow_sent=確定済みの再発行）。"""
+    edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]), key=f"edate_{key}")
+    e0, e1, e2 = st.columns(3)
+    e_unit_kg = e0.number_input("単位（kg）", min_value=0.1, step=1.0,
+                                value=float(p.get("unit_kg") or billing.UNIT_KG),
+                                key=f"eunitkg_{key}",
+                                help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
+    ekg = e1.number_input("数量（kg）", min_value=0.0, step=e_unit_kg,
+                          value=float(p["total_kg"]), key=f"ekg_{key}")
+    eprice = e2.number_input(f"単価（{e_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
+                             value=int(p.get("unit_price", 4000)),
+                             step=100, key=f"eprice_{key}")
+    ecalc = round(ekg / e_unit_kg * eprice) if ekg > 0 else 0
+    # 数量・単価をまだ変えていなければ、前回の請求額（端数調整済みならその金額）を初期値にする
+    same = ecalc == round(float(p["total_kg"]) / float(p.get("unit_kg") or billing.UNIT_KG)
+                          * int(p.get("unit_price", 4000)))
+    eamount = st.number_input(
+        "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
+        value=int(p["amount"]) if same else ecalc,
+        step=1, key=f"eamount_{key}",
+        help="通常は数量×単価の自動計算のままで構いません。")
+    if ekg > 0 and eamount != ecalc:
+        st.caption(f"自動計算では ¥{ecalc:,} ですが、¥{eamount:,} で作り直します。")
+    if allow_sent:
+        st.caption("書類番号はそのまま。システム上の記録もPCのファイルも同じものを更新します"
+                   "（発行日を変えて名前が変わるときは、旧ファイルを消します）。"
+                   "すでにお客様へお渡し・送付済みの場合は、直したものをお渡しし直してください。"
+                   "領収書も直すときは「領収書」から再発行します。")
+    if st.button("この内容で再発行する" if allow_sent else "この内容で作り直す", key=f"regen_{key}",
+                 use_container_width=True, disabled=ekg <= 0):
+        r = billing.regenerate_pending(key, ekg / e_unit_kg, eprice, issue_date=edate,
+                                       unit_kg=e_unit_kg, amount_override=eamount,
+                                       allow_sent=allow_sent)
+        if r.get("ok"):
+            client = billing.get_client(p["client_id"]) or {}
+            msg = f"{'再発行' if allow_sent else '作り直'}しました（¥{r['amount']:,}）。"
+            if allow_sent:
+                saved = billing.sync_invoices()
+                msg += _saved_note(client, next((x["path"] for x in saved if x.get("key") == key), ""))
+            _flash(msg)
+            st.rerun()
         else:
-            st.success("発行しました。")
-            st.warning("この請求先は保存先フォルダが未設定のため、PCには保存されません。"
-                       "下の「請求先マスタ」で保存先フォルダ名を設定してください。")
-        st.download_button(
-            "↓ 領収書PDFをダウンロード", rdata["pdf"], file_name=rdata["filename"],
-            mime="application/pdf", key=f"recdl_{key}", use_container_width=True)
+            st.error(r.get("msg", "作り直せませんでした。"))
 
 
 def _render_pending_card(key: str, p: dict) -> None:
@@ -1483,35 +1554,7 @@ def _render_pending_card(key: str, p: dict) -> None:
         _receipt_button(key, p)
 
         with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
-            edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]),
-                                  key=f"edate_{key}")
-            e0, e1, e2 = st.columns(3)
-            e_unit_kg = e0.number_input("単位（kg）", min_value=0.1, step=1.0,
-                                        value=float(p.get("unit_kg") or billing.UNIT_KG),
-                                        key=f"eunitkg_{key}",
-                                        help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
-            ekg = e1.number_input("数量（kg）", min_value=0.0, step=e_unit_kg,
-                                  value=float(p["total_kg"]), key=f"ekg_{key}")
-            eprice = e2.number_input(f"単価（{e_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
-                                     value=int(p.get("unit_price", 4000)),
-                                     step=100, key=f"eprice_{key}")
-            ecalc = round(ekg / e_unit_kg * eprice) if ekg > 0 else 0
-            eamount = st.number_input(
-                "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
-                value=ecalc, step=1, key=f"eamount_{key}",
-                help="通常は数量×単価の自動計算のままで構いません。")
-            if ekg > 0 and eamount != ecalc:
-                st.caption(f"自動計算では ¥{ecalc:,} ですが、¥{eamount:,} で作り直します。")
-            if st.button("この内容で作り直す", key=f"regen_{key}",
-                        use_container_width=True, disabled=ekg <= 0):
-                r = billing.regenerate_pending(key, ekg / e_unit_kg, eprice,
-                                               issue_date=edate, unit_kg=e_unit_kg,
-                                               amount_override=eamount)
-                if r.get("ok"):
-                    st.success(f"作り直しました（¥{r['amount']:,}）。")
-                    st.rerun()
-                else:
-                    st.error(r.get("msg", "作り直せませんでした。"))
+            _regen_form(key, p)
 
         has_email = "@" in (p.get("email") or "")
         ck = f"confirm_{key}"
@@ -1529,18 +1572,11 @@ def _render_pending_card(key: str, p: dict) -> None:
                 if r.get("ok"):
                     saved = billing.sync_invoices()  # PCならこの場で発行書類フォルダへ保存
                     st.session_state.pop(ck, None)
-                    path = next((s["path"] for s in saved if s.get("key") == key), "")
-                    msg = "送信しました。" if has_email else "確定しました。"
+                    path = next((x["path"] for x in saved if x.get("key") == key), "")
                     client = billing.get_client(p["client_id"]) or {}
-                    if path:
-                        msg += f" {path} に保存済みです。"
-                    elif billing.folder_configured(client):
-                        msg += " 次回PC起動時に「発行書類」フォルダへ保存されます。"
-                    st.success(msg + "スマホにも完了通知を送りました。")
-                    if not path and not billing.folder_configured(client):
-                        st.warning("この請求先は保存先フォルダが未設定のため、PCには保存されません。"
-                                   "下の「請求先マスタ」で保存先フォルダ名を設定してください。")
-                    st.balloons()
+                    _flash(("送信しました。" if has_email else "確定しました。")
+                           + "確定済みは「確定済み（履歴）」からいつでも開けます。"
+                           + _saved_note(client, path))
                     st.rerun()
                 else:
                     st.error(f"確定できませんでした：{r.get('msg')}")
@@ -1561,6 +1597,7 @@ def _render_pending_card(key: str, p: dict) -> None:
 
 
 def _billing_issue() -> None:
+    _show_flash()
     with st.expander("＋ 手入力で請求書を新規作成（自動集計を使わない）"):
         # 「有効（月末に自動作成する）」は自動集計フローだけの設定。手入力作成は
         # それとは独立の操作なので、無効な請求先も選べるようにする。
@@ -1596,54 +1633,115 @@ def _billing_issue() -> None:
                 r = billing.prepare_manual(mcid, mdate, mkg / man_unit_kg, mprice,
                                            unit_kg=man_unit_kg, amount_override=man_amount)
                 if r.get("ok"):
-                    st.success(f"作成しました（¥{r['amount']:,}）。下の一覧から内容を確認して送信してください。")
+                    _flash(f"作成しました（¥{r['amount']:,}）。下の一覧から内容を確認して確定してください。")
+                    st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
                     st.rerun()
                 else:
                     st.error(r.get("msg", "作成できませんでした。"))
 
+    _billing_browser()
+
+
+def _render_history_item(key: str, p: dict) -> None:
+    """確定済み請求書1件。請求書・領収書をいつでも開き直せる（PCへ保存済みでも）。"""
+    import base64
+
+    sd = date.fromisoformat(p["issue_date"])
+    n_rec = len(billing.receipts_for(key, p))
+    saved = "PC保存済み" if p.get("synced_path") else ("台帳連携" if p.get("synced_to_xlsx") else "システム保管")
+    title = (f"{sd.year}/{sd.month}/{sd.day}発行　¥{p['amount']:,}　書類番号 {p['doc_number']}"
+             f"　{'領収書あり' if n_rec else ''}")
+    with st.expander(title):
+        st.caption(f"確定 {p.get('sent_at', '')}　／　宛先 {p.get('email', '-')}　／　{saved}"
+                   + (f"　／　{p['synced_path']}" if p.get("synced_path") else ""))
+        modes = ["請求書", "領収書"] + (["修正して再発行"] if p.get("source") == "manual" else [])
+        mode = st.segmented_control("操作", modes, default="請求書", key=f"hv_{key}",
+                                    label_visibility="collapsed") or "請求書"
+        if mode == "請求書":
+            st.download_button("↓ 請求書PDFをダウンロード / 印刷", base64.b64decode(p["pdf_b64"]),
+                               file_name=p["pdf_name"], mime="application/pdf", key=f"hdl_{key}",
+                               use_container_width=True)
+            if st.toggle("プレビューを表示", key=f"hpv_{key}"):
+                _pdf_preview(p["pdf_b64"])
+        elif mode == "領収書":
+            _receipt_button(key, p)
+        else:
+            _regen_form(key, p, allow_sent=True)
+
+
+def _billing_browser() -> None:
+    """請求先ごとに、未確定の請求書と確定済みの履歴を見る。
+
+    請求先・表示・月はセッションに保持する（st.tabsだと、登録などの再描画のたびに
+    先頭の請求先へ戻ってしまっていた）。
+    """
     pendings = billing.get_pendings()
-    items = sorted(pendings.items())
-    open_items = [(k, p) for k, p in items if p.get("status") != "sent"]
-    sent_items = [(k, p) for k, p in items if p.get("status") == "sent"]
+    by_client: dict[str, dict] = {}
+    for k, p in pendings.items():
+        d = by_client.setdefault(p["client_id"], {"name": p["client_name"], "open": [], "sent": []})
+        d["sent" if p.get("status") == "sent" else "open"].append((k, p))
+    if not by_client:
+        st.info("請求書はまだありません。毎月末日にクラウドが自動作成するほか、"
+                "上の「手入力で請求書を新規作成」から作れます。")
+        return
+    for d in by_client.values():
+        d["open"].sort(key=lambda t: (t[1]["issue_date"], t[0]), reverse=True)
+        d["sent"].sort(key=lambda t: (t[1]["issue_date"], t[0]), reverse=True)
+    ids = sorted(by_client, key=lambda c: by_client[c]["name"])
 
-    if not open_items:
-        st.info("承認待ちの請求書はありません。毎月末日にクラウドが自動作成し、"
-                "ここに表示されます。（スマホ通知のリンクからも開けます）")
+    # 作成・確定の直後に、その請求先・表示・月へ移る（ウィジェット生成の前に値を入れる）
+    focus = st.session_state.pop("bill_focus", None)
+    if focus:
+        st.session_state["bill_client"] = focus[0]
+        st.session_state["bill_view"] = focus[1]
+        if focus[2]:
+            st.session_state[f"bill_ym_{focus[0]}"] = focus[2]
+    if st.session_state.get("bill_client") not in ids:
+        st.session_state["bill_client"] = ids[0]
+
+    def _cl_label(c: str) -> str:
+        n = len(by_client[c]["open"])
+        return by_client[c]["name"] + (f"（未確定{n}）" if n else "")
+
+    cid = st.segmented_control("請求先", ids, format_func=_cl_label, key="bill_client",
+                               selection_mode="single") or ids[0]
+    d = by_client[cid]
+    views = ["未確定", "確定済み（履歴）"]
+    if st.session_state.get("bill_view") not in views:
+        st.session_state["bill_view"] = "未確定" if d["open"] else "確定済み（履歴）"
+    view = st.segmented_control(
+        "表示", views, key="bill_view",
+        format_func=lambda v: f"{v}（{len(d['open'] if v == '未確定' else d['sent'])}）") or views[0]
+
+    def _month_filter(items, key, with_all=False):
+        if not items:
+            return items
+        yms = sorted({(p.get("target_ym") or p["issue_date"][:7]) for _, p in items}, reverse=True)
+        if len(yms) <= 1 and not with_all:
+            return items
+        opts = (["すべて"] if with_all else []) + yms
+        if st.session_state.get(key) not in opts:
+            st.session_state[key] = yms[0]
+        cnt = lambda ym: len([1 for _, p in items if (p.get("target_ym") or p["issue_date"][:7]) == ym])
+        sel = st.segmented_control(
+            "月", opts, key=key,
+            format_func=lambda ym: "すべて" if ym == "すべて" else f"{int(ym[5:7])}月分（{cnt(ym)}）") or opts[0]
+        return items if sel == "すべて" else [(k, p) for k, p in items
+                                             if (p.get("target_ym") or p["issue_date"][:7]) == sel]
+
+    if view == "未確定":
+        if not d["open"]:
+            st.info("この請求先の未確定の請求書はありません。")
+        for k, p in _month_filter(d["open"], f"bill_ym_{cid}"):
+            _render_pending_card(k, p)
     else:
-        # 請求先ごとにタブを分ける（複数の請求先の分がまとめて縦に並ぶと見づらいため）
-        by_client: dict[str, list] = {}
-        for key, p in open_items:
-            by_client.setdefault(p["client_name"], []).append((key, p))
-        names = list(by_client)
-        tabs = st.tabs([f"{name}（{len(by_client[name])}）" for name in names])
-        for tab, name in zip(tabs, names):
-            with tab:
-                items = by_client[name]
-                # 同じ請求先に複数月分たまっているときは、月ごとにもタブを分ける
-                # （どちらも「9月分」のように見えて実は発行日が違う下書きが混在する
-                # ことがあり、月だけでは区別しづらいため）。
-                by_month: dict[str, list] = {}
-                for key, p in items:
-                    by_month.setdefault(p.get("target_ym") or p["issue_date"][:7], []).append((key, p))
-                ym_keys = sorted(by_month, reverse=True)
-                if len(ym_keys) > 1:
-                    mtabs = st.tabs([f"{int(ym[5:7])}月分（{len(by_month[ym])}）" for ym in ym_keys])
-                    for mtab, ym in zip(mtabs, ym_keys):
-                        with mtab:
-                            for key, p in by_month[ym]:
-                                _render_pending_card(key, p)
-                else:
-                    for key, p in items:
-                        _render_pending_card(key, p)
-
-    if sent_items:
-        with st.expander(f"送信済み（{len(sent_items)}件）"):
-            for key, p in sent_items:
-                sd = date.fromisoformat(p["issue_date"])
-                st.write(f"✅ {p['client_name']} {sd.month}月{sd.day}日発行分 ¥{p['amount']:,} "
-                         f"／ 書類番号 {p['doc_number']} ／ {p.get('sent_at', '')}")
-                _receipt_button(key, p)
-                st.divider()
+        if not d["sent"]:
+            st.info("この請求先の確定済みの請求書はまだありません。")
+        shown = _month_filter(d["sent"], f"bill_hym_{cid}", with_all=True)
+        st.caption(f"{len(shown)}件。開くと請求書・領収書のダウンロード／印刷、プレビュー、"
+                   "修正しての再発行ができます。")
+        for k, p in shown:
+            _render_history_item(k, p)
 
 
 def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:

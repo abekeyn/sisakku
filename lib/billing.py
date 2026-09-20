@@ -222,7 +222,7 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
 
 def regenerate_pending(pending_key: str, qty: float, unit_price: float,
                        issue_date: date | None = None, unit_kg: float | None = None,
-                       amount_override: int | None = None) -> dict:
+                       amount_override: int | None = None, allow_sent: bool = False) -> dict:
     """承認待ちの数量・単価（・発行日）を修正し、PDFをその場で作り直す（書類番号は変えない）。
 
     LibreOffice/GitHub Actionsを使わず、アプリ内でreportlabにより即時生成する
@@ -232,6 +232,8 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
     unit_kg: 1個あたりの重量（kg）。5kg単位以外（大口の30kg・60kgなど）にも
     対応するため、省略時は元のpendingの単位、それも無ければUNIT_KG(5kg)を使う。
     amount_override: 端数調整のため計算結果と異なる金額で確定したい場合に指定する。
+    allow_sent: 確定済みの手入力請求書を直して再発行する（書類番号は変えず、システム上の
+    記録もPCのファイルも同じものを上書きする。日付が変わって別名になるときは旧ファイルを消す）。
     """
     from . import invoice_pdf
 
@@ -239,8 +241,9 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
     p = allp.get(pending_key)
     if not p:
         return {"ok": False, "msg": "対象の請求書が見つかりません"}
-    if p.get("status") == "sent":
-        return {"ok": False, "msg": "既に送信済みです"}
+    if p.get("status") == "sent" and not (allow_sent and p.get("source") == "manual"):
+        return {"ok": False, "msg": "既に確定済みです"}
+    old_path = _rec_path(p, "請求書") if p.get("status") == "sent" else ""
     client = get_client(p["client_id"])
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
@@ -259,6 +262,9 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
         "pdf_name": invoice_pdf.invoice_filename(issue_date, p["client_name"]),
         "edited": True, "edited_at": datetime.now().isoformat(timespec="seconds"),
     })
+    if p.get("status") == "sent":
+        p["synced_to_folder"] = False
+        p["prev_path"] = old_path or p.get("prev_path", "")
     allp[pending_key] = p
     _save_pendings(allp)
     return {"ok": True, "amount": amount, "qty": qty}
@@ -303,7 +309,12 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
         "status": "pending", "prepared_at": datetime.now().isoformat(timespec="seconds"),
     }
     allp = get_pendings()
-    key = f"{client['id']}:{target_ym}:manual{int(datetime.now().timestamp())}"
+    # 同時に2件作っても別のキーになるよう、ミリ秒まで使い、既にあれば加算して避ける
+    # （秒単位だと、同じ秒に作った2件目が1件目を上書きして消してしまう）
+    stamp = int(datetime.now().timestamp() * 1000)
+    while f"{client['id']}:{target_ym}:manual{stamp}" in allp:
+        stamp += 1
+    key = f"{client['id']}:{target_ym}:manual{stamp}"
     allp[key] = pending
     _save_pendings(allp)
     return {"ok": True, "key": key, "amount": amount, "qty": qty}
@@ -435,29 +446,61 @@ def next_receipt_no() -> int:
     return n
 
 
+def _receipt_matches(v: dict, client_id: str, issue_date: date, invoice_key: str) -> bool:
+    """再発行として置き換える対象か。請求書に紐づく領収書は、その請求書のものだけ。
+    紐づけ前に作った古い記録（invoice_key無し）は、同じ請求先・同じ発行日なら同じものとみなす。"""
+    if invoice_key and v.get("invoice_key") == invoice_key:
+        return True
+    if v.get("invoice_key"):
+        return False
+    return v.get("client_id") == client_id and v.get("issue_date") == issue_date.isoformat()
+
+
+def receipt_doc_no(client_id: str, issue_date: date, invoice_key: str = "") -> int:
+    """領収書の書類番号。同じ請求書の再発行なら前回と同じ番号、初めてなら新しく払い出す。"""
+    for v in (db.get_setting(RECEIPTS_KEY) or {}).values():
+        if _receipt_matches(v, client_id, issue_date, invoice_key) and v.get("doc_number"):
+            return int(v["doc_number"])
+    return next_receipt_no()
+
+
+def receipts_for(pending_key: str, p: dict) -> list[tuple[str, dict]]:
+    """この請求書に紐づく発行済みの領収書（新しい順）。"""
+    out = []
+    for rid, v in (db.get_setting(RECEIPTS_KEY) or {}).items():
+        if v.get("invoice_key") == pending_key or (
+                not v.get("invoice_key") and v.get("client_id") == p["client_id"]
+                and v.get("issue_date") == p["issue_date"]):
+            out.append((rid, v))
+    return sorted(out, key=lambda t: t[1].get("created_at", ""), reverse=True)
+
+
 def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
-                 filename: str, payment_method: str, amount: int) -> str:
+                 filename: str, payment_method: str, amount: int,
+                 invoice_key: str = "") -> str:
     """発行した領収書をDBに記録する（発行ボタンを押した時点で呼ぶ）。
 
     アプリ本体はクラウドでも動くためPCのフォルダへ直接は保存できない。
     ここでは記録を残し、実際のファイル書き出しは sync_receipts() が行う
     （PC上で使っているときは発行直後に、クラウド経由なら常駐エージェントが）。
 
-    同じ請求先・同じ発行日のものは「作り直し（再発行）」とみなして置き換える。
-    入金方法を選び直して発行し直すたびに記録が増えると、同じ領収書が何度も
-    フォルダへ書き出されてしまうため。
+    同じ請求書の領収書は「再発行」とみなして置き換える（記録もPCのファイルも
+    増やさない）。前回書き出したファイルと名前が変わる場合（発行日が変わった等）は、
+    sync_receipts() が旧ファイルを消す。
     """
     receipts = db.get_setting(RECEIPTS_KEY) or {}
+    prev = ""
     for old in [k for k, v in receipts.items()
-                if v.get("client_id") == client_id
-                and v.get("issue_date") == issue_date.isoformat()]:
-        receipts.pop(old)
+                if _receipt_matches(v, client_id, issue_date, invoice_key)]:
+        v = receipts.pop(old)
+        prev = prev or _rec_path(v, "領収書") or v.get("prev_path", "")
     rid = f"{client_id}:{issue_date.isoformat()}:{int(datetime.now().timestamp())}"
     receipts[rid] = {
         "client_id": client_id, "issue_date": issue_date.isoformat(), "doc_number": doc_no,
-        "amount": amount, "payment_method": payment_method,
+        "amount": amount, "payment_method": payment_method, "invoice_key": invoice_key,
         "pdf_b64": base64.b64encode(pdf_bytes).decode("ascii"), "filename": filename,
         "created_at": datetime.now().isoformat(timespec="seconds"), "synced_to_folder": False,
+        "prev_path": prev,
     }
     db.set_setting(RECEIPTS_KEY, receipts)
     return rid
@@ -507,6 +550,52 @@ def receipts_folder(client: dict) -> Path | None:
     return p if p.is_dir() else p.parent
 
 
+def _rec_path(rec: dict, suffix: str) -> str:
+    """その記録を最後に書き出したファイルのパス。書き出し済みだが記録が無い古いものは、
+    当時の命名規則（日付_フォルダ名_種別.pdf）から復元する。"""
+    if rec.get("synced_path"):
+        return rec["synced_path"]
+    if not rec.get("synced_to_folder"):
+        return ""
+    folder = receipts_folder(get_client(rec["client_id"]) or {})
+    if not folder:
+        return ""
+    return str(folder / f"{rec['issue_date'].replace('-', '')}_{_folder_label(folder)}_{suffix}.pdf")
+
+
+def _write_synced(key: str, rec: dict, records: dict, suffix: str, folder: Path) -> Path:
+    """PDFを発行書類フォルダへ書き出す。
+
+    ・同じ日・同じ種別の別の書類（例：同じ日に2通の請求書）と名前がぶつかるときは、
+      書類番号を付けて別名にする（上書きで片方が消えないように）
+    ・同じ書類の再発行は同じ名前で上書きする。日付が変わって名前が変わるときは
+      旧ファイルを消す（PCに重複して残さない）
+    """
+    owners = {}
+    for k, r in records.items():
+        if k != key and r.get("synced_to_folder"):
+            pth = _rec_path(r, suffix)
+            if pth:
+                owners[pth] = k
+    d = rec["issue_date"].replace("-", "")
+    path = folder / f"{d}_{_folder_label(folder)}_{suffix}.pdf"
+    if str(path) in owners:
+        path = folder / f"{d}_{_folder_label(folder)}_{suffix}_{rec['doc_number']}.pdf"
+    path.write_bytes(base64.b64decode(rec["pdf_b64"]))
+    prev = rec.pop("prev_path", "") or ""
+    if prev and prev != str(path) and prev not in owners:
+        try:
+            pp = Path(prev)
+            if pp.exists() and pp.resolve().parent == folder.resolve():
+                pp.unlink()
+        except OSError:
+            pass
+    rec["synced_path"] = str(path)
+    rec["synced_to_folder"] = True
+    rec["synced_at"] = datetime.now().isoformat(timespec="seconds")
+    return path
+
+
 def sync_receipts() -> list[dict]:
     """【PC側】未保存の領収書をクライアントのローカルフォルダ（発行書類/○○様/）へ書き出す。
 
@@ -525,12 +614,7 @@ def sync_receipts() -> list[dict]:
         folder = receipts_folder(client)
         if not folder:
             continue  # ローカルフォルダ未設定の請求先はPDFダウンロードのみ（クラウド保管）
-        d = r["issue_date"].replace("-", "")
-        fname = f"{d}_{_folder_label(folder)}_領収書.pdf"
-        path = folder / fname
-        path.write_bytes(base64.b64decode(r["pdf_b64"]))
-        r["synced_to_folder"] = True
-        r["synced_at"] = datetime.now().isoformat(timespec="seconds")
+        path = _write_synced(rid, r, receipts, "領収書", folder)
         changed = True
         out.append({"id": rid, "client": client.get("name", r["client_id"]),
                     "path": str(path)})
@@ -560,12 +644,7 @@ def sync_invoices() -> list[dict]:
         folder = receipts_folder(client)
         if not folder:
             continue  # ローカルフォルダ未設定の請求先はPDFダウンロードのみ（クラウド保管）
-        d = p["issue_date"].replace("-", "")
-        fname = f"{d}_{_folder_label(folder)}_請求書.pdf"
-        path = folder / fname
-        path.write_bytes(base64.b64decode(p["pdf_b64"]))
-        p["synced_to_folder"] = True
-        p["synced_at"] = datetime.now().isoformat(timespec="seconds")
+        path = _write_synced(key, p, allp, "請求書", folder)
         changed = True
         out.append({"key": key, "client": client.get("name", p["client_id"]),
                     "path": str(path)})
