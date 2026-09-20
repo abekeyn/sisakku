@@ -93,9 +93,25 @@ def render() -> None:
     cfg = stock.load_config()
     fy_now = ledger.fy_of(stock.today())
     fys = [fy_now - i for i in range(4)]
+    CUSTOM = "自由に指定"
 
     c_fy, c_flt = st.columns([1, 2])
-    fy = c_fy.selectbox("対象年度", fys, format_func=lambda y: f"{y}年度（{y}/4〜{y + 1}/3）", key="stk_fy")
+    period = c_fy.selectbox("対象期間", fys + [CUSTOM], key="stk_fy",
+                            format_func=lambda y: y if y == CUSTOM else f"{y}年度（{y}/4〜{y + 1}/3）")
+    period_kw: dict = {}
+    if period == CUSTOM:
+        d0, d1 = ledger.fy_range(fy_now)
+        rng = c_fy.date_input("期間（開始日〜終了日）", value=(d0, d1), key="stk_range",
+                              help="月単位で集計します（開始日・終了日を含む月）。最大36か月。")
+        if isinstance(rng, (list, tuple)) and len(rng) == 2 and rng[0] <= rng[1]:
+            period_kw = {"start": rng[0], "end": rng[1]}
+        else:
+            c_fy.caption("開始日と終了日の両方を選んでください。")
+            period_kw = {"start": d0, "end": d1}
+        if len(stock.range_months(period_kw["start"], period_kw["end"], 999)) > 36:
+            c_fy.caption("36か月を超える分は表示しません。")
+    else:
+        period_kw = {"fy": period}
     with c_flt.expander("絞り込み（品種・保管場所・形態）"):
         f2, f3, f4 = st.columns(3)
         varieties = ["すべて"] + sorted({*cfg["varieties"], cfg["default_variety"]})
@@ -104,9 +120,9 @@ def render() -> None:
         location = f3.selectbox("保管場所", locs, key="stk_loc")
         form = f4.selectbox("形態", ["すべて", "玄米", "精米"], key="stk_form")
 
-    m = stock.build(fy, variety=variety, location=location, form=form)
+    m = stock.build(**period_kw, variety=variety, location=location, form=form)
     unfiltered = (variety, location, form) == ("すべて", "すべて", "すべて")
-    base = m if unfiltered else stock.build(fy)
+    base = m if unfiltered else stock.build(**period_kw)
 
     t_dash, t_edit, t_out, t_set = st.tabs(
         ["ダッシュボード", "在庫の登録・修正", "出庫の明細", "設定"])
@@ -175,12 +191,12 @@ def _dashboard(m: dict) -> None:
         ui.section("保管場所別の在庫")
         _locations(m)
     with c2:
-        ui.section("在庫の流れ（保管場所 → 出庫先）", f'{m["fy"]}年度の出庫量')
+        ui.section("在庫の流れ（保管場所 → 出庫先）", f'{m["label"]}の出庫量')
         svg = _sankey_svg(m)
         if svg:
             st.markdown(svg, unsafe_allow_html=True)
         else:
-            st.caption("この年度の出庫がまだありません。")
+            st.caption("この期間の出庫がまだありません。")
 
     # ---- 推移と予測 ----
     ui.section("出庫量の推移と予測", "棒＝月ごとの出庫量（薄い棒は予測）／線＝在庫残量")
@@ -355,7 +371,7 @@ def _customer_table(m: dict) -> None:
             st.dataframe(pd.DataFrame(m["others"]), use_container_width=True, hide_index=True,
                          column_config={"合計(kg)": st.column_config.NumberColumn(format="%.1f")})
     st.download_button("↓ CSVで保存", df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f'取引先別月次出庫_{m["fy"]}年度.csv', mime="text/csv", key="stk_csv")
+                       file_name=f'取引先別月次出庫_{m["label"].replace("/", "").replace("〜", "-")}.csv', mime="text/csv", key="stk_csv")
 
 
 def _sankey_svg(m: dict) -> str:
@@ -606,7 +622,7 @@ def _out_detail(m: dict, cfg: dict) -> None:
     months = set(m["months"])
     rows = [r for r in m["all_out"] if f'{r["date"].year}-{r["date"].month:02d}' in months]
     if not rows:
-        st.info("この年度の出庫はまだありません。")
+        st.info("この期間の出庫はまだありません。")
         return
     rows = sorted(rows, key=lambda r: (r["date"], r["id"]), reverse=True)
     df = pd.DataFrame([{

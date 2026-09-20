@@ -272,6 +272,15 @@ def _month_key(d: date) -> str:
     return f"{d.year}-{d.month:02d}"
 
 
+def range_months(start: date, end: date, limit: int = 36) -> list[str]:
+    """start〜end にかかる月（'YYYY-MM'）を古い順に。最大 limit か月。"""
+    out, y, m = [], start.year, start.month
+    while (y, m) <= (end.year, end.month) and len(out) < limit:
+        out.append(f"{y}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
 def fy_months(fy: int) -> list[str]:
     return [f"{fy}-{m:02d}" if m >= 4 else f"{fy + 1}-{m:02d}" for m in (4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3)]
 
@@ -307,7 +316,8 @@ def _period_text(d: date) -> str:
 # ---------------------------------------------------------------------------
 # ダッシュボード本体
 # ---------------------------------------------------------------------------
-def build(fy: int, *, variety: str | None = None, location: str | None = None,
+def build(fy: int | None = None, *, start: date | None = None, end: date | None = None,
+          variety: str | None = None, location: str | None = None,
           form: str | None = None, now: date | None = None,
           orders=None, entries=None, pendings=None, clients=None) -> dict:
     now = now or today()
@@ -359,7 +369,14 @@ def build(fy: int, *, variety: str | None = None, location: str | None = None,
     available = total - reserved_kg
 
     # --- 出庫の月次 ---
-    months = fy_months(fy)
+    # 対象期間：年度（4月〜翌3月）または、開始日・終了日の自由な期間（月単位で表示）
+    if start and end:
+        months = range_months(start, end)
+        label = f"{start:%Y/%m/%d}〜{end:%Y/%m/%d}"
+    else:
+        fy = fy if fy is not None else ledger.fy_of(now)
+        months = fy_months(fy)
+        label = f"{fy}年度"
     cur_ym = _month_key(now)
     out_month: dict[str, float] = defaultdict(float)
     out_month_form: dict[str, dict] = defaultdict(lambda: {"玄米": 0.0, "精米": 0.0})
@@ -492,7 +509,7 @@ def build(fy: int, *, variety: str | None = None, location: str | None = None,
                      monthly_avg=monthly_avg)
 
     return {
-        "fy": fy, "now": now, "cfg": cfg, "months": months, "cur_ym": cur_ym,
+        "fy": fy, "label": label, "now": now, "cfg": cfg, "months": months, "cur_ym": cur_ym,
         "stock_rows": stock_rows, "total": total, "by_form": by_form, "by_loc": by_loc,
         "by_var": dict(by_var), "has_counts": has_counts, "has_base": has_base,
         "last_count": last_count, "reserved_kg": reserved_kg,
