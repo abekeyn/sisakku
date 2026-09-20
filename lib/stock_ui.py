@@ -654,6 +654,20 @@ def _settings(cfg: dict) -> None:
         cur = cfg["default_location"].get(f)
         dloc[f] = col.selectbox(f"{f}の出庫元", opts, index=opts.index(cur) if cur in opts else 0, key=f"stk_dloc_{f}")
 
+    ui.section("品種ごとの出庫元（任意）",
+               "品種によって保管場所が違うときに指定します（例：コシヒカリは飯島、天のつぶは肥料組合）。"
+               "「（既定）」のままなら上の設定を使います。")
+    vl = cfg.get("variety_location") or {}
+    vopts = ["（既定）"] + names
+    vloc_df = pd.DataFrame([{"品種": v, "玄米の出庫元": vl.get(v, {}).get("玄米") or "（既定）",
+                             "精米の出庫元": vl.get(v, {}).get("精米") or "（既定）"}
+                            for v in (cfg["varieties"] or [cfg["default_variety"]])])
+    vloc_ed = st.data_editor(
+        vloc_df, hide_index=True, use_container_width=True, key="stk_set_vloc",
+        disabled=["品種"],
+        column_config={"玄米の出庫元": st.column_config.SelectboxColumn("玄米の出庫元", options=vopts),
+                       "精米の出庫元": st.column_config.SelectboxColumn("精米の出庫元", options=vopts)})
+
     ui.section("品種")
     vtxt = st.text_area("品種の一覧（1行に1つ）", "\n".join(cfg["varieties"]), height=110, key="stk_set_vars",
                         help="商品名・請求書の品目名にこの名前が含まれていれば、その品種として数えます。")
@@ -679,6 +693,12 @@ def _settings(cfg: dict) -> None:
                 "default_location": dloc, "varieties": vlist, "default_variety": dvar,
                 "risk_high_months": hi, "risk_mid_months": max(mid, hi), "stale_count_days": int(stale),
                 "include_pending_invoices": inc})
+            new_vl = {}
+            for _, r in vloc_ed.iterrows():
+                d = {f: r[f + "の出庫元"] for f in ("玄米", "精米") if r[f + "の出庫元"] in names}
+                if d:
+                    new_vl[r["品種"]] = d
+            cfg["variety_location"] = {v: d for v, d in new_vl.items() if v in vlist}
             stock.save_config(cfg)
             st.success("設定を保存しました。")
             st.rerun()

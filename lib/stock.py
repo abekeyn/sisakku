@@ -30,6 +30,7 @@ _DEFAULT_CFG = {
     "locations": [{"name": "冷蔵庫", "capacity_kg": 0.0},
                   {"name": "倉庫", "capacity_kg": 0.0}],
     "default_location": {"精米": "冷蔵庫", "玄米": "倉庫"},   # 出庫（注文・請求書）を引く保管場所
+    "variety_location": {},               # 品種ごとの上書き {品種: {"玄米": 場所, "精米": 場所}}
     "default_variety": "コシヒカリ",
     "varieties": ["コシヒカリ", "ひとめぼれ", "天のつぶ", "ミルキークイーン", "あきたこまち"],
     "include_pending_invoices": True,     # 未確定（下書き）の手入力請求書も出庫に含める
@@ -90,7 +91,12 @@ def _order_date(o: dict) -> date | None:
         or ledger.parse_date(o.get("created_at"))
 
 
-def _default_loc(form: str, cfg: dict) -> str:
+def _default_loc(form: str, cfg: dict, variety: str | None = None) -> str:
+    """出庫を引く保管場所。品種ごとの指定があればそれ、無ければ形態ごとの既定。"""
+    if variety:
+        v = ((cfg.get("variety_location") or {}).get(variety) or {}).get(form)
+        if v:
+            return v
     return (cfg.get("default_location") or {}).get(form) or UNSET_LOC
 
 
@@ -130,7 +136,7 @@ def build_movements(orders, pendings, clients, cfg, flags):
                 "id": f'o{int(o["id"])}:{fm}', "date": d, "customer_key": ckey,
                 "customer": cname, "customer_id": int(o.get("customer_id") or 0),
                 "source": "注文", "variety": variety, "form": fm, "kg": float(kg),
-                "location": _default_loc(fm, cfg), "dup": dup,
+                "location": _default_loc(fm, cfg, variety), "dup": dup,
                 "excluded": f'o{int(o["id"])}:{fm}' in excluded,
                 "note": "同じ伝票番号の注文と重複" if dup else "",
                 "product": o.get("product_name") or "",
@@ -145,7 +151,7 @@ def build_movements(orders, pendings, clients, cfg, flags):
         variety = detect_variety(o.get("product_name") or "", cfg)
         for (rt, fm), kg in parts.items():
             reserved.append({"id": f'o{int(o["id"])}:{fm}', "form": fm, "kg": float(kg),
-                             "variety": variety, "location": _default_loc(fm, cfg),
+                             "variety": variety, "location": _default_loc(fm, cfg, variety),
                              "customer": _clean_name(o.get("customer_name") or "")})
 
     # 手入力の請求書（注文に無い出庫）
@@ -191,7 +197,7 @@ def build_movements(orders, pendings, clients, cfg, flags):
             "id": f"i{k}", "date": d, "customer_key": f"c{cid}" if cid else f"n{cname}",
             "customer": cname, "customer_id": cid, "source": "請求書",
             "variety": detect_variety(item, cfg), "form": form, "kg": rem,
-            "location": _default_loc(form, cfg), "dup": False,
+            "location": _default_loc(form, cfg, detect_variety(item, cfg)), "dup": False,
             "excluded": f"i{k}" in excluded, "note": note, "product": item,
             "invoice_kg": kg,
         })
@@ -246,7 +252,7 @@ def compute_stock(entries, out_rows, cfg, as_of: date) -> dict[tuple, float]:
             events.append((d, (k[0], k[1], to), _f(e.get("qty_kg"))))
         elif kind == "mill":
             events.append((d, ("玄米", k[1], k[2]), -_f(e.get("qty_kg"))))
-            events.append((d, ("精米", k[1], _default_loc("精米", cfg)), _f(e.get("qty_out_kg"))))
+            events.append((d, ("精米", k[1], _default_loc("精米", cfg, k[1])), _f(e.get("qty_out_kg"))))
     for r in counted(out_rows):
         if r["date"] <= as_of:
             events.append((r["date"], (r["form"], r["variety"], r["location"]), -r["kg"]))
