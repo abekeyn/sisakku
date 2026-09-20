@@ -443,7 +443,7 @@ def build(fy: int, *, variety: str | None = None, location: str | None = None,
         table.append(row)
     rest = [ck for ck in ranked[8:]]
     if rest:
-        row = {"取引先": f"その他（{len(rest)}件）"}
+        row = {"取引先": f"その他（{len(rest)}名）"}
         for m in months:
             if m <= cur_ym:
                 row[m] = round(sum(cust_month[ck].get(m, 0.0) for ck in rest), 1)
@@ -493,6 +493,7 @@ def build(fy: int, *, variety: str | None = None, location: str | None = None,
         "risk": risk, "mtd": mtd, "prev_same": prev_same, "mom_pct": mom_pct,
         "total_pct": total_pct, "stock_line": stock_line, "table": table,
         "future_months": future_months, "flow": dict(flow), "cust_name": cust_name,
+        "others": [{"取引先": cust_name[ck], "合計(kg)": round(fy_tot[ck], 1)} for ck in rest],
         "alerts": alerts, "out_rows": out_rows, "all_out": all_out,
         "forecast_text": _forecast_text(risk, run_out, months_left, cfg, now),
     }

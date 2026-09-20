@@ -349,6 +349,11 @@ def _customer_table(m: dict) -> None:
     st.dataframe(df, use_container_width=True, hide_index=True,
                  column_config={c: st.column_config.NumberColumn(c, format="%.1f")
                                 for c in df.columns if c != "取引先"})
+    if m.get("others"):
+        with st.expander(f"「その他（{len(m['others'])}名）」の内訳を見る"):
+            st.caption("上位8名以外のお客様です。1人あたりの出庫量が少ないため、表では1行にまとめています。")
+            st.dataframe(pd.DataFrame(m["others"]), use_container_width=True, hide_index=True,
+                         column_config={"合計(kg)": st.column_config.NumberColumn(format="%.1f")})
     st.download_button("↓ CSVで保存", df.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f'取引先別月次出庫_{m["fy"]}年度.csv', mime="text/csv", key="stk_csv")
 
@@ -365,26 +370,27 @@ def _sankey_svg(m: dict) -> str:
     top = [ck for ck, _ in sorted(by_c.items(), key=lambda kv: -kv[1])[:5]]
     right = top + (["__other__"] if len(by_c) > len(top) else [])
     rname = {ck: m["cust_name"].get(ck, "") for ck in top}
-    rname["__other__"] = f"その他（{len(by_c) - len(top)}件）"
+    rname["__other__"] = f"その他（{len(by_c) - len(top)}名）"
     rval = {ck: by_c[ck] for ck in top}
     if "__other__" in right:
         rval["__other__"] = sum(v for ck, v in by_c.items() if ck not in top)
     lefts = [l for l, _ in sorted(by_l.items(), key=lambda kv: -kv[1])]
     total = sum(by_l.values())
 
-    W, NW, GAP, MIN_H = 700, 14, 8, 30
-    lx, rx = 130, W - 200
+    W, NW, GAP, MIN_H = 780, 14, 8, 30
+    lx, rx = 130, W - 240
     n_max = max(len(lefts), len(right))
-    H = max(300, MIN_H * len(right) + GAP * (len(right) - 1) + 10)
-    avail = H - GAP * (n_max - 1) - 10
-    sc = avail / total
-    lcol = {l: PALETTE[i % len(PALETTE)] for i, l in enumerate(lefts)}
-    parts = [f'<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">']
+    sc = (300 - GAP * (n_max - 1) - 10) / total
     # ノードの高さ＝出庫量に比例（ただし右は文字が重ならない最小の高さを確保）
     lh = {l: by_l[l] * sc for l in lefts}
     rh = {r: max(rval[r] * sc, MIN_H) for r in right}
+    l_total = sum(lh.values()) + GAP * (len(lefts) - 1)
+    r_total = sum(rh.values()) + GAP * (len(right) - 1)
+    H = max(l_total, r_total) + 10          # 実際に積んだ高さに合わせる（下が見切れないように）
+    lcol = {l: PALETTE[i % len(PALETTE)] for i, l in enumerate(lefts)}
+    parts = [f'<svg viewBox="0 0 {W} {H:.0f}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">']
     ly, ry = {}, {}
-    y = 5.0
+    y = 5.0 + (H - 10 - l_total) / 2        # 左は縦中央に寄せる
     for l in lefts:
         ly[l] = y
         y += lh[l] + GAP
@@ -419,7 +425,7 @@ def _sankey_svg(m: dict) -> str:
     for r in right:
         h = rh[r]
         parts.append(f'<rect x="{rx}" y="{ry[r]:.1f}" width="{NW}" height="{h:.1f}" rx="3" fill="{GOLD}"/>')
-        nm = rname[r][:12]
+        nm = rname[r][:16]
         parts.append(f'<text x="{rx + NW + 8}" y="{ry[r] + h / 2 - 7:.1f}" fill="#F2EDE0" font-size="13" '
                      f'dominant-baseline="middle">{nm}</text>')
         parts.append(f'<text x="{rx + NW + 8}" y="{ry[r] + h / 2 + 8:.1f}" fill="#B9B5C8" font-size="11" '
