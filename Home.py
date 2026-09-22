@@ -1437,10 +1437,17 @@ def _receipt_button(key: str, p: dict) -> None:
              "で領収書を発行したい場合に変更してください。")
     if r_amount != p["amount"]:
         st.caption(f"請求金額は ¥{p['amount']:,} ですが、¥{r_amount:,} で発行します。")
-    pm_label = st.selectbox("入金方法", list(_PAYMENT_OPTS), key=f"pm_{key}",
-                            index=list(_PAYMENT_OPTS.values()).index(issued[0][1].get("payment_method"))
-                            if issued and issued[0][1].get("payment_method") in _PAYMENT_OPTS.values() else 0)
+    hc1, hc2 = st.columns([3, 1])
+    pm_label = hc1.selectbox("入金方法", list(_PAYMENT_OPTS), key=f"pm_{key}",
+                             index=list(_PAYMENT_OPTS.values()).index(issued[0][1].get("payment_method"))
+                             if issued and issued[0][1].get("payment_method") in _PAYMENT_OPTS.values() else 0)
     payment_method = _PAYMENT_OPTS[pm_label]
+    honorifics = ["御中", "様"]
+    honorific = hc2.selectbox(
+        "敬称", honorifics, key=f"hon_{key}",
+        index=honorifics.index(issued[0][1]["honorific"])
+        if issued and issued[0][1].get("honorific") in honorifics else 0,
+        help="会社・屋号宛は「御中」、個人宛は「様」。")
     payment_note = ""
     if payment_method == "other":
         payment_note = st.text_input(
@@ -1467,12 +1474,12 @@ def _receipt_button(key: str, p: dict) -> None:
             issue_date=issue_d,
             doc_no=str(receipt_no),
             payment_method=payment_method, payment_note=payment_note,
-            qty=p.get("qty", 1), total_kg=p.get("total_kg"),
+            qty=p.get("qty", 1), total_kg=p.get("total_kg"), honorific=honorific,
         )
         # 発行した時点で記録＋フォルダ保存まで済ませる（ダウンロードし忘れても控えが残る）。
         fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
         rid = billing.save_receipt(p["client_id"], issue_d, receipt_no, pdf, fname,
-                                   payment_method, r_amount, invoice_key=key)
+                                   payment_method, r_amount, invoice_key=key, honorific=honorific)
         saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
         path = next((s["path"] for s in saved if s.get("id") == rid), "")
         _flash(("再発行しました。" if issued else "発行しました。") + _saved_note(client, path))

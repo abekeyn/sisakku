@@ -477,7 +477,7 @@ def receipts_for(pending_key: str, p: dict) -> list[tuple[str, dict]]:
 
 def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
                  filename: str, payment_method: str, amount: int,
-                 invoice_key: str = "") -> str:
+                 invoice_key: str = "", honorific: str = "御中") -> str:
     """発行した領収書をDBに記録する（発行ボタンを押した時点で呼ぶ）。
 
     アプリ本体はクラウドでも動くためPCのフォルダへ直接は保存できない。
@@ -498,6 +498,7 @@ def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
     receipts[rid] = {
         "client_id": client_id, "issue_date": issue_date.isoformat(), "doc_number": doc_no,
         "amount": amount, "payment_method": payment_method, "invoice_key": invoice_key,
+        "honorific": honorific,
         "pdf_b64": base64.b64encode(pdf_bytes).decode("ascii"), "filename": filename,
         "created_at": datetime.now().isoformat(timespec="seconds"), "synced_to_folder": False,
         "prev_path": prev,

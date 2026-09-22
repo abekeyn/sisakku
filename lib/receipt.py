@@ -24,7 +24,8 @@ STAMP_DUTY_THRESHOLD = 50_000
 def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
                       issue_date: date | None = None, doc_no: str = "",
                       payment_method: str = "bank", payment_note: str = "",
-                      qty: float = 1, total_kg: float | None = None) -> bytes:
+                      qty: float = 1, total_kg: float | None = None,
+                      honorific: str = "御中") -> bytes:
     """領収書PDF(bytes)を作る（A5サイズ）。amountは税込金額。
 
     item_descは「精米5kg」のような1個あたりの品名。qtyが1件でない場合、
@@ -32,6 +33,7 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     ようにする（品名の"5kg"だけを見て全体の金額だと誤解されるのを防ぐ）。
     payment_method: "bank"(振込・既定) / "cash"(現金) / "other"(自由記述)。
     "other" のときは payment_note の内容をそのまま注記として使う。
+    honorific: 宛名の敬称（"御中"＝既定・会社宛　／　"様"＝個人宛）。
 
     支払い用のQRはここには刷らない（領収書は入金済みの証明なので、支払いを
     促すQRが同居すると書類として矛盾する）。未入金の相手に渡す紙は
@@ -73,7 +75,7 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
         text(sx + sw / 2, sy + sh / 2 + 2, "収入印紙", size=7, align="center")
         text(sx + sw / 2, sy + sh / 2 - 9, "貼付欄", size=7, align="center")
 
-    atesaki = f"{invoice_to}　御中"
+    atesaki = f"{invoice_to}　{honorific}"
     text(m, h - 118, atesaki, size=13)
     c.line(m, h - 123, m + max(200, pdfmetrics.stringWidth(atesaki, pc.FONT_NAME, 13) + 10), h - 123)
 
