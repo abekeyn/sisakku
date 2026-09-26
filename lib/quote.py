@@ -37,7 +37,7 @@ DEFAULT_FOLDER = str(config.DOCS_ROOT / "m_見積書")
 DEFAULT_VALID_DAYS = 30           # 見積の有効期限（発行日から）
 TAX_RATES = (8, 10)               # 軽減税率(お米) / 標準税率(送料など)
 
-DEFAULT_ITEM = {"name": "令和7年度　福島県産 コシヒカリ (精米) 5㎏", "cond": "",
+DEFAULT_ITEM = {"name": "令和8年度　福島県産 コシヒカリ (精米) 5㎏", "cond": "",
                 "qty": 1.0, "unit": "個", "price": 4000, "rate": 8}
 
 # 件名の下に並べる記載項目の初期値（画面で自由に足したり消したりできる）

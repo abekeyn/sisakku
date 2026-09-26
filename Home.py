@@ -1777,7 +1777,7 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
                                  value=int(c.get("price_per_5kg", 4000)), step=100,
                                  key=f"pr_{fid}")
         item = st.text_input("品名（請求書の明細行）",
-                             c.get("item_desc", "令和7年度　福島県産 コシヒカリ (精米) 5㎏"),
+                             c.get("item_desc", "令和8年度　福島県産 コシヒカリ (精米) 5㎏"),
                              key=f"im_{fid}")
         subject = st.text_input("メール件名（{month}＝月）",
                                 c.get("subject_tmpl", "阿部農園　{month}月分請求につきまして"),

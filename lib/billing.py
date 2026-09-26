@@ -44,7 +44,7 @@ DEFAULT_CLIENTS = [{
     "email": "keiri@granada-jp.net",
     "customer_id": 7,
     "price_per_5kg": 4000,
-    "item_desc": "令和7年度　福島県産 コシヒカリ (精米) 5㎏",
+    "item_desc": "令和8年度　福島県産 コシヒカリ (精米) 5㎏",
     "subject_tmpl": "阿部農園　{month}月分請求につきまして",
     "body_tmpl": (
         "株式会社グラナダ\n経理部\nご担当者様\n\n"
