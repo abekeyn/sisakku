@@ -35,6 +35,36 @@ from lib import (analytics, base_api, billing, bootstrap, costing, db,
 ui.setup_page()
 bootstrap.ensure_initialized()
 
+# ShopifyのOAuth連携（アプリのURL＝このアプリ自身）。設定タブの「Shopifyと連携する」
+# から来た場合と、そこから戻ってきた場合の両方をここで受け止める。
+# ログイン後に動くので、実際にログインできる人（自分）が手動でひと通りやる想定。
+_APP_BASE_URL = "https://sisakku-eqlo3jkfjonhvpjtbt4zcm.streamlit.app"
+
+
+def _shopify_oauth_gate() -> None:
+    params = dict(st.query_params)
+    shop = (params.get("shop") or "").strip()
+    if not shop.endswith(".myshopify.com"):
+        return
+    if not shopify_api.verify_hmac(params):
+        st.error("Shopifyからのリクエストを検証できませんでした（hmacが一致しません）。")
+        st.stop()
+    code = params.get("code", "")
+    if code:
+        ok, msg = shopify_api.exchange_code(shop, code)
+        st.query_params.clear()
+        (st.success if ok else st.error)(f"{msg}（{shop}）")
+        if ok:
+            st.caption("このタブは閉じて、上のURLからアプリを開き直してください。")
+        st.stop()
+    url = shopify_api.authorize_url(shop, _APP_BASE_URL, "shopify_install")
+    st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">', unsafe_allow_html=True)
+    st.write("Shopifyの許可画面へ移動します…")
+    st.stop()
+
+
+_shopify_oauth_gate()
+
 TIME_CODES = {
     "指定なし": "0000", "午前中": "0812", "14-16時": "1416",
     "16-18時": "1618", "18-20時": "1820", "19-21時": "1921",
@@ -1042,21 +1072,36 @@ def view_settings():
         scfg = db.get_setting("shopify_config") or {}
         if shopify_api.is_configured():
             st.success("Shopify連携は設定済みです（自動取込・自動出荷が使えます）")
-        st.caption("Shopify管理画面 → 設定 → アプリと販売チャネル → 「アプリを開発する」で"
-                   "カスタムアプリを作成し、Admin APIスコープに read_orders・"
-                   "read_fulfillments・write_fulfillments を付与してインストールすると、"
-                   "アクセストークン（shpat_で始まる文字列）が発行されます。")
+        st.caption("Shopify Dev Dashboard（dev.shopify.com）でアプリを作成し、"
+                   "アプリのURLをこのアプリ自身（" + _APP_BASE_URL + "）にして、"
+                   "許可されたリダイレクトURLにも同じアドレスを登録してください。"
+                   "APIアクセスのスコープは read_orders・read_fulfillments・"
+                   "write_fulfillments。下にショップドメインとクライアントID・"
+                   "シークレット（アプリ設定の「資格情報」）を保存し、"
+                   "「Shopifyと連携する」を押すと許可画面へ進みます。")
         with st.form("shopify_form"):
             shop_domain = st.text_input("ショップドメイン", scfg.get("shop_domain", ""),
                                         placeholder="example.myshopify.com")
-            access_token = st.text_input("Admin APIアクセストークン",
-                                         scfg.get("access_token", ""), type="password",
-                                         placeholder="shpat_...")
+            client_id = st.text_input("クライアントID", scfg.get("client_id", ""))
+            client_secret = st.text_input("クライアントシークレット",
+                                          scfg.get("client_secret", ""), type="password")
+            access_token = st.text_input(
+                "Admin APIアクセストークン（連携すると自動で入ります。直接貼り付けも可）",
+                scfg.get("access_token", ""), type="password", placeholder="shpat_...")
             if st.form_submit_button("保存", type="primary"):
                 db.set_setting("shopify_config", {
-                    "shop_domain": shop_domain.strip(), "access_token": access_token.strip(),
+                    "shop_domain": shop_domain.strip(), "client_id": client_id.strip(),
+                    "client_secret": client_secret.strip(), "access_token": access_token.strip(),
                 })
                 st.success("保存しました。")
+                st.rerun()
+        if shopify_api.oauth_ready():
+            shop = shopify_api.shop_domain()
+            url = shopify_api.authorize_url(shop, _APP_BASE_URL, "shopify_install")
+            st.link_button("🔗 Shopifyと連携する（許可画面を開く）", url, use_container_width=True)
+        else:
+            st.caption("ショップドメイン・クライアントID・シークレットを保存すると、"
+                       "連携ボタンが出ます。")
 
     with tab_print:
         from lib import mailer

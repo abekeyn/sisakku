@@ -10,11 +10,21 @@ BASEと同じ形：
 
 認証情報は設定タブ（DB: shopify_config）に保存する：
   shop_domain … 例 "example.myshopify.com"
-  access_token … カスタムアプリのAdmin APIアクセストークン（shpat_...）
+  access_token … Admin APIアクセストークン（shpat_...）
+  client_id / client_secret … Shopify Dev DashboardのアプリのクライアントID／シークレット
+    （OAuthでaccess_tokenを取得するために使う。取得後は不要だが残しておいて再連携に使う）
 必要なAPIスコープ：read_orders, read_fulfillments, write_fulfillments
+
+access_tokenの取得はOAuth（アプリのURL＝このアプリ自身）で行う。設定タブで
+shop_domain・client_id・client_secretを保存して「Shopifyと連携する」を押すと、
+Shopifyの許可画面へ進み、戻ってきたところ（Home.pyの_shopify_oauth_gate）で
+コードをaccess_tokenに交換してDBへ保存する。一度取得すれば以後は自動更新不要
+（オフラインアクセストークンは期限切れしない）。
 """
 from __future__ import annotations
 
+import hashlib
+import hmac as _hmac
 import json
 import re
 import urllib.error
@@ -26,6 +36,7 @@ from . import base_api, db
 
 API_VERSION = "2024-01"
 YAMATO_TRACKING_COMPANY = "Yamato Transport"
+AUTH_SCOPES = "read_orders,read_fulfillments,write_fulfillments"
 
 
 def _cfg() -> dict:
@@ -43,6 +54,67 @@ def _token() -> str:
 
 def is_configured() -> bool:
     return bool(_shop_domain() and _token())
+
+
+def shop_domain() -> str:
+    """設定済みのショップドメイン（画面側からの参照用）。"""
+    return _shop_domain()
+
+
+# ---------------------------------------------------------------------------
+# OAuth（access_tokenの取得。アプリのURL＝このアプリ自身をコールバック先にする）
+# ---------------------------------------------------------------------------
+def oauth_ready() -> bool:
+    """連携を開始できる（shop_domain・client_id・client_secretが揃っている）か。"""
+    cfg = _cfg()
+    return bool(_shop_domain() and cfg.get("client_id") and cfg.get("client_secret"))
+
+
+def authorize_url(shop: str, redirect_uri: str, state: str) -> str:
+    """Shopifyの許可画面のURL。ここへ飛ばすとマーチャントが許可→redirect_uriへ戻る。"""
+    cfg = _cfg()
+    q = urllib.parse.urlencode({
+        "client_id": cfg.get("client_id", ""), "scope": AUTH_SCOPES,
+        "redirect_uri": redirect_uri, "state": state,
+    })
+    return f"https://{shop}/admin/oauth/authorize?{q}"
+
+
+def verify_hmac(params: dict) -> bool:
+    """Shopifyから来たリクエストか検証する（クエリのhmacをクライアントシークレットで再計算）。"""
+    secret = (_cfg().get("client_secret") or "").strip()
+    sent = params.get("hmac", "")
+    if not secret or not sent:
+        return False
+    msg = "&".join(f"{k}={v}" for k, v in sorted(params.items()) if k != "hmac")
+    calc = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(calc, sent)
+
+
+def exchange_code(shop: str, code: str) -> tuple[bool, str]:
+    """認可コードをaccess_tokenに交換し、shopify_configへ保存する。returns (成功, メッセージ)。"""
+    cfg = _cfg()
+    body = json.dumps({
+        "client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
+        "code": code,
+    }).encode()
+    req = urllib.request.Request(
+        f"https://{shop}/admin/oauth/access_token", data=body, method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            res = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return False, f"トークン取得に失敗：{_err_detail(e)}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"トークン取得に失敗：{e}"
+    token = res.get("access_token")
+    if not token:
+        return False, "トークンが取得できませんでした"
+    cfg["shop_domain"] = shop
+    cfg["access_token"] = token
+    db.set_setting("shopify_config", cfg)
+    return True, "Shopifyと連携しました"
 
 
 def _api_url(path: str) -> str:
