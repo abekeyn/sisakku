@@ -1075,8 +1075,8 @@ def view_settings():
         st.caption("Shopify Dev Dashboard（dev.shopify.com）でアプリを作成し、"
                    "アプリのURLをこのアプリ自身（" + _APP_BASE_URL + "）にして、"
                    "許可されたリダイレクトURLにも同じアドレスを登録してください。"
-                   "APIアクセスのスコープは read_orders・read_fulfillments・"
-                   "write_fulfillments。下にショップドメインとクライアントID・"
+                   "APIアクセスのスコープは " + shopify_api.AUTH_SCOPES.replace(",", "・") + "。"
+                   "下にショップドメインとクライアントID・"
                    "シークレット（アプリ設定の「資格情報」）を保存し、"
                    "「Shopifyと連携する」を押すと許可画面へ進みます。")
         with st.form("shopify_form"):

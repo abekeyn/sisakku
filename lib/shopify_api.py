@@ -13,7 +13,9 @@ BASEと同じ形：
   access_token … Admin APIアクセストークン（shpat_...）
   client_id / client_secret … Shopify Dev DashboardのアプリのクライアントID／シークレット
     （OAuthでaccess_tokenを取得するために使う。取得後は不要だが残しておいて再連携に使う）
-必要なAPIスコープ：read_orders, read_fulfillments, write_fulfillments
+必要なAPIスコープ：read_orders, read_fulfillments, write_fulfillments と、発送完了の登録に必要な
+  read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders
+  （Fulfillment Orders API。これが無いと出荷確定で「権限なし(403)」になる）
 
 access_tokenの取得はOAuth（アプリのURL＝このアプリ自身）で行う。設定タブで
 shop_domain・client_id・client_secretを保存して「Shopifyと連携する」を押すと、
@@ -36,7 +38,8 @@ from . import base_api, db, logic
 
 API_VERSION = "2024-01"
 YAMATO_TRACKING_COMPANY = "Yamato Transport"
-AUTH_SCOPES = "read_orders,read_fulfillments,write_fulfillments"
+AUTH_SCOPES = ("read_orders,read_fulfillments,write_fulfillments,"
+               "read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders")
 
 
 def _cfg() -> dict:
