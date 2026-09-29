@@ -234,7 +234,14 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
         cust = o.get("customer") or {}
         last = addr.get("last_name") or cust.get("last_name") or ""
         first = addr.get("first_name") or cust.get("first_name") or ""
-        name = f"{last}　{first}".strip("　 ") or (addr.get("name") or "")
+        # お客様が「名」欄にフルネームを入れることがある（姓=藤／名=藤 瑞貴）。姓が名の
+        # 先頭に入っていたら重ねずに名だけを使う（「藤　藤 瑞貴」になっていた）。
+        if last and first.replace(" ", "").replace("　", "").startswith(last):
+            first_n = first.replace(" ", "　", 1) if " " in first else first
+            name = first_n.strip("　 ")
+        else:
+            name = f"{last}　{first}".strip("　 ")
+        name = name or (addr.get("name") or "")
         billing = o.get("billing_address") or {}
         tel = _norm_phone(addr.get("phone") or billing.get("phone") or cust.get("phone")
                           or (cust.get("default_address") or {}).get("phone") or o.get("phone") or "")

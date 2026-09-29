@@ -62,6 +62,7 @@ products = Table(
     Column("sort_order", Integer, default=0),
     Column("active", Integer, default=1),
     Column("price", Float, default=0),   # 単価(円)。売上＝単価×個数
+    Column("ship_type", String(16), default=""),   # 発送方法の初期値。""=宅急便(発払い) / "nekopos"=ネコポス
 )
 
 orders = Table(
@@ -82,6 +83,7 @@ orders = Table(
     Column("dispatch_ref", Text, default=""),
     Column("tracking_no", String(64), default=""),   # ヤマト伝票番号
     Column("handover", Integer, default=0),           # 1=手渡し（送り状不要）
+    Column("ship_type", String(16), default=""),      # 発送方法。""=商品の設定どおり / "takkyubin" / "nekopos"
     Column("created_at", String(64)),
 )
 
@@ -159,10 +161,16 @@ def init_db() -> None:
     if "handover" not in cols:
         with engine.begin() as c:
             c.execute(text("ALTER TABLE orders ADD COLUMN handover INTEGER DEFAULT 0"))
+    if "ship_type" not in cols:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE orders ADD COLUMN ship_type VARCHAR(16) DEFAULT ''"))
     pcols = [c["name"] for c in _inspect(engine).get_columns("products")]
     if "price" not in pcols:
         with engine.begin() as c:
             c.execute(text("ALTER TABLE products ADD COLUMN price FLOAT DEFAULT 0"))
+    if "ship_type" not in pcols:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE products ADD COLUMN ship_type VARCHAR(16) DEFAULT ''"))
     ccols = [c["name"] for c in _inspect(engine).get_columns("customers")]
     if "addr_updated_at" not in ccols:
         with engine.begin() as c:
@@ -359,7 +367,7 @@ def delete_customer(cid: int) -> None:
 # 商品 (products)
 # ---------------------------------------------------------------------------
 _PROD_FIELDS = ("name", "category", "weight_kg", "needs_milling",
-                "yamato_name", "sort_order", "active", "price")
+                "yamato_name", "sort_order", "active", "price", "ship_type")
 
 
 @_cacheable(ttl=120)
@@ -385,7 +393,11 @@ def upsert_product(data: dict) -> int:
             select(products.c.id).where(products.c.name == data["name"])
         ).first()
         vals = {f: data.get(f) for f in _PROD_FIELDS}
+        if vals["ship_type"] is None:
+            vals["ship_type"] = ""
         if existing:
+            if "ship_type" not in data:      # 呼び出し側が指定しないとき、既存の発送方法を消さない
+                vals.pop("ship_type")
             c.execute(update(products).where(products.c.id == existing[0]).values(**vals))
             clear_cache()
             return existing[0]
@@ -400,7 +412,7 @@ def upsert_product(data: dict) -> int:
 _ORDER_FIELDS = ("customer_id", "product_id", "qty", "channel", "order_date",
                  "ship_date", "delivery_date", "delivery_time",
                  "milling_kg_override", "note", "status", "external_id",
-                 "dispatch_ref", "tracking_no", "handover")
+                 "dispatch_ref", "tracking_no", "handover", "ship_type")
 
 
 def add_order(data: dict) -> int:
@@ -437,7 +449,8 @@ _ORDER_JOIN_SQL = """
     SELECT o.*, c.name AS customer_name, c.tel, c.zip, c.address,
            c.address2, c.company, c.honorific, c.kana,
            p.name AS product_name, p.category, p.weight_kg,
-           p.needs_milling, p.yamato_name, p.price
+           p.needs_milling, p.yamato_name, p.price,
+           p.ship_type AS product_ship_type
     FROM orders o
     JOIN customers c ON c.id = o.customer_id
     JOIN products  p ON p.id = o.product_id
@@ -466,7 +479,8 @@ def update_order_status(order_ids: list[int], status: str) -> None:
 
 def update_order(order_id: int, data: dict) -> None:
     allowed = ("qty", "ship_date", "delivery_date", "delivery_time",
-               "milling_kg_override", "note", "status", "tracking_no", "handover")
+               "milling_kg_override", "note", "status", "tracking_no", "handover",
+               "ship_type")
     vals = {f: data[f] for f in data if f in allowed}
     if not vals:
         return

@@ -76,6 +76,16 @@ def parse_issued_for_tracking(path_or_bytes) -> list[dict]:
     return out
 
 
+# 発送方法。B2の「送り状種類」コード：0=発払い(宅急便)、7=ネコポス
+SHIP_LABELS = {"takkyubin": "宅急便（発払い）", "nekopos": "ネコポス"}
+
+
+def ship_type_of(order) -> str:
+    """注文の発送方法。注文で指定があればそれ、無ければ商品の初期値、どちらも無ければ宅急便。"""
+    t = order.get("ship_type") or order.get("product_ship_type") or ""
+    return t if t in SHIP_LABELS else "takkyubin"
+
+
 def build_row(order, sender: dict) -> list[str]:
     """注文1件(orders結合行) + 送り主情報 から、送り状CSVの1行(97列)を作る。"""
     row = [""] * len(YAMATO_HEADER)
@@ -84,14 +94,15 @@ def build_row(order, sender: dict) -> list[str]:
         if name in COL:
             row[COL[name]] = "" if value is None else str(value)
 
-    # 送り状種類: 0=発払い, クール区分: 0=通常
-    put("送り状種類", "0")
+    # 送り状種類: 0=発払い, 7=ネコポス。クール区分: 0=通常
+    nekopos = ship_type_of(order) == "nekopos"
+    put("送り状種類", "7" if nekopos else "0")
     put("クール区分", "0")
 
-    # 出荷予定日 / お届け予定日 / 時間帯
+    # 出荷予定日 / お届け予定日 / 時間帯（ネコポスはお届け日・時間帯の指定ができない）
     put("出荷予定日", order["ship_date"] or "")
-    put("お届け予定（指定）日", order["delivery_date"] or "")
-    put("配達時間帯", order["delivery_time"] or "")
+    put("お届け予定（指定）日", "" if nekopos else (order["delivery_date"] or ""))
+    put("配達時間帯", "" if nekopos else (order["delivery_time"] or ""))
 
     # お届け先（顧客）
     put("お届け先電話番号", order["tel"])

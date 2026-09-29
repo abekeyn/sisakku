@@ -150,6 +150,11 @@ def _pdf_preview(b64: str, height: int = 480) -> None:
 # ===========================================================================
 # ダイアログ（モーダル）
 # ===========================================================================
+# 発送方法の選択肢（注文ごと）。""＝商品マスタの初期値に従う
+SHIP_OPTS = {"商品の設定どおり": "", "宅急便（発払い）": "takkyubin", "ネコポス": "nekopos"}
+SHIP_PROD_OPTS = {"宅急便（発払い）": "", "ネコポス": "nekopos"}
+
+
 @st.dialog("注文を追加")
 def dlg_add_order():
     customers = db.list_customers()
@@ -174,6 +179,8 @@ def dlg_add_order():
             dtime = c4.selectbox("お届け時間帯（任意）", list(TIME_CODES), key="add_dt")
             mill = st.number_input("複合の精米kg（複合商品のみ・1個あたり）", min_value=0.0, value=0.0, step=1.0)
             note = st.text_input("メモ（任意）")
+            ship_sel = st.selectbox("発送方法", list(SHIP_OPTS), key="add_ship",
+                                    help="「商品の設定どおり」は商品マスタの発送方法を使います（七日御膳＝ネコポス）。")
             handover = st.checkbox("手渡し（送り状・配送なし）", value=False,
                                    help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
             if st.button("追加する", type="primary", use_container_width=True):
@@ -187,6 +194,7 @@ def dlg_add_order():
                     "milling_kg_override": mill if mill > 0 else None,
                     "note": note, "status": "pending", "external_id": "", "dispatch_ref": "",
                     "handover": 1 if handover else 0,
+                    "ship_type": SHIP_OPTS[ship_sel],
                 })
                 st.rerun()
 
@@ -213,6 +221,8 @@ def dlg_add_order():
         ddate_n = o3.date_input("お届け日（配達指定・任意）", value=None,
                                 min_value=today(), key="nadd_dd")
         dtime_n = o4.selectbox("お届け時間帯（任意）", list(TIME_CODES), key="nadd_dt")
+        ship_n = st.selectbox("発送方法", list(SHIP_OPTS), key="nship",
+                              help="「商品の設定どおり」は商品マスタの発送方法を使います（七日御膳＝ネコポス）。")
         handover_n = st.checkbox("手渡し（送り状・配送なし）", value=False, key="nh",
                                  help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
         if st.button("お客様＋注文を追加", type="primary", use_container_width=True, key="nbtn"):
@@ -233,6 +243,7 @@ def dlg_add_order():
                     "milling_kg_override": None, "note": "",
                     "status": "pending", "external_id": "", "dispatch_ref": "",
                     "handover": 1 if handover_n else 0,
+                    "ship_type": SHIP_OPTS[ship_n],
                 })
                 st.rerun()
 
@@ -265,6 +276,12 @@ def dlg_edit_order(o):
         help="複合商品のとき、1個あたり何kg精米するか。入力すると精米量に反映されます。",
     ) if o["category"] == "複合" else None
     note = st.text_input("メモ", o["note"] or "")
+    _cur_ship = o.get("ship_type") or ""
+    _ship_keys = list(SHIP_OPTS)
+    _ship_idx = list(SHIP_OPTS.values()).index(_cur_ship) if _cur_ship in SHIP_OPTS.values() else 0
+    _eff = "ネコポス" if yamato.ship_type_of(o) == "nekopos" else "宅急便（発払い）"
+    ship_sel = st.selectbox("発送方法", _ship_keys, index=_ship_idx,
+                            help=f"「商品の設定どおり」のときは {_eff} で送り状を作ります。")
     handover = st.checkbox("手渡し（送り状・配送なし）", value=bool(o.get("handover")),
                            help="直接お渡しする注文。送り状の作成・印刷の対象外になります。")
     b1, b2 = st.columns(2)
@@ -274,6 +291,7 @@ def dlg_edit_order(o):
             "delivery_date": ddate.strip(), "delivery_time": TIME_CODES[dtime],
             "milling_kg_override": (mill if (mill and mill > 0) else None) if o["category"] == "複合" else o["milling_kg_override"],
             "note": note, "handover": 1 if handover else 0,
+            "ship_type": SHIP_OPTS[ship_sel],
         })
         st.rerun()
     if b2.button("✕ この注文を削除", use_container_width=True):
@@ -1006,12 +1024,14 @@ def view_settings():
 
     with tab_prod:
         st.caption("「精米が必要」の商品だけが精米量に加算されます。『品名(送り状用)』が送り状に印字されます。"
+                   "『発送方法』はその商品の送り状の初期値です（注文ごとに変更もできます）。"
                    "『単価』は売上ダッシュボード・顧客分析に使います（売上＝単価×個数）。")
         products = db.list_products(active_only=False)
         pdf = pd.DataFrame([{
             "商品名": p["name"], "区分": p["category"], "重量kg": p["weight_kg"],
             "単価(円)": int(p.get("price") or 0),
             "精米が必要": bool(p["needs_milling"]), "品名(送り状用)": p["yamato_name"],
+            "発送方法": "ネコポス" if p.get("ship_type") == "nekopos" else "宅急便（発払い）",
             "並び順": p["sort_order"], "有効": bool(p["active"]),
         } for p in products])
         edited = st.data_editor(
@@ -1020,6 +1040,7 @@ def view_settings():
                 "区分": st.column_config.SelectboxColumn("区分", options=["精米", "玄米", "複合", "その他"]),
                 "単価(円)": st.column_config.NumberColumn("単価(円)", min_value=0, step=100, format="%d"),
                 "精米が必要": st.column_config.CheckboxColumn("精米が必要"),
+                "発送方法": st.column_config.SelectboxColumn("発送方法", options=list(SHIP_PROD_OPTS)),
                 "有効": st.column_config.CheckboxColumn("有効"),
             },
             key="prod_editor",
@@ -1036,6 +1057,7 @@ def view_settings():
                     "yamato_name": r["品名(送り状用)"] or r["商品名"],
                     "sort_order": int(r["並び順"] or 0),
                     "active": 1 if r["有効"] else 0,
+                    "ship_type": SHIP_PROD_OPTS.get(r["発送方法"], ""),
                 })
             st.success("保存しました。")
             st.rerun()

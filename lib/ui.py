@@ -811,6 +811,8 @@ def order_card(order, extra_html: str = "") -> str:
         note += f'<div class="o-when">配達希望　{when}</div>'
     hand = ('<span class="ch-badge" style="background:#7A5BBE">手渡し</span>'
             if order.get("handover") else "")
+    if (order.get("ship_type") or order.get("product_ship_type")) == "nekopos" and not order.get("handover"):
+        hand += ' <span class="ch-badge" style="background:#2E8B6E">ネコポス</span>'
     return (
         f'<div class="o-card">'
         f'<span class="o-name">{order["customer_name"]} 様</span>　'
