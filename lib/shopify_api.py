@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from datetime import date
 
-from . import base_api, db
+from . import base_api, db, logic
 
 API_VERSION = "2024-01"
 YAMATO_TRACKING_COMPANY = "Yamato Transport"
@@ -150,6 +150,39 @@ def _post(path: str, body: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 1) 未発送の注文を取り込む
 # ---------------------------------------------------------------------------
+def _product_name(it: dict) -> str:
+    """商品(line_item)から、精米量の集計に乗る品名を作る。
+
+    Shopifyの商品名は「【予約】琥珀米 コシヒカリ」のように重さが入らず、重さ・精米方法は
+    バリエーション（例「白米 / 5kg」）にある。商品名だけで取り込むと「精米不要・0kg」の
+    商品として登録され、精米量に載らなかったため、BASEと同じくバリエーションから
+    「精米5kg」「玄米5kg」等を作る。バリエーションが無い琥珀米【七日御膳】は専用名にする。
+    """
+    title = it.get("title") or "商品"
+    name = base_api._product_from_choice(title, [it.get("variant_title") or ""])
+    if name == title and "七日御膳" in title:
+        return "琥珀米 七日御膳"
+    return name
+
+
+def _ensure_product(name: str, grams) -> None:
+    """未登録の琥珀米系の商品は、精米が必要な商品として登録しておく（琥珀米は精米して出荷する）。
+
+    既にある商品は触らない（マスタで直した内容を上書きしないため）。
+    """
+    if name.startswith(("精米", "玄米")):
+        return
+    if any(logic.normalize_text(p["name"]) == logic.normalize_text(name)
+           for p in db.list_products(active_only=False)):
+        return
+    kg = round(float(grams or 0) / 1000, 3)
+    db.upsert_product({
+        "name": name, "category": "精米" if kg else "その他", "weight_kg": kg,
+        "needs_milling": 1 if kg else 0, "yamato_name": name, "sort_order": 999, "active": 1,
+    })
+
+
+
 def fetch_orders_via_api(limit: int = 100) -> dict:
     """支払済み・未発送(fulfillment_status=unfulfilled)の注文を商品単位で取り込む。"""
     if not is_configured():
@@ -187,12 +220,14 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
             if fulfillable <= 0:
                 continue
             iid = it.get("id")
+            pname = _product_name(it)
+            _ensure_product(pname, it.get("grams"))
             norm.append({
                 "external_id": f"shopify:{oid}:{iid}",
                 "order_date": order_date,
                 "name": name, "kana": "", "zip": zipc,
                 "address": address, "address2": address2, "tel": tel,
-                "product": it.get("title") or "商品",
+                "product": pname,
                 "qty": fulfillable,
                 "note": note,
                 "dispatch_ref": json.dumps({"order_id": oid, "line_item_id": iid}),
