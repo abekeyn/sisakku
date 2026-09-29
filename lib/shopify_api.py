@@ -150,6 +150,31 @@ def _post(path: str, body: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 1) 未発送の注文を取り込む
 # ---------------------------------------------------------------------------
+# Shopifyの province は「Ōsaka」「Hyōgo」のようにローマ字で来る。送り状(B2)は日本語の
+# 都道府県が必須なので、province_code(JP-27)から日本語に直す。
+_PREFECTURES = (
+    "北海道 青森県 岩手県 宮城県 秋田県 山形県 福島県 茨城県 栃木県 群馬県 埼玉県 千葉県 東京都 "
+    "神奈川県 新潟県 富山県 石川県 福井県 山梨県 長野県 岐阜県 静岡県 愛知県 三重県 滋賀県 京都府 "
+    "大阪府 兵庫県 奈良県 和歌山県 鳥取県 島根県 岡山県 広島県 山口県 徳島県 香川県 愛媛県 高知県 "
+    "福岡県 佐賀県 長崎県 熊本県 大分県 宮崎県 鹿児島県 沖縄県").split()
+
+
+def _prefecture(addr: dict) -> str:
+    m = re.match(r"JP-(\d{2})$", addr.get("province_code") or "")
+    if m and 1 <= int(m.group(1)) <= 47:
+        return _PREFECTURES[int(m.group(1)) - 1]
+    prov = addr.get("province") or ""
+    return prov if re.search(r"[぀-ヿ一-鿿]", prov) else ""
+
+
+def _norm_phone(raw: str) -> str:
+    """+818094764670 → 08094764670、ハイフン・空白を除去。"""
+    d = re.sub(r"[^0-9+]", "", raw or "")
+    if d.startswith("+81"):
+        d = "0" + d[3:]
+    return d.lstrip("+")
+
+
 def _product_name(it: dict) -> str:
     """商品(line_item)から、精米量の集計に乗る品名を作る。
 
@@ -207,9 +232,11 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
         last = addr.get("last_name") or cust.get("last_name") or ""
         first = addr.get("first_name") or cust.get("first_name") or ""
         name = f"{last}　{first}".strip("　 ") or (addr.get("name") or "")
-        tel = addr.get("phone") or cust.get("phone") or o.get("phone") or ""
+        billing = o.get("billing_address") or {}
+        tel = _norm_phone(addr.get("phone") or billing.get("phone") or cust.get("phone")
+                          or (cust.get("default_address") or {}).get("phone") or o.get("phone") or "")
         zipc = (addr.get("zip") or "").replace("-", "").strip()
-        address = f"{addr.get('province') or ''}{addr.get('city') or ''}{addr.get('address1') or ''}"
+        address = f"{_prefecture(addr)}{addr.get('city') or ''}{addr.get('address1') or ''}"
         address2 = addr.get("address2") or ""
         order_date = (o.get("created_at") or "")[:10].replace("-", "/") \
             or date.today().strftime("%Y/%m/%d")
