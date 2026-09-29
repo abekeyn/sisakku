@@ -37,7 +37,7 @@ from datetime import date
 from . import base_api, db, logic
 
 API_VERSION = "2024-01"
-YAMATO_TRACKING_COMPANY = "Yamato Transport"
+YAMATO_TRACKING_COMPANY = "ヤマト運輸"
 AUTH_SCOPES = ("read_orders,read_fulfillments,write_fulfillments,"
                "read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders")
 
