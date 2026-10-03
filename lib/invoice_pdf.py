@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""請求書PDFの生成（アプリ内で即時・reportlab）。
+"""請求書PDFの生成（アプリ内で即時・reportlab・領収書と同じA5サイズ）。
 
 毎月末日の自動請求（lib/billing.pyのprepare_all）は、実際の会計帳簿と
 書式を合わせるため引き続き templates/*.xlsx ＋ LibreOffice(GitHub Actions)
@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 from datetime import date
 
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A5
 from reportlab.pdfbase import pdfmetrics
 
 from . import pdf_common as pc
@@ -34,57 +34,58 @@ def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: f
     tax = total - line_excl
 
     buf = io.BytesIO()
-    c = _canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
+    c = _canvas.Canvas(buf, pagesize=A5)
+    w, h = A5
     text = pc.make_text_fn(c)
+    m = 34  # 左右余白（領収書と同じ）
 
-    text(w / 2, h - 70, "御 請 求 書", size=24, align="center")
+    text(w / 2, h - 46, "御　請　求　書", size=19, align="center")
 
-    text(w - 60, h - 120, f"発行日：{issue_date.strftime('%Y年%m月%d日')}", size=10, align="right")
-    text(w - 60, h - 136, f"書類番号：{doc_no}", size=10, align="right")
+    text(w - m, h - 74, f"発行日：{issue_date.strftime('%Y年%m月%d日')}", size=8, align="right")
+    text(w - m, h - 87, f"書類番号：{doc_no}", size=8, align="right")
 
     atesaki = f"{invoice_to}　御中"
-    text(60, h - 150, atesaki, size=15)
-    c.line(60, h - 156, 60 + max(240, pdfmetrics.stringWidth(atesaki, pc.FONT_NAME, 15) + 10), h - 156)
+    text(m, h - 118, atesaki, size=13)
+    c.line(m, h - 123, m + max(200, pdfmetrics.stringWidth(atesaki, pc.FONT_NAME, 13) + 10), h - 123)
 
-    text(60, h - 186, "件名：お米代", size=10)
-    text(60, h - 202, f"振込先：{pc.BANK_INFO}", size=10)
-    text(60, h - 216, f"　　　　{pc.BANK_HOLDER}", size=10)
+    text(m, h - 146, "件名：お米代", size=8.5)
+    bank = f"振込先：{pc.BANK_INFO}"
+    text(m, h - 159, bank, size=8.5)
+    text(m, h - 172, f"　　　　{pc.BANK_HOLDER}", size=8.5)
 
-    box_y = h - 280
-    c.rect(60, box_y - 10, w - 120, 46, stroke=1, fill=0)
-    text(80, box_y + 8, "合計金額（税込）", size=12)
-    text(w - 80, box_y + 8, f"¥ {total:,} －", size=20, align="right")
+    box_y = h - 215
+    c.rect(m, box_y - 9, w - 2 * m, 38, stroke=1, fill=0)
+    text(m + 14, box_y + 5, "合計金額（税込）", size=10)
+    text(w - m - 14, box_y + 5, f"¥ {total:,} －", size=16, align="right")
 
     # 明細
-    ty = box_y - 55
-    c.setFont(pc.FONT_NAME, 9)
-    text(60, ty, "内容", size=9)
-    text(340, ty, "数量(個)", size=9)
-    text(400, ty, "単価(税抜)", size=9)
-    text(468, ty, "税率", size=9)
-    text(w - 60, ty, "金額(税抜)", size=9, align="right")
-    c.line(60, ty - 6, w - 60, ty - 6)
+    ty = box_y - 48
+    text(m, ty, "内容", size=8.5)
+    text(212, ty, "数量(個)", size=8.5)
+    text(256, ty, "単価(税抜)", size=8.5)
+    text(312, ty, "税率", size=8.5)
+    text(w - m, ty, "金額(税抜)", size=8.5, align="right")
+    c.line(m, ty - 6, w - m, ty - 6)
 
-    ty -= 24
-    text(60, ty, item_desc, size=10)
-    text(345, ty, f"{qty:g}", size=10)
-    text(400, ty, f"¥{unit_excl:,}", size=10)
-    text(468, ty, "8%", size=10)
-    text(w - 60, ty, f"¥{line_excl:,}", size=10, align="right")
-    c.line(60, ty - 10, w - 60, ty - 10)
+    ty -= 22
+    text(m, ty, item_desc, size=9.5)
+    text(216, ty, f"{qty:g}", size=9.5)
+    text(256, ty, f"¥{unit_excl:,}", size=9.5)
+    text(312, ty, "8%", size=9.5)
+    text(w - m, ty, f"¥{line_excl:,}", size=9.5, align="right")
+    c.line(m, ty - 9, w - m, ty - 9)
 
-    ty -= 34
-    text(400, ty, "税抜金額合計", size=9)
-    text(w - 60, ty, f"¥{line_excl:,}", size=10, align="right")
-    ty -= 16
-    text(400, ty, "消費税等（8%）", size=9)
-    text(w - 60, ty, f"¥{tax:,}", size=10, align="right")
-    ty -= 16
-    text(400, ty, "税込合計", size=9)
-    text(w - 60, ty, f"¥{total:,}", size=10, align="right")
+    ty -= 30
+    text(256, ty, "税抜金額合計", size=8.5)
+    text(w - m, ty, f"¥{line_excl:,}", size=9.5, align="right")
+    ty -= 15
+    text(256, ty, "消費税等（8%）", size=8.5)
+    text(w - m, ty, f"¥{tax:,}", size=9.5, align="right")
+    ty -= 15
+    text(256, ty, "税込合計", size=8.5)
+    text(w - m, ty, f"¥{total:,}", size=9.5, align="right")
 
-    pc.draw_issuer_block(c, w, 160)
+    pc.draw_issuer_block(c, w, 60)
 
     c.showPage()
     c.save()
