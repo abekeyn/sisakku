@@ -17,6 +17,20 @@ from reportlab.pdfbase import pdfmetrics
 from . import pdf_common as pc
 
 
+def _wrap(s: str, font: str, size: float, max_w: float) -> list[str]:
+    """幅 max_w に収まるよう文字単位で折り返す（日本語は単語区切りが無いため）。"""
+    lines, cur = [], ""
+    for ch in str(s):
+        if cur and pdfmetrics.stringWidth(cur + ch, font, size) > max_w:
+            lines.append(cur)
+            cur = ch.lstrip()
+        else:
+            cur += ch
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
 def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: float,
                       issue_date: date, doc_no, amount: int | None = None) -> bytes:
     """請求書PDF(bytes)を作る。qtyは個数(1個あたりの重量はunit_price側で決まる)。
@@ -67,12 +81,16 @@ def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: f
     text(w - m, ty, "金額(税抜)", size=8.5, align="right")
     c.line(m, ty - 6, w - m, ty - 6)
 
+    # 内容欄は数量の列(x=212)の手前までしか使えない。長い品名は折り返して重ならないようにする。
     ty -= 22
-    text(m, ty, item_desc, size=9.5)
+    lines = _wrap(item_desc, pc.FONT_NAME, 9.5, 212 - 8 - m)
+    for i, ln in enumerate(lines):
+        text(m, ty - i * 13, ln, size=9.5)
     text(216, ty, f"{qty:g}", size=9.5)
     text(256, ty, f"¥{unit_excl:,}", size=9.5)
     text(312, ty, "8%", size=9.5)
     text(w - m, ty, f"¥{line_excl:,}", size=9.5, align="right")
+    ty -= (len(lines) - 1) * 13
     c.line(m, ty - 9, w - m, ty - 9)
 
     ty -= 30
