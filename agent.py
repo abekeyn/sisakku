@@ -40,6 +40,7 @@ _JOB_TIMEOUTS = {
     "b2_print": 360,
     "b2_pickup": 240,
     "b2_history": 900,
+    "print_pdf": 240,
 }
 _JOBS: dict[str, dict] = {}  # name -> {"proc", "deadline", "result_key", "label"}
 
@@ -167,6 +168,39 @@ def _run_b2_print() -> None:
         print("B2発行・印刷 失敗:", e, flush=True)
         traceback.print_exc()
     db.set_setting("b2_print_result", result)
+
+
+def _run_print_pdf() -> None:
+    """アプリから渡されたPDF（支払いQR・請求書・領収書など）を印刷する。B2には触れない。"""
+    import base64
+    from lib import printing
+    started = datetime.now().isoformat(timespec="seconds")
+    prog = _progress("print_pdf_progress")
+    prog(10, "PCで処理を開始しました")
+    try:
+        b64 = db.get_setting("print_pdf_b64")
+        if not b64:
+            raise RuntimeError("印刷するデータがありません")
+        prog(40, "プリンタへ送信中")
+        ok, pmsg = printing.print_pdf(base64.b64decode(b64))
+        result = {"ok": bool(ok), "at": started, "summary": pmsg}
+        print("PDF印刷:", pmsg, flush=True)
+    except Exception as e:  # noqa: BLE001
+        result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        print("PDF印刷 失敗:", e, flush=True)
+        traceback.print_exc()
+    prog(100, "完了")
+    db.set_setting("print_pdf_result", result)
+
+
+def _check_print_pdf() -> bool:
+    req = db.get_setting("print_pdf_request")
+    done = db.get_setting("print_pdf_handled")
+    if req and req != done:
+        db.set_setting("print_pdf_handled", req)
+        _launch_job("print_pdf", "--print-pdf", "print_pdf_result", "PDFの印刷")
+        return True
+    return False
 
 
 def _check_b2_print() -> bool:
@@ -321,6 +355,9 @@ def main() -> None:
     if "--b2-print" in sys.argv:
         _run_b2_print()
         return
+    if "--print-pdf" in sys.argv:
+        _run_print_pdf()
+        return
     if "--b2-pickup" in sys.argv:
         _run_b2_pickup()
         return
@@ -340,6 +377,7 @@ def main() -> None:
                 _process_exports()
                 _check_b2_request()
                 _check_b2_print()
+                _check_print_pdf()
                 _check_b2_pickup()
                 _check_b2_history()
                 _poll_jobs()

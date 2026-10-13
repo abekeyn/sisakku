@@ -126,6 +126,16 @@ def _addr_len_hint(addr: str) -> None:
                    "（送り状の項目上限を超えるとB2で修正必要エラーになります）。")
 
 
+def _print_pdf_button(pdf_bytes: bytes, key: str, label: str = "🖨 PCのプリンタで印刷") -> None:
+    """PDFをPCの常駐プログラム経由でEP-810Aへ印刷する（PCとプリンタが起動している必要あり）。"""
+    import base64
+    if st.button(label, key=f"pp_{key}", use_container_width=True,
+                 help="PCの常駐プログラムが、このPDFをプリンタ（EP-810A・白黒）へ送ります。"):
+        _start_agent("print_pdf_request", "print_pdf_progress", "print_pdf_result",
+                     "PDFの印刷", payload_key="print_pdf_b64",
+                     payload=base64.b64encode(pdf_bytes).decode())
+
+
 def _pdf_preview(b64: str, height: int = 480) -> None:
     """PDFをその場でプレビュー表示する（各ページをPNG画像に変換して表示）。
 
@@ -1518,6 +1528,7 @@ def _receipt_button(key: str, p: dict) -> None:
             st.download_button("↓ 領収書PDFをダウンロード / 印刷", base64.b64decode(r["pdf_b64"]),
                                file_name=r.get("filename") or "receipt.pdf", mime="application/pdf",
                                key=f"rdl_{key}_{rid}", use_container_width=True)
+            _print_pdf_button(base64.b64decode(r["pdf_b64"]), f"r_{key}_{rid}")
             if st.toggle("プレビューを表示", key=f"rpv_{key}_{rid}"):
                 _pdf_preview(r["pdf_b64"])
 
@@ -1760,6 +1771,7 @@ def _render_history_item(key: str, p: dict) -> None:
             st.download_button("↓ 請求書PDFをダウンロード / 印刷", base64.b64decode(p["pdf_b64"]),
                                file_name=p["pdf_name"], mime="application/pdf", key=f"hdl_{key}",
                                use_container_width=True)
+            _print_pdf_button(base64.b64decode(p["pdf_b64"]), f"h_{key}")
             if st.toggle("プレビューを表示", key=f"hpv_{key}"):
                 _pdf_preview(p["pdf_b64"])
         elif mode == "領収書":
@@ -2010,6 +2022,7 @@ def _paysheet_issue() -> None:
         st.download_button("↓ PDFをダウンロード", d["pdf"], file_name=d["filename"],
                            mime="application/pdf", key="ps_dl",
                            use_container_width=True)
+        _print_pdf_button(d["pdf"], "ps_new")
 
     _paysheet_history()
 
@@ -2074,6 +2087,7 @@ def _paysheet_history() -> None:
     st.download_button("↓ 選んだ紙のPDFをダウンロード", pdf, file_name=fname,
                        mime="application/pdf", key="ps_hist_dl",
                        use_container_width=True)
+    _print_pdf_button(pdf, "ps_hist")
 
 
 def _month_end(y: int, mo: int) -> date:

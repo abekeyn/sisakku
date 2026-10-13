@@ -72,6 +72,15 @@ def _job_ids(name: str) -> set[str]:
     return {x for x in out.split(",") if x.strip()}
 
 
+def _job_errors(name: str, before: set[str]) -> bool:
+    """今回の新規ジョブがエラー状態か（ドライバ/接続不良で0ページのまま止まる等）。"""
+    safe = name.replace("'", "''")
+    out = _ps(f"(Get-PrintJob -PrinterName '{safe}' -EA SilentlyContinue "
+              f"| Where-Object {{ $_.JobStatus -match 'Error|Offline|PaperOut|UserIntervention' }} "
+              f"| Select-Object -ExpandProperty Id) -join ','")
+    return bool({x for x in out.split(",") if x.strip()} - before)
+
+
 def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
     """PDFを印刷する。
 
@@ -107,6 +116,11 @@ def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
             for _ in range(12):
                 time.sleep(0.5)
                 if _job_ids(safe_name) - before:
+                    time.sleep(5)   # ジョブ作成直後はまだ流れていない。エラーで止まらないか確認
+                    if _job_errors(safe_name, before):
+                        return False, (f"{short} が印刷ジョブをエラーにしました（0ページのまま停止）。"
+                                       "プリンタの用紙・インク・接続（ドライバ入替後はポート設定）を"
+                                       "確認してください。")
                     return True, f"印刷しました（{short}・白黒）"
             # ジョブ無し＝プリンタがスリープ/未接続。少し待って起こして再試行
             time.sleep(4)
