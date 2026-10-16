@@ -1514,6 +1514,22 @@ def _saved_note(client: dict, path: str) -> str:
     return "この請求先は保存先フォルダが未設定のため、PCには保存されません（システム上には残ります）。"
 
 
+def _delivery_note_button(key: str, p: dict) -> None:
+    """請求書と同じ内容・同じ様式（A5）で納品書を作る。保存や番号の消費はしない。"""
+    import base64
+
+    c1, c2 = st.columns(2)
+    nd = c1.date_input("納品日", value=date.fromisoformat(p["issue_date"]), key=f"dnd_{key}")
+    hon = c2.selectbox("敬称", ["御中", "様"], key=f"dnh_{key}")
+    pdf, fname = billing.build_delivery_note(p, nd, hon)
+    st.caption(f"請求書と同じ書類番号 {p['doc_number']}・¥{int(p['amount']):,} で作ります。")
+    st.download_button("↓ 納品書PDFをダウンロード / 印刷", pdf, file_name=fname,
+                       mime="application/pdf", key=f"dndl_{key}", use_container_width=True)
+    _print_pdf_button(pdf, f"dn_{key}")
+    if st.toggle("プレビューを表示", key=f"dnpv_{key}"):
+        _pdf_preview(base64.b64encode(pdf).decode())
+
+
 def _receipt_button(key: str, p: dict) -> None:
     """領収書の発行・再発行と、発行済みの領収書の呼び出し（ダウンロード・プレビュー）。"""
     import base64
@@ -1661,6 +1677,9 @@ def _render_pending_card(key: str, p: dict) -> None:
                            use_container_width=True)
         _pdf_preview(p["pdf_b64"])
 
+        with st.expander("📦 納品書を作る（請求書と同じ内容）"):
+            _delivery_note_button(key, p)
+
         _receipt_button(key, p)
 
         with st.expander("🖊 発行日・数量・単価を修正して作り直す"):
@@ -1764,7 +1783,7 @@ def _render_history_item(key: str, p: dict) -> None:
     with st.expander(title):
         st.caption(f"確定 {p.get('sent_at', '')}　／　宛先 {p.get('email', '-')}　／　{saved}"
                    + (f"　／　{p['synced_path']}" if p.get("synced_path") else ""))
-        modes = ["請求書", "領収書"] + (["修正して再発行"] if p.get("source") == "manual" else [])
+        modes = ["請求書", "納品書", "領収書"] + (["修正して再発行"] if p.get("source") == "manual" else [])
         mode = st.segmented_control("操作", modes, default="請求書", key=f"hv_{key}",
                                     label_visibility="collapsed") or "請求書"
         if mode == "請求書":
@@ -1774,6 +1793,8 @@ def _render_history_item(key: str, p: dict) -> None:
             _print_pdf_button(base64.b64decode(p["pdf_b64"]), f"h_{key}")
             if st.toggle("プレビューを表示", key=f"hpv_{key}"):
                 _pdf_preview(p["pdf_b64"])
+        elif mode == "納品書":
+            _delivery_note_button(key, p)
         elif mode == "領収書":
             _receipt_button(key, p)
         else:

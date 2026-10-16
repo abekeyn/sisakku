@@ -270,6 +270,24 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
     return {"ok": True, "amount": amount, "qty": qty}
 
 
+def build_delivery_note(p: dict, issue_date: date | None = None,
+                        honorific: str = "御中") -> tuple[bytes, str]:
+    """請求書の記録から納品書PDF（A5・請求書と同じ様式）をその場で作る。
+
+    保存や番号の払い出しはしない（請求書と同じ書類番号・数量・単価・金額をそのまま使う）。
+    """
+    from . import invoice_pdf
+
+    client = get_client(p["client_id"]) or {}
+    d = issue_date or date.fromisoformat(p["issue_date"])
+    pdf = invoice_pdf.build_invoice_pdf(
+        invoice_to=client.get("invoice_to") or p["client_name"],
+        item_desc=client.get("item_desc", ""), qty=p["qty"], unit_price=p["unit_price"],
+        issue_date=d, doc_no=p["doc_number"], amount=int(p["amount"]),
+        doc_type="納品書", honorific=honorific)
+    return pdf, invoice_pdf.delivery_note_filename(d, p["client_name"])
+
+
 def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: float,
                    unit_kg: float | None = None, amount_override: int | None = None) -> dict:
     """自動集計を使わず、発行日・数量・単価を手入力して請求書をその場で新規作成する。

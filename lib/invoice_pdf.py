@@ -32,12 +32,16 @@ def _wrap(s: str, font: str, size: float, max_w: float) -> list[str]:
 
 
 def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: float,
-                      issue_date: date, doc_no, amount: int | None = None) -> bytes:
+                      issue_date: date, doc_no, amount: int | None = None,
+                      doc_type: str = "請求書", honorific: str = "御中") -> bytes:
     """請求書PDF(bytes)を作る。qtyは個数(1個あたりの重量はunit_price側で決まる)。
 
     amountを指定すると、税込合計をその金額に固定する（端数調整）。その場合、
     明細行の単価・金額(税抜)は数量×単価のまま表示しつつ、消費税等の行で
     差額を吸収して合計と一致させる（税抜金額合計＋消費税等＝税込合計は常に成立）。
+
+    doc_type="納品書" のときは、同じ様式で表題を「納品書」、日付を「納品日」にし、
+    支払いの案内（振込先）を外す。honorific は宛名の敬称（御中／様）。
     """
     from reportlab.pdfgen import canvas as _canvas
 
@@ -53,19 +57,25 @@ def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: f
     text = pc.make_text_fn(c)
     m = 34  # 左右余白（領収書と同じ）
 
-    text(w / 2, h - 46, "御　請　求　書", size=19, align="center")
+    is_dn = doc_type == "納品書"
+    text(w / 2, h - 46, "納　品　書" if is_dn else "御　請　求　書", size=19, align="center")
 
-    text(w - m, h - 74, f"発行日：{issue_date.strftime('%Y年%m月%d日')}", size=8, align="right")
+    date_label = "納品日" if is_dn else "発行日"
+    text(w - m, h - 74, f"{date_label}：{issue_date.strftime('%Y年%m月%d日')}", size=8, align="right")
     text(w - m, h - 87, f"書類番号：{doc_no}", size=8, align="right")
 
-    atesaki = f"{invoice_to}　御中"
+    atesaki = f"{invoice_to}　{honorific}"
     text(m, h - 118, atesaki, size=13)
     c.line(m, h - 123, m + max(200, pdfmetrics.stringWidth(atesaki, pc.FONT_NAME, 13) + 10), h - 123)
 
-    text(m, h - 146, "件名：お米代", size=8.5)
-    bank = f"振込先：{pc.BANK_INFO}"
-    text(m, h - 159, bank, size=8.5)
-    text(m, h - 172, f"　　　　{pc.BANK_HOLDER}", size=8.5)
+    if is_dn:
+        text(m, h - 146, "件名：お米の納品", size=8.5)
+        text(m, h - 159, "下記の通り納品いたしました。ご確認をお願いいたします。", size=8.5)
+    else:
+        text(m, h - 146, "件名：お米代", size=8.5)
+        bank = f"振込先：{pc.BANK_INFO}"
+        text(m, h - 159, bank, size=8.5)
+        text(m, h - 172, f"　　　　{pc.BANK_HOLDER}", size=8.5)
 
     box_y = h - 215
     c.rect(m, box_y - 9, w - 2 * m, 38, stroke=1, fill=0)
@@ -108,6 +118,11 @@ def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: f
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+def delivery_note_filename(issue_date: date, client_name: str = "") -> str:
+    d = issue_date.strftime("%Y%m%d")
+    return f"{d}_{client_name}_納品書.pdf" if client_name else f"{d}_納品書.pdf"
 
 
 def invoice_filename(issue_date: date, client_name: str = "") -> str:
