@@ -10,6 +10,7 @@ WiFi(WSD)プリンタはスリープ中だと最初の印刷指示が無言で�
 """
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import tempfile
@@ -81,16 +82,55 @@ def _job_errors(name: str, before: set[str]) -> bool:
     return bool({x for x in out.split(",") if x.strip()} - before)
 
 
+_A4_W, _A4_H = 595.276, 841.89  # A4縦（pt）
+
+
+def _on_a4(pdf_bytes: bytes) -> bytes:
+    """A5縦のページ（請求書・納品書・領収書・お支払い案内）を、A4横の左半分に置く。
+
+    A4横の高さはA5縦の高さと同じ(595pt)なので、用紙枠（MediaBox）の幅だけをA4横まで
+    広げれば、内容は動かさずにA4横用紙の左半分へ実寸で収まる。EP-810A の給紙は
+    L判とA4だけでA5が入っていないため（A5のまま送るとエラーで止まる）、A4横1枚に
+    A5を1面載せ、印刷後に半分に切って使う。A5縦以外の小さいページは従来どおり
+    A4縦の左上に置く。変換できなければ元のPDFをそのまま返す。
+    """
+    try:
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(pdf_bytes)
+        changed = False
+        for i in range(len(doc)):
+            page = doc[i]
+            w, h = page.get_size()
+            if page.get_rotation() != 0:
+                continue
+            left, _bottom, _right, top = page.get_mediabox()
+            if w <= _A4_W / 1.414 + 2 and h <= _A4_W + 2 and h > _A4_W - 2 - 1 and w < h:
+                # A5縦（≒420×595）→ A4横（842×595）の左半分
+                page.set_mediabox(left, top - _A4_W, left + _A4_H, top)
+                changed = True
+            elif w <= _A4_W + 2 and h <= _A4_H + 2 and (w < _A4_W - 2 or h < _A4_H - 2):
+                page.set_mediabox(left, top - _A4_H, left + _A4_W, top)
+                changed = True
+        if not changed:
+            return pdf_bytes
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return pdf_bytes
+
+
 def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
     """PDFを印刷する。
 
     プリンタは EP-810A(EPSON) を名前で優先的に狙う。既定プリンタが CubePDF 等の
     PDF作成ソフトになっていても、実機（EP-810A）へ送る。
     スリープ中のWiFiプリンタにも対応：ジョブが作られるまで最大3回再試行する。
+    A5縦のPDFはA4横の左半分に実寸で載せてから送る（_on_a4 参照）。
     returns (成功, メッセージ)
     """
     tmp = Path(tempfile.gettempdir()) / f"abe_label_{datetime.now():%Y%m%d_%H%M%S}.pdf"
-    tmp.write_bytes(pdf_bytes)
+    tmp.write_bytes(_on_a4(pdf_bytes))
 
     sumatra = _find_sumatra()
     # 明示指定 > EP-810A(EPSON) > 既定（ただし既定がPDF等の仮想なら使わない）
