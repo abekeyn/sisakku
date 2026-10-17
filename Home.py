@@ -1522,7 +1522,7 @@ def _delivery_note_button(key: str, p: dict) -> None:
     nd = c1.date_input("納品日", value=date.fromisoformat(p["issue_date"]), key=f"dnd_{key}")
     hon = c2.selectbox("敬称", ["御中", "様"], key=f"dnh_{key}")
     pdf, fname = billing.build_delivery_note(p, nd, hon)
-    st.caption(f"請求書と同じ書類番号 {p['doc_number']}・¥{int(p['amount']):,} で作ります。")
+    st.caption(f"請求書と同じ書類番号 {p['doc_number']} で作ります。金額は載せず、品名と数量(kg)だけ記載します。")
     st.download_button("↓ 納品書PDFをダウンロード / 印刷", pdf, file_name=fname,
                        mime="application/pdf", key=f"dndl_{key}", use_container_width=True)
     _print_pdf_button(pdf, f"dn_{key}")

@@ -33,7 +33,8 @@ def _wrap(s: str, font: str, size: float, max_w: float) -> list[str]:
 
 def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: float,
                       issue_date: date, doc_no, amount: int | None = None,
-                      doc_type: str = "請求書", honorific: str = "御中") -> bytes:
+                      doc_type: str = "請求書", honorific: str = "御中",
+                      total_kg: float | None = None) -> bytes:
     """請求書PDF(bytes)を作る。qtyは個数(1個あたりの重量はunit_price側で決まる)。
 
     amountを指定すると、税込合計をその金額に固定する（端数調整）。その場合、
@@ -41,7 +42,8 @@ def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: f
     差額を吸収して合計と一致させる（税抜金額合計＋消費税等＝税込合計は常に成立）。
 
     doc_type="納品書" のときは、同じ様式で表題を「納品書」、日付を「納品日」にし、
-    支払いの案内（振込先）を外す。honorific は宛名の敬称（御中／様）。
+    金額・単価・税の欄と支払いの案内（振込先）を外し、品名と数量(kg)だけを載せる
+    （total_kg＝合計kg）。honorific は宛名の敬称（御中／様）。
     """
     from reportlab.pdfgen import canvas as _canvas
 
@@ -76,6 +78,28 @@ def build_invoice_pdf(invoice_to: str, item_desc: str, qty: float, unit_price: f
         bank = f"振込先：{pc.BANK_INFO}"
         text(m, h - 159, bank, size=8.5)
         text(m, h - 172, f"　　　　{pc.BANK_HOLDER}", size=8.5)
+
+    if is_dn:
+        # 納品書：金額は載せず、品名と数量(kg)だけ
+        kg = total_kg if total_kg is not None else qty
+        ty = h - 215
+        text(m, ty, "内容", size=8.5)
+        text(w - m, ty, "数量(kg)", size=8.5, align="right")
+        c.line(m, ty - 6, w - m, ty - 6)
+        ty -= 22
+        lines = _wrap(item_desc, pc.FONT_NAME, 9.5, w - 2 * m - 90)
+        for i, ln in enumerate(lines):
+            text(m, ty - i * 13, ln, size=9.5)
+        text(w - m, ty, f"{kg:g} kg", size=9.5, align="right")
+        ty -= (len(lines) - 1) * 13
+        c.line(m, ty - 9, w - m, ty - 9)
+        ty -= 30
+        text(w - m - 90, ty, "合計", size=9, align="right")
+        text(w - m, ty, f"{kg:g} kg", size=11, align="right")
+        pc.draw_issuer_block(c, w, 60)
+        c.showPage()
+        c.save()
+        return buf.getvalue()
 
     box_y = h - 215
     c.rect(m, box_y - 9, w - 2 * m, 38, stroke=1, fill=0)

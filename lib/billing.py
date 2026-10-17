@@ -280,11 +280,15 @@ def build_delivery_note(p: dict, issue_date: date | None = None,
 
     client = get_client(p["client_id"]) or {}
     d = issue_date or date.fromisoformat(p["issue_date"])
+    # 品名の末尾に1個あたりの重さ（「…(精米) 5㎏」）が付いていると、合計kgの欄と
+    # 並んで数量が食い違って見えるため、納品書では外す。
+    desc = re.sub(r"[\s　]*[\d.]+[\s　]*(?:㎏|kg|KG|Kg|キロ)[\s　]*$", "", client.get("item_desc", "") or "")
     pdf = invoice_pdf.build_invoice_pdf(
         invoice_to=client.get("invoice_to") or p["client_name"],
-        item_desc=client.get("item_desc", ""), qty=p["qty"], unit_price=p["unit_price"],
+        item_desc=desc, qty=p["qty"], unit_price=p["unit_price"],
         issue_date=d, doc_no=p["doc_number"], amount=int(p["amount"]),
-        doc_type="納品書", honorific=honorific)
+        doc_type="納品書", honorific=honorific,
+        total_kg=p.get("total_kg") or (p["qty"] * (p.get("unit_kg") or UNIT_KG)))
     return pdf, invoice_pdf.delivery_note_filename(d, p["client_name"])
 
 
