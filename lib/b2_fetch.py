@@ -218,19 +218,51 @@ def _first_visible(page, selectors: list[str], timeout_ms: int = 8000):
     return None
 
 
+def _wait_for(page, cond, max_ms: int, poll_ms: int = 150) -> bool:
+    """条件 cond() が真になるまで最大 max_ms 待つ（真になり次第すぐ返す）。
+
+    以前は画面遷移のたびに固定で3〜6秒待っていた。上限を元の固定待ちと同じにしてあるので、
+    条件が満たされなくても従来より遅くなることはなく、満たされれば即座に先へ進む。
+    """
+    deadline = time.time() + max_ms / 1000
+    while True:
+        try:
+            if cond():
+                return True
+        except Exception:  # noqa: BLE001  遷移中の一時的な例外は無視して再判定
+            pass
+        if time.time() >= deadline:
+            return False
+        page.wait_for_timeout(poll_ms)
+
+
+def _body(page) -> str:
+    try:
+        return page.inner_text("body", timeout=1500)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _wait_change(page, before: str, max_ms: int, settle_ms: int = 600) -> bool:
+    """画面（本文テキスト）が before から変わるまで待ち、描画が落ち着くまで少し待つ。"""
+    ok = _wait_for(page, lambda: _body(page) != before, max_ms)
+    if ok:
+        page.wait_for_timeout(settle_ms)
+    return ok
+
+
 def _login_ybm(ctx, page, code: str, pw: str):
     """ヤマトビジネスメンバーズにログインする（ログイン後のページを返す）。"""
     import re as _re
 
     # ---- ログイン ----
     page.goto(YBM_URL, wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(2500)
+    _wait_for(page, lambda: page.locator('input[type="password"]').first.is_visible(), 2500)
     login_btn = _first_visible(page, [
         'text="ログイン"', 'a:has-text("ログイン")', 'button:has-text("ログイン")',
     ], 4000)
     if login_btn and _first_visible(page, ['input[type="password"]'], 1500) is None:
         login_btn.click()
-        page.wait_for_timeout(2500)
 
     pw_input = _first_visible(page, ['input[type="password"]'], 12000)
     if pw_input is None:
@@ -274,7 +306,8 @@ def _login_ybm(ctx, page, code: str, pw: str):
             break
     else:
         raise B2Error("ログインに失敗した可能性があります（コード/パスワードを確認）: " + _shot(page, "login_failed"))
-    page.wait_for_timeout(3000)
+    # ログイン後のメニュー（B2クラウド・集荷依頼のリンク）が出るまで。出たらすぐ先へ。
+    _wait_for(page, lambda: page.locator('a:has-text("B2クラウド")').count() > 0, 3000)
     return page
 
 
@@ -297,11 +330,13 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
     except Exception:  # noqa: BLE001
         pass
     b2.wait_for_load_state("domcontentloaded")
-    b2.wait_for_timeout(4000)
+    _use_sel = 'a:has-text("このサービスを利用する"), button:has-text("このサービスを利用する")'
+    _wait_for(b2, lambda: b2.locator(_use_sel).count() > 0
+              or b2.get_by_text("外部データから発行").count() > 0, 4000)
 
     use_btn = _first_visible(b2, [
         'a:has-text("このサービスを利用する")', 'button:has-text("このサービスを利用する")',
-    ], 4000)
+    ], 800)
     if use_btn is not None:
         try:
             with ctx.expect_page(timeout=10000) as pinfo2:
@@ -310,7 +345,8 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
         except Exception:  # noqa: BLE001
             pass
         b2.wait_for_load_state("domcontentloaded")
-        b2.wait_for_timeout(6000)
+        _wait_for(b2, lambda: b2.get_by_text("外部データから発行").count() > 0, 6000)
+        b2.wait_for_timeout(500)
     return b2
 
 
@@ -352,11 +388,14 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             link = b2.get_by_text(_re2.compile("外部データから発行")).first
             if link.count() == 0:
                 raise B2Error("「外部データから発行」が見つかりません: " + _shot(b2, "issue_menu"))
+            _before = _body(b2)
             try:
                 link.click(timeout=8000)
             except Exception:  # noqa: BLE001
                 link.click(force=True)
-            b2.wait_for_timeout(5000)
+            _wait_for(b2, lambda: b2.locator("select").count() > 0
+                      and _body(b2) != _before, 5000)
+            b2.wait_for_timeout(400)
 
             # 取込みパターンを選択
             try:
@@ -371,7 +410,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                             break
                 except Exception:  # noqa: BLE001
                     _shot(b2, "pattern_select")
-            b2.wait_for_timeout(1500)
+            b2.wait_for_timeout(400)
 
             # ファイルをアップロード（全 input[type=file] に投入し、効いたものを採用）
             tmp = Path(tempfile.gettempdir()) / "abe_yamato_issue.csv"
@@ -392,18 +431,22 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                     fin.set_input_files(str(tmp), timeout=8000)
                 except Exception:  # noqa: BLE001
                     continue
-            b2.wait_for_timeout(3500)
+            _wait_for(b2, lambda: b2.get_by_text(_re.compile(r"取込み?開始")).count() > 0, 3500)
+            b2.wait_for_timeout(700)
             _shot(b2, "after_upload")
 
             # 「取込み開始」をクリック（要素種別を問わずテキストで掴む）
             start = b2.get_by_text(_re.compile(r"取込み?開始")).last
             if start.count() == 0:
                 raise B2Error("「取込み開始」が見つかりません: " + _shot(b2, "import_start"))
+            _before = _body(b2)
             try:
                 start.click(timeout=8000)
             except Exception:  # noqa: BLE001
                 start.click(force=True)
-            b2.wait_for_timeout(6000)
+            # 取込み結果（発行可能件数・修正必要件数など）が出るまで。出たらすぐ先へ。
+            _wait_for(b2, lambda: _re.search(r"(発行可能件数|修正必要件数|エラー)", _body(b2)) is not None, 6000)
+            b2.wait_for_timeout(500)
             _emit(progress, 60, "取り込み結果を確認中")
             _shot(b2, "import_result")
 
@@ -467,7 +510,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                             }
                         }"""
                     )
-                    b2.wait_for_timeout(1000)
+                    b2.wait_for_timeout(300)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -475,11 +518,12 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
             conf = b2.get_by_text(_re.compile("印刷内容の確認")).last
             if conf.count() == 0:
                 raise B2Error("「印刷内容の確認へ」が見つかりません: " + _shot(b2, "to_confirm"))
+            _before = _body(b2)
             try:
                 conf.click(timeout=8000)
             except Exception:  # noqa: BLE001
                 conf.click(force=True)
-            b2.wait_for_timeout(5000)
+            _wait_change(b2, _before, 5000, settle_ms=800)
             _shot(b2, "confirm_screen")
 
             if explore:
@@ -505,10 +549,11 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 issue_btn.click(timeout=8000)
             except Exception:  # noqa: BLE001
                 issue_btn.click(force=True)
-            b2.wait_for_timeout(4000)
-            # 確認ダイアログ（OK/はい）
+            # 確認ダイアログ（OK/はい）が出るか、PDFのダウンロードが始まるまで（最大4秒）
+            _wait_for(b2, lambda: bool(holder.get("d")) or b2.locator(
+                'button:has-text("OK"), button:has-text("はい")').count() > 0, 4000)
             okb = _first_visible(b2, ['button:has-text("OK")', 'button:has-text("はい")',
-                                      'button:has-text("発行")'], 4000)
+                                      'button:has-text("発行")'], 1500)
             if okb:
                 try:
                     okb.click()
@@ -859,7 +904,7 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
         try:
             _emit(progress, 20, "ヤマトにログイン中")
             page = _login_ybm(ctx, page, code, pw)
-            page.wait_for_timeout(2000)
+            _wait_for(page, lambda: page.locator('a:has-text("集荷依頼"), a:has-text("集荷")').count() > 0, 2000)
             _emit(progress, 50, "集荷依頼ページを開いています")
 
             # ---- 集荷依頼メニューを開く ----
@@ -880,14 +925,16 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                 pass
             page = new_page
             page.wait_for_load_state("domcontentloaded")
-            page.wait_for_timeout(4000)
+            _wait_for(page, lambda: page.locator(
+                'a:has-text("このサービスを利用する"), button:has-text("このサービスを利用する"), '
+                'input[value*="このサービスを利用する"], select[name=shukaYmd]').count() > 0, 4000)
 
             # 集荷依頼の案内ページ → 「このサービスを利用する」で実フォームへ
             use_btn = _first_visible(page, [
                 'a:has-text("このサービスを利用する")',
                 'button:has-text("このサービスを利用する")',
                 'input[value*="このサービスを利用する"]',
-            ], 8000)
+            ], 1500)
             if use_btn is not None:
                 np2 = page
                 try:
@@ -901,7 +948,8 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                         use_btn.evaluate("el => el.click()")
                 page = np2
                 page.wait_for_load_state("domcontentloaded")
-                page.wait_for_timeout(4000)
+                _wait_for(page, lambda: page.locator("select[name=shukaYmd]").count() > 0, 4000)
+                page.wait_for_timeout(400)
 
             # ====== ステップ1: 集荷の日時・個数を入力 ======
             # 探索モードは妥当な既定値（最初の候補日・指定なし・1個）で埋めてから進める
@@ -963,7 +1011,7 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                     note)
 
             _emit(progress, 75, "集荷の日時・個数を入力中")
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(300)
             _shot(page, "pickup_filled")
 
             if explore:
@@ -984,19 +1032,22 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                                    "（依頼は送信していません）。画面を確認してください。"}
 
             # ====== ステップ1→2→3→確定 ======
+            _before = _body(page)
             if not _click_named(page, "action:ShukaDataInputAction_doNext"):
                 raise B2Error("「次へ」が見つかりません: " + _dump_page(page, "pickup_next1"))
-            page.wait_for_timeout(3500)
+            _wait_change(page, _before, 3500)
             _shot(page, "pickup_step2")
             # 住所選択ステップにも「次へ」があれば進む
+            _before = _body(page)
             _click_named(page, "action:ShukaDataInputAction_doNext")
-            page.wait_for_timeout(3500)
+            _wait_change(page, _before, 3500)
             _shot(page, "pickup_step3")
 
             # 確認画面 → 集荷依頼を確定（最終送信）
+            _before = _body(page)
             if not _click_pickup_confirm(page):
                 raise B2Error("集荷依頼の確定ボタンが見つかりません: " + _dump_page(page, "pickup_confirm"))
-            page.wait_for_timeout(4000)
+            _wait_change(page, _before, 4000, settle_ms=1000)
             _shot(page, "pickup_done")
             return {"ok": True,
                     "message": f"集荷を依頼しました（宅急便{count}個・{jp_date} {tlabel}）"}
