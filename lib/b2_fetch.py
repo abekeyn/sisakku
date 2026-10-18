@@ -251,6 +251,29 @@ def _wait_change(page, before: str, max_ms: int, settle_ms: int = 600) -> bool:
     return ok
 
 
+def _click_for_page(ctx, page, click_fn, max_ms: int = 8000):
+    """クリックして、新しいタブが開けばそのページを、同じタブで遷移すれば元のページを返す。
+
+    以前は ctx.expect_page(timeout=8000) で「新しいタブが開くか」を待っていたが、ヤマトの
+    リンクの多くは同じタブで遷移するため、毎回この8〜10秒がまるごと無駄になっていた。
+    新タブが出るか、同じタブのURLが変わった時点で返す。
+    """
+    before = list(ctx.pages)
+    url0 = page.url
+    click_fn()
+    got: list = []
+
+    def cond() -> bool:
+        new = [pg for pg in ctx.pages if pg not in before]
+        if new:
+            got.append(new[-1])
+            return True
+        return page.url != url0
+
+    _wait_for(page, cond, max_ms)
+    return got[0] if got else page
+
+
 def _login_ybm(ctx, page, code: str, pw: str):
     """ヤマトビジネスメンバーズにログインする（ログイン後のページを返す）。"""
     import re as _re
@@ -322,13 +345,7 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
     ], 12000)
     if b2_link is None:
         raise B2Error("B2クラウドへのリンクが見つかりません: " + _shot(page, "b2_link"))
-    b2 = page
-    try:
-        with ctx.expect_page(timeout=8000) as pinfo:
-            b2_link.click()
-        b2 = pinfo.value
-    except Exception:  # noqa: BLE001
-        pass
+    b2 = _click_for_page(ctx, page, b2_link.click)
     b2.wait_for_load_state("domcontentloaded")
     _use_sel = 'a:has-text("このサービスを利用する"), button:has-text("このサービスを利用する")'
     _wait_for(b2, lambda: b2.locator(_use_sel).count() > 0
@@ -338,12 +355,7 @@ def _login_and_open_b2(ctx, page, code: str, pw: str):
         'a:has-text("このサービスを利用する")', 'button:has-text("このサービスを利用する")',
     ], 800)
     if use_btn is not None:
-        try:
-            with ctx.expect_page(timeout=10000) as pinfo2:
-                use_btn.click()
-            b2 = pinfo2.value
-        except Exception:  # noqa: BLE001
-            pass
+        b2 = _click_for_page(ctx, b2, use_btn.click, 10000)
         b2.wait_for_load_state("domcontentloaded")
         _wait_for(b2, lambda: b2.get_by_text("外部データから発行").count() > 0, 6000)
         b2.wait_for_timeout(500)
@@ -390,7 +402,8 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 raise B2Error("「外部データから発行」が見つかりません: " + _shot(b2, "issue_menu"))
             _before = _body(b2)
             try:
-                link.click(timeout=8000)
+                # 通常クリックが効かない（要素が覆われている等）ときは8秒待っても無駄なので短く切り上げる
+                link.click(timeout=2000)
             except Exception:  # noqa: BLE001
                 link.click(force=True)
             _wait_for(b2, lambda: b2.locator("select").count() > 0
@@ -617,14 +630,15 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
             ], 15000)
             if hist is None:
                 raise B2Error("「発行済データの検索」メニューが見つかりません: " + _shot(b2, "menu"))
+            _before = _body(b2)
             try:
-                hist.click(timeout=8000)
+                hist.click(timeout=2000)
             except Exception:  # noqa: BLE001
                 try:
                     hist.click(force=True)
                 except Exception:  # noqa: BLE001
                     hist.evaluate("el => el.click()")
-            b2.wait_for_timeout(5000)
+            _wait_change(b2, _before, 5000)
             # まだトップメニューのままなら、DOMクリックで確実に起動
             if b2.get_by_text("発行済データの検索").count() > 1 or \
                     b2.locator('text="送り状を発行する"').count() > 0:
@@ -633,7 +647,8 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
                         """() => { const el=[...document.querySelectorAll('a,div,span,button')]
                             .find(e => (e.textContent||'').trim().startsWith('発行済データの検索'));
                             if(el) el.click(); }""")
-                    b2.wait_for_timeout(4000)
+                    _wait_change(b2, _body(b2), 1)  # ここでは固定待ちを避け、直後の検索期間の入力で待つ
+                    _wait_for(b2, lambda: b2.locator('input[type="text"]').count() > 0, 4000)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -652,7 +667,7 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
             # 開いたままのカレンダーが残っていれば閉じる
             try:
                 b2.keyboard.press("Escape")
-                b2.wait_for_timeout(600)
+                b2.wait_for_timeout(200)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -685,7 +700,10 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
                         if(v){ v.click(); return true; } return false; }"""))
             if not clicked:
                 raise B2Error("検索ボタンが見つかりません: " + _shot(b2, "search_btn"))
-            b2.wait_for_timeout(6000)
+            # 検索結果（伝票番号の並ぶ一覧）か「該当なし」が出るまで。出たらすぐ先へ。
+            _wait_for(b2, lambda: _re.search(r"\d{4}-\d{4}-\d{4}|該当する|0\s*件|見つかりません",
+                                             _body(b2)) is not None, 6000)
+            b2.wait_for_timeout(500)
 
             # 検索結果が0件なら、ここで終了（出荷確定するものなし）
             checked = b2.evaluate(
@@ -710,7 +728,7 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
                         .filter(b => b.checked && !b.className.includes('allCheck')).length;
                 }"""
             )
-            b2.wait_for_timeout(1000)
+            b2.wait_for_timeout(300)
             if not checked:
                 return None  # 0件＝この期間に発行済データが無い
 
@@ -723,10 +741,6 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
             if out_btn is None:
                 raise B2Error("「外部ファイルに出力」が見つかりません: " + _shot(b2, "output_btn"))
 
-            out_btn.click()
-            b2.wait_for_timeout(2800)
-            _shot(b2, "after_output_click")
-
             # ダイアログ「発行済データ外部出力」は別フレームの可能性 → 全フレームから探す
             def _frame_with(text: str):
                 for fr in b2.frames:
@@ -736,6 +750,11 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
                     except Exception:  # noqa: BLE001
                         continue
                 return None
+
+            out_btn.click()
+            _wait_for(b2, lambda: _frame_with("ファイル出力") is not None, 2800)
+            b2.wait_for_timeout(400)
+            _shot(b2, "after_output_click")
 
             dlg = _frame_with("ファイル出力") or b2.main_frame
 
@@ -774,7 +793,10 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
             if btn.count() == 0:
                 raise B2Error("「ファイル出力」ボタンが見つかりません: " + _shot(b2, "file_output"))
             btn.first.click()
-            b2.wait_for_timeout(3500)  # 「ダウンロード準備が完了しました」ダイアログを待つ
+            # 「ダウンロード準備が完了しました」ダイアログ（またはダウンロード開始）を待つ
+            _wait_for(b2, lambda: bool(holder.get("d")) or _frame_with("ダウンロード準備") is not None
+                      or _frame_with("ファイルダウンロード") is not None, 3500)
+            b2.wait_for_timeout(300)
 
             # 第2ダイアログ「ファイルダウンロード」の［ダウンロード］を押す
             def _click_download():
@@ -794,7 +816,7 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
                     _click_download()
                 except Exception:  # noqa: BLE001
                     pass
-                b2.wait_for_timeout(1500)
+                _wait_for(b2, lambda: bool(holder.get("d")), 1500)
             if not holder.get("d"):
                 raise B2Error("ファイル出力のダウンロードが発火しませんでした: " + _shot(b2, "no_download"))
             download = holder["d"]
@@ -916,14 +938,8 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
             if link.count() == 0:
                 info = _dump_page(page, "pickup_menu_not_found")
                 raise B2Error("集荷依頼メニューが見つかりません（調査ダンプを保存）: " + info)
-            new_page = page
-            try:
-                with ctx.expect_page(timeout=8000) as pinfo:
-                    link.evaluate("el => el.click()")  # DOMクリックでonclick発火
-                new_page = pinfo.value
-            except Exception:  # noqa: BLE001  同一タブ遷移（新規ページが開かない）
-                pass
-            page = new_page
+            # DOMクリックでonclick発火（新タブでも同じタブ遷移でも可）
+            page = _click_for_page(ctx, page, lambda: link.evaluate("el => el.click()"))
             page.wait_for_load_state("domcontentloaded")
             _wait_for(page, lambda: page.locator(
                 'a:has-text("このサービスを利用する"), button:has-text("このサービスを利用する"), '
@@ -936,16 +952,13 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                 'input[value*="このサービスを利用する"]',
             ], 1500)
             if use_btn is not None:
-                np2 = page
-                try:
-                    with ctx.expect_page(timeout=8000) as pinfo2:
-                        use_btn.click()
-                    np2 = pinfo2.value
-                except Exception:  # noqa: BLE001  同一タブ遷移
+                _u0 = page.url
+                np2 = _click_for_page(ctx, page, use_btn.click)
+                if np2 is page and page.url == _u0:  # 反応しなかったときだけ押し直す
                     try:
-                        use_btn.click()
-                    except Exception:  # noqa: BLE001
                         use_btn.evaluate("el => el.click()")
+                    except Exception:  # noqa: BLE001
+                        pass
                 page = np2
                 page.wait_for_load_state("domcontentloaded")
                 _wait_for(page, lambda: page.locator("select[name=shukaYmd]").count() > 0, 4000)
