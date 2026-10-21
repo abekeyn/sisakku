@@ -120,6 +120,62 @@ def _on_a4(pdf_bytes: bytes) -> bytes:
         return pdf_bytes
 
 
+_ERR_WORDS = ("Error", "Offline", "PaperOut", "UserIntervention", "Blocked")
+
+
+def _job_statuses(name: str, ids: set[str]) -> dict[str, str]:
+    """指定ジョブの現在の状態（IDごと）。キューから消えたジョブは含まれない。"""
+    safe = name.replace("'", "''")
+    out = _ps(f"Get-PrintJob -PrinterName '{safe}' -EA SilentlyContinue "
+              f"| ForEach-Object {{ \"$($_.Id)|$($_.JobStatus)\" }}")
+    res = {}
+    for line in out.splitlines():
+        jid, _, st = line.strip().partition("|")
+        if jid in ids:
+            res[jid] = st
+    return res
+
+
+def _watch_job(name: str, ids: set[str], timeout_s: float = 25) -> str:
+    """送ったジョブの行方を見る。"done"=キューから消えた(送信完了)／"error"=エラーのまま止まった／
+    "pending"=まだ処理中（時間切れ）。エラーのジョブはここでは消さない（呼び出し側の判断）。"""
+    deadline = time.time() + timeout_s
+    err_seen = 0
+    while time.time() < deadline:
+        st = _job_statuses(name, ids)
+        if not st:
+            return "done"
+        if any(w in v for v in st.values() for w in _ERR_WORDS):
+            err_seen += 1
+            if err_seen >= 2:   # 一瞬の状態遷移ではなく、続けてエラーのとき
+                return "error"
+        else:
+            err_seen = 0
+        time.sleep(1.5)
+    return "pending"
+
+
+def _printer_host(name: str) -> str:
+    """プリンタのポート名（IP_192.168.1.6 等）からIPアドレスを取り出す。分からなければ空。"""
+    safe = name.replace("'", "''")
+    port = _ps(f"(Get-Printer -Name '{safe}' -EA SilentlyContinue).PortName")
+    import re
+    m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", port or "")
+    return m.group(1) if m else ""
+
+
+def _reachable(host: str, port: int = 9100, tries: int = 4) -> bool:
+    """プリンタが応答するか。寝ているWiFiプリンタは最初の接続で起きることがあるので数回試す。"""
+    import socket
+    for i in range(tries):
+        try:
+            with socket.create_connection((host, port), timeout=2.5):
+                return True
+        except OSError:
+            time.sleep(1.5)
+    return False
+
+
 def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
     """PDFを印刷する。
 
@@ -141,6 +197,11 @@ def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
 
     if sumatra and name:
         safe_name = name
+        host = _printer_host(safe_name)
+        if host and not _reachable(host):
+            short = "EP-810A" if _epson_printer() == safe_name else safe_name
+            return False, (f"{short}（{host}）が応答しません。電源・WiFi接続を確認してください"
+                           "（印刷は送っていません）。")
         mono = ["-print-settings", "monochrome"]  # 白黒（インク節約）
         for attempt in range(3):
             before = _job_ids(safe_name)
@@ -151,16 +212,19 @@ def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
                 )
             except Exception:  # noqa: BLE001
                 pass
-            # 新規ジョブが現れたら成功（最大6秒待つ）
+            # 新規ジョブが現れたら、その行方を見る（最大6秒でジョブ出現待ち→最大25秒で結果待ち）
             short = "EP-810A" if _epson_printer() == safe_name else safe_name
             for _ in range(12):
                 time.sleep(0.5)
-                if _job_ids(safe_name) - before:
-                    time.sleep(5)   # ジョブ作成直後はまだ流れていない。エラーで止まらないか確認
-                    if _job_errors(safe_name, before):
-                        return False, (f"{short} が印刷ジョブをエラーにしました（0ページのまま停止）。"
-                                       "プリンタの用紙・インク・接続（ドライバ入替後はポート設定）を"
-                                       "確認してください。")
+                new_ids = _job_ids(safe_name) - before
+                if new_ids:
+                    r = _watch_job(safe_name, new_ids)
+                    if r == "error":
+                        return False, (f"{short} への印刷が失敗しました（ジョブがエラーのまま止まっています）。"
+                                       "プリンタの電源・用紙・インク・WiFi接続を確認してください。"
+                                       "止まったジョブは残してあります（直ると印刷される場合があります）。")
+                    if r == "pending":
+                        return True, f"{short} へ送信しました（まだ印刷中です・白黒）"
                     return True, f"印刷しました（{short}・白黒）"
             # ジョブ無し＝プリンタがスリープ/未接続。少し待って起こして再試行
             time.sleep(4)
