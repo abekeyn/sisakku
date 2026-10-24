@@ -227,10 +227,12 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         for k, p in pendings.items():
             if p.get("status") != "sent" or k in rec_keys                     or (p.get("client_id"), p.get("issue_date")) in rec_pairs:
                 continue
-            c = cl_by_id.get(p.get("client_id"))
+            # 請求先マスタから消えた（削除した）請求先の確定済み請求書も、請求書に残る名前・数量で数える
+            c = cl_by_id.get(p.get("client_id")) or {"id": p.get("client_id") or "", "name": p.get("client_name") or "",
+                                                     "item_desc": "", "customer_id": 0}
             d = ledger.parse_date(p.get("issue_date"))
             kg = _f(p.get("total_kg"))
-            if c is None or d is None or kg <= 0:
+            if d is None or kg <= 0:
                 continue
             item = c.get("item_desc") or ""
             form = "玄米" if ("玄米" in item and "精米" not in item) else "精米"
