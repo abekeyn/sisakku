@@ -87,8 +87,8 @@ def _chart_cfg(ch: alt.Chart | alt.LayerChart) -> alt.Chart:
 def render() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
     st.subheader("📦 在庫管理")
-    st.caption("在庫は「棚卸（実数）＋入庫 − 出庫（注文・請求書）」で計算します。"
-               "数字が実際と違うときは、棚卸を登録し直すだけで直せます。")
+    st.caption("在庫は「棚卸（実数）＋入庫 − 出庫」で計算します。出庫は、請求先は**発行済みの領収書**、"
+               "消費者向けは**出荷確定した注文**だけを数えます。月末の数字が違うときは「在庫の登録・修正」で直せます。")
 
     cfg = stock.load_config()
     fy_now = ledger.fy_of(stock.today())
@@ -147,6 +147,9 @@ def _dashboard(m: dict) -> None:
 
     known = m["has_base"]
     cur_ym = m["cur_ym"]
+
+    _plan_panel(m)
+    st.write("")
 
     def stock_val(v: float) -> str:
         return f'{_n(v)}<span style="font-size:1rem;font-weight:600"> kg</span>' if known else "—"
@@ -217,6 +220,83 @@ def _dashboard(m: dict) -> None:
     # ---- 取引先別 月次表 ----
     ui.section("取引先別 月次出庫実績", "単位：kg／将来の月は直近3か月の平均からの予測")
     _customer_table(m)
+
+
+def _kg(v: float) -> str:
+    return f'{_n(v)}<span style="font-size:1rem;font-weight:600"> kg</span>'
+
+
+def _plan_panel(m: dict) -> None:
+    """月の使える量（白米換算）と、今月あと何kg売れるか・売らないと余る量。"""
+    pl = m["plan"]
+    ui.section("今月の販売キャパ（白米換算）",
+               f'玄米は白米に換算（歩留まり{pl["yield"] * 100:.0f}%）。次の新米（{int(pl["harvest_ym"][5:])}月）までの'
+               f'{pl["n_months"]}か月で割った「1か月に使える量」です')
+    if not m["has_base"] or pl["start_w"] <= 0:
+        st.info("在庫がまだ登録されていません。「在庫の登録・修正」で月末在庫を入れると、ここに月の使える量が出ます。")
+        return
+    k = st.columns(4)
+    k[0].markdown(ui.kpi("全体の在庫（白米換算）", _kg(pl["total_w"]),
+                         f'玄米 {_n(pl["genmai"])}kg → 白米 {_n(pl["genmai_w"])}kg ＋ 精米 {_n(pl["seimai"])}kg'),
+                  unsafe_allow_html=True)
+    k[1].markdown(ui.kpi("1か月に使える量", _kg(pl["target_w"]),
+                         f'月初の在庫 {_n(pl["start_w"])}kg ÷ {pl["n_months"]}か月'), unsafe_allow_html=True)
+    left = pl["cap_left"]
+    sub_left = f'今月ここまで {_n(pl["mtd_w"])}kg 出庫' + (
+        f'／うち出荷待ち {_n(pl["reserved_w"])}kg' if pl["reserved_w"] > 0 else "")
+    k[2].markdown(ui.kpi("今月あと使える量", (_kg(left) if left >= 0 else
+                                          f'超過 {_kg(-left)}'), sub_left), unsafe_allow_html=True)
+    sp = pl["surplus_w"]
+    if sp is None:
+        k[3].markdown(ui.kpi("新米までの見込み", "—", ""), unsafe_allow_html=True)
+    elif sp >= 0:
+        k[3].markdown(ui.kpi("新米までの見込み", f'余り {_kg(sp)}',
+                             f'今のペース 月{_n(pl["pace_w"])}kg のままなら'), unsafe_allow_html=True)
+    else:
+        k[3].markdown(ui.kpi("新米までの見込み", f'不足 {_kg(-sp)}',
+                             f'今のペース 月{_n(pl["pace_w"])}kg のままなら'), unsafe_allow_html=True)
+
+    ratio = min(max(pl["mtd_w"] / pl["target_w"], 0.0), 1.0) if pl["target_w"] > 0 else 0.0
+    st.markdown(
+        f'<div class="stk-card" style="margin-top:10px"><div class="nm">今月の使用状況</div>'
+        f'<div class="stk-bar"><span style="width:{ratio * 100:.0f}%"></span></div>'
+        f'<div class="sub">{_n(pl["mtd_w"])}kg 使用 ／ {_n(pl["target_w"])}kg（'
+        f'{pl["mtd_w"] / pl["target_w"] * 100 if pl["target_w"] else 0:.0f}%）</div></div>',
+        unsafe_allow_html=True)
+
+    if sp is not None and sp > 0:
+        gap = max(pl["need_gap"], 0)
+        st.markdown(
+            f'<div class="stk-fc warn">このペースだと、次の新米までに白米換算で約{_n(sp)}kg余ります</div>'
+            f'<div class="stk-card"><div class="sub">余らせないためには、月{_n(pl["target_w"])}kg'
+            f'（今のペースより月{_n(gap)}kg多く）売る必要があります。'
+            f'今月はあと{_n(max(left, 0))}kg売れば計画どおりです。</div></div>',
+            unsafe_allow_html=True)
+    elif sp is not None:
+        st.markdown(
+            f'<div class="stk-fc danger">このペースだと、新米の前に白米換算で約{_n(-sp)}kg足りなくなります</div>'
+            f'<div class="stk-card"><div class="sub">1か月に使える量は{_n(pl["target_w"])}kgです。'
+            f'今のペース（月{_n(pl["pace_w"])}kg）を抑えるか、追加の仕入を検討してください。</div></div>',
+            unsafe_allow_html=True)
+    if not pl["has_hist"]:
+        st.caption("※ 今月より前の出庫実績がまだ少ないため、今月ここまでの出庫を月のペースとして見ています。")
+
+    rows = [{"月": "月初", "ペース": "今のペース", "在庫kg": round(pl["start_w"], 1)},
+            {"月": "月初", "ペース": "売り切る計画", "在庫kg": round(pl["start_w"], 1)}]
+    for x in pl["line"]:
+        lab = f'{int(x["ym"][5:])}月末'
+        rows.append({"月": lab, "ペース": "今のペース", "在庫kg": round(x["pace"], 1)})
+        rows.append({"月": lab, "ペース": "売り切る計画", "在庫kg": round(x["target"], 1)})
+    order = ["月初"] + [f'{int(x["ym"][5:])}月末' for x in pl["line"]]
+    df = pd.DataFrame(rows)
+    ch = alt.Chart(df).mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=40)).encode(
+        x=alt.X("月:N", sort=order, axis=alt.Axis(title=None, labelAngle=0)),
+        y=alt.Y("在庫kg:Q", axis=alt.Axis(title="白米換算の在庫 (kg)")),
+        color=alt.Color("ペース:N", scale=alt.Scale(
+            domain=["今のペース", "売り切る計画"], range=[GOLD, GREEN]),
+            legend=alt.Legend(orient="top", title=None, direction="horizontal")),
+        tooltip=[alt.Tooltip("月:N"), alt.Tooltip("ペース:N"), alt.Tooltip("在庫kg:Q", format=",.0f", title="kg")])
+    st.altair_chart(_chart_cfg(ch.properties(height=240)), use_container_width=True)
 
 
 def _locations(m: dict) -> None:
@@ -458,56 +538,80 @@ def _editor(m: dict, cfg: dict) -> None:
     locs = stock.location_names(cfg)
     varieties = sorted({*cfg["varieties"], cfg["default_variety"]})
 
-    ui.section("① 現在の在庫を数えて登録する（棚卸）",
-               "保管場所・品種・形態ごとの実数（kg）を入れます。登録すると、その日以降はこの実数を基準に計算し直します。")
-    on = st.date_input("棚卸日", value=stock.today(), key=f"stk_count_date_{ver}")
-    cur = {(r["form"], r["variety"], r["location"]): r["kg"] for r in m["stock_rows"]}
-    counted_keys = {stock._entry_key(e, cfg) for e in db.list_ledger_entries() if e.get("kind") == "stock"}
-    rows = [{"保管場所": k[2], "品種": k[1], "形態": k[0], "帳簿上の在庫kg": v,
-             "実数kg": round(v, 1) if k in counted_keys else None}
-            for k, v in sorted(cur.items())]
+    _month_end_editor(cfg, locs, varieties)
+    if st.session_state.get("stk_flash"):
+        st.success(st.session_state.pop("stk_flash"))
+
+    st.divider()
+    ui.section("入庫・移動・その他の増減を記録する", "収穫・仕入・とう精・保管場所の移動・ロス／サンプルなど")
+    _entry_form(cfg, locs, varieties)
+
+    st.divider()
+    ui.section("記録の修正・削除", "入力した棚卸・入庫の記録です。行を選んで削除、数字は直接書き換えられます。")
+    _history_editor(cfg, locs, varieties)
+
+
+def _month_end_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
+    """月末（または今日）の在庫を、帳簿の数字を見ながら直接書き換えて確定する。
+
+    帳簿上の在庫が最初から「実数」の欄に入っているので、違うところだけ直せばよい。
+    直した行だけを、その日付の棚卸として登録する（以後の入出庫はこの実数から計算し直す）。
+    """
+    ver = st.session_state.setdefault("stk_ver", 0)
+    today = stock.today()
+    opts: list[tuple[str, date]] = [(f"今日（{today.month}/{today.day}）", today)]
+    y, mo = today.year, today.month
+    for _ in range(13):
+        end = stock._month_end(f"{y}-{mo:02d}")
+        if end < today:
+            opts.append((f"{y}年{mo}月末（{end.month}/{end.day}）", end))
+        mo -= 1
+        if mo == 0:
+            y, mo = y - 1, 12
+    ui.section("月末の在庫を直す", "帳簿の数字が入っています。実際に数えた数字と違う行だけ書き換えて、下のボタンで確定してください。")
+    labels = [o[0] for o in opts]
+    default = 1 if today.day <= 7 and len(opts) > 1 else 0   # 月初は前月末を直すことが多い
+    pick = st.selectbox("いつの在庫", labels, index=default, key=f"stk_me_pick_{ver}")
+    as_of = dict(opts)[pick]
+
+    book = stock.compute_stock(db.list_ledger_entries(), stock.load_out_rows(), cfg, as_of)
+    rows = [{"保管場所": k[2], "品種": k[1], "形態": k[0], "帳簿の在庫kg": round(v, 1), "実数kg": round(v, 1)}
+            for k, v in sorted(book.items(), key=lambda kv: (kv[0][2], kv[0][1], kv[0][0]))]
     if not rows:
         rows = [{"保管場所": (cfg["default_location"].get(f) or (locs[0] if locs else "")),
-                 "品種": cfg["default_variety"], "形態": f, "帳簿上の在庫kg": 0.0, "実数kg": None}
+                 "品種": cfg["default_variety"], "形態": f, "帳簿の在庫kg": 0.0, "実数kg": 0.0}
                 for f in ("精米", "玄米")]
     df = pd.DataFrame(rows)
     loc_opts = locs + ([stock.UNSET_LOC] if any(r["保管場所"] == stock.UNSET_LOC for r in rows) else [])
     ed = st.data_editor(
-        df, num_rows="dynamic", hide_index=True, use_container_width=True, key=f"stk_count_{ver}",
+        df, num_rows="dynamic", hide_index=True, use_container_width=True,
+        key=f"stk_me_{ver}_{as_of.isoformat()}",
         column_config={
             "保管場所": st.column_config.SelectboxColumn("保管場所", options=loc_opts or [""], required=True),
             "品種": st.column_config.SelectboxColumn("品種", options=varieties, required=True),
             "形態": st.column_config.SelectboxColumn("形態", options=["玄米", "精米"], required=True),
-            "帳簿上の在庫kg": st.column_config.NumberColumn("帳簿上の在庫(kg)", disabled=True, format="%.1f"),
-            "実数kg": st.column_config.NumberColumn("実数(kg)", min_value=0.0, step=1.0, format="%.1f",
-                                                    help="数えた量。空欄の行は登録されません。"),
+            "帳簿の在庫kg": st.column_config.NumberColumn("帳簿の在庫(kg)", disabled=True, format="%.1f"),
+            "実数kg": st.column_config.NumberColumn("実数(kg)　← ここを直す", min_value=0.0, step=1.0, format="%.1f"),
         })
-    if st.button("この実数で棚卸を登録", type="primary", key=f"stk_count_save_{ver}"):
+    st.caption("表の下の ＋ で行を足すと、帳簿にない保管場所・品種も登録できます。")
+    if st.button(f"この内容で{pick}の在庫を確定", type="primary", key=f"stk_me_save_{ver}"):
+        bk = {(r["形態"], r["品種"], r["保管場所"]): r["帳簿の在庫kg"] for r in rows}
         out = []
         for _, r in ed.iterrows():
             if pd.isna(r["実数kg"]) or not r["保管場所"] or not r["品種"] or not r["形態"]:
                 continue
             k = (r["形態"], r["品種"], r["保管場所"])
-            if k in cur and k in counted_keys and abs(cur[k] - float(r["実数kg"])) < 0.05:
-                continue  # 変更なし
-            out.append({"form": r["形態"], "variety": r["品種"], "location": r["保管場所"], "kg": float(r["実数kg"])})
+            if k in bk and abs(bk[k] - float(r["実数kg"])) < 0.05:
+                continue  # 帳簿どおり（変更なし）
+            out.append({"form": r["形態"], "variety": r["品種"], "location": r["保管場所"],
+                        "kg": float(r["実数kg"])})
         if not out:
-            st.warning("登録する行がありません（実数を入れてください）。")
+            st.warning("帳簿から変わった行がありません。直す行の「実数」を書き換えてください。")
         else:
-            n = stock.save_counts(out, on)
+            n = stock.save_counts(out, as_of)
             st.session_state["stk_ver"] = ver + 1
-            st.session_state["stk_flash"] = f"棚卸を{n}件登録しました。"
+            st.session_state["stk_flash"] = f"{pick}の在庫を{n}行、実数で確定しました。"
             st.rerun()
-    if st.session_state.get("stk_flash"):
-        st.success(st.session_state.pop("stk_flash"))
-
-    st.divider()
-    ui.section("② 入庫・移動・その他の増減を記録する", "収穫・仕入・とう精・保管場所の移動・ロス／サンプルなど")
-    _entry_form(cfg, locs, varieties)
-
-    st.divider()
-    ui.section("③ 記録の修正・削除", "入力した棚卸・入庫の記録です。行を選んで削除、数字は直接書き換えられます。")
-    _history_editor(cfg, locs, varieties)
 
 
 _KIND_LABELS = {
@@ -616,9 +720,11 @@ def _history_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
 # 出庫の明細
 # ---------------------------------------------------------------------------
 def _out_detail(m: dict, cfg: dict) -> None:
-    st.caption("在庫から出たものとして数えている一覧です（注文＋手入力の請求書）。"
-               "同じ伝票番号の注文は自動で1件にまとめ、請求書は注文に含まれる分を差し引いています。"
-               "違うと思う行は「除外」にチェックすると、在庫の計算から外せます。")
+    st.caption("在庫から出たものとして数えている一覧です。請求先は**発行済みの領収書**、"
+               "消費者向けは**出荷確定した注文**を数えます（請求先の注文は領収書で数えるので計上しません）。"
+               "同じ伝票番号の注文は自動で1件にまとめます。違うと思う行は「除外」にチェックすると、在庫の計算から外せます。")
+    for w in (m.get("receipt_waiting") or [])[:6]:
+        st.caption(f'🧾 {w["client"]}：領収書の発行前に出荷した分が約{w["kg"]:,.0f}kg（領収書を発行すると計上されます）')
     months = set(m["months"])
     rows = [r for r in m["all_out"] if f'{r["date"].year}-{r["date"].month:02d}' in months]
     if not rows:
@@ -628,13 +734,14 @@ def _out_detail(m: dict, cfg: dict) -> None:
     df = pd.DataFrame([{
         "id": r["id"], "日付": r["date"], "取引先": r["customer"], "元": r["source"],
         "品種": r["variety"], "形態": r["form"], "kg": r["kg"], "保管場所": r["location"],
-        "状態": ("重複（自動除外）" if r["dup"] else "計上" if not r["excluded"] else "手動で除外"),
+        "状態": ("請求先の注文（領収書で計上）" if r.get("skip") else
+                 "重複（自動除外）" if r["dup"] else "計上" if not r["excluded"] else "手動で除外"),
         "メモ": r["note"], "除外": bool(r["excluded"])} for r in rows])
-    flt = st.segmented_control("表示", ["すべて", "計上のみ", "除外・重複のみ"], default="すべて",
+    flt = st.segmented_control("表示", ["すべて", "計上のみ", "除外・重複・領収書待ち"], default="すべて",
                                key="stk_out_flt", label_visibility="collapsed") or "すべて"
     if flt == "計上のみ":
         df = df[df["状態"] == "計上"]
-    elif flt == "除外・重複のみ":
+    elif flt == "除外・重複・領収書待ち":
         df = df[df["状態"] != "計上"]
     ed = st.data_editor(
         df, hide_index=True, use_container_width=True, key=f"stk_out_{flt}",
@@ -644,7 +751,8 @@ def _out_detail(m: dict, cfg: dict) -> None:
                        "除外": st.column_config.CheckboxColumn("除外", help="チェックすると在庫の計算から外します")})
     if st.button("除外の設定を保存", key="stk_out_save"):
         shown = set(df["id"])
-        picked = {r["id"] for _, r in ed.iterrows() if r["除外"] and not r["状態"].startswith("重複")}
+        picked = {r["id"] for _, r in ed.iterrows()
+                  if r["除外"] and not r["状態"].startswith(("重複", "請求先"))}
         new_ex = [i for i in (cfg.get("excluded_out") or []) if i not in shown] + sorted(picked)
         cfg["excluded_out"] = new_ex
         stock.save_config(cfg)
@@ -697,8 +805,13 @@ def _settings(cfg: dict) -> None:
     hi = t1.number_input("欠品リスク「高」（か月未満）", min_value=0.1, value=float(cfg["risk_high_months"]), step=0.5)
     mid = t2.number_input("欠品リスク「中」（か月未満）", min_value=0.2, value=float(cfg["risk_mid_months"]), step=0.5)
     stale = t3.number_input("棚卸が古いとお知らせ（日）", min_value=7, value=int(cfg["stale_count_days"]), step=5)
-    inc = st.checkbox("未確定（下書き）の手入力請求書も出庫に含める", value=bool(cfg["include_pending_invoices"]),
-                      help="請求書を作った時点で納品済みなら、オンのままで構いません。")
+    y1, y2 = st.columns(2)
+    myield = y1.number_input("精米の歩留まり（玄米→白米）", min_value=0.5, max_value=1.0,
+                             value=float(cfg.get("milling_yield") or 0.9), step=0.01, format="%.2f",
+                             help="玄米1kgから白米が何kgできるか。月の使える量を白米換算で出すのに使います。")
+    hmonth = y2.number_input("次の新米が入る月", min_value=1, max_value=12,
+                             value=int(cfg.get("harvest_month") or 9), step=1,
+                             help="この月までの月数で在庫を割って「1か月に使える量」を出します。")
     if st.button("設定を保存", type="primary", key="stk_set_save"):
         if not names:
             st.error("保管場所を1つ以上登録してください。")
@@ -708,7 +821,7 @@ def _settings(cfg: dict) -> None:
                 "locations": [{"name": n, "capacity_kg": caps.get(n, 0.0)} for n in names],
                 "default_location": dloc, "varieties": vlist, "default_variety": dvar,
                 "risk_high_months": hi, "risk_mid_months": max(mid, hi), "stale_count_days": int(stale),
-                "include_pending_invoices": inc})
+                "milling_yield": float(myield), "harvest_month": int(hmonth)})
             new_vl = {}
             for _, r in vloc_ed.iterrows():
                 d = {f: r[f + "の出庫元"] for f in ("玄米", "精米") if r[f + "の出庫元"] in names}
