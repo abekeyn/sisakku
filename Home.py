@@ -1864,7 +1864,9 @@ def _billing_browser() -> None:
     if view == "未確定":
         if not d["open"]:
             st.info("この請求先の未確定の請求書はありません。")
-        for k, p in _month_filter(d["open"], f"bill_ym_{cid}"):
+        shown_open = _month_filter(d["open"], f"bill_ym_{cid}")
+        _bulk_confirm_bar(cid, d["name"], shown_open)
+        for k, p in shown_open:
             _render_pending_card(k, p)
     else:
         if not d["sent"]:
@@ -1874,6 +1876,56 @@ def _billing_browser() -> None:
                    "修正しての再発行ができます。")
         for k, p in shown:
             _render_history_item(k, p)
+
+
+def _bulk_confirm_bar(cid: str, name: str, items: list) -> None:
+    """この請求先の未確定の請求書を、まとめて最終確定する（表示中の月の分）。
+
+    メール宛先のある請求書はそのまま送信されるので、確認の段階で件数・金額・送信の有無を見せる。
+    宛先の無い請求先（手渡し・郵送）はメールなしで確定し、発行書類フォルダへ保存する。
+    """
+    if len(items) < 1:
+        return
+    ck = f"bulk_confirm_{cid}"
+    total = sum(int(p["amount"]) for _, p in items)
+    n_mail = sum(1 for _, p in items if "@" in (p.get("email") or ""))
+    if not st.session_state.get(ck):
+        if st.button(f"✅ {name}の未確定{len(items)}件をまとめて確定（¥{total:,}）", key=f"bulk_{cid}",
+                     use_container_width=True,
+                     help="下の請求書を1件ずつ開かずに、全部いっぺんに最終確定します（確認画面が出ます）。"):
+            st.session_state[ck] = True
+            st.rerun()
+        return
+    with st.container(border=True):
+        st.markdown(f"**{name}の未確定の請求書 {len(items)}件（合計 ¥{total:,}）を最終確定します。よろしいですか？**")
+        st.dataframe([{"発行日": p["issue_date"], "書類番号": p["doc_number"], "数量": f"{p['total_kg']:g}kg",
+                       "金額": f"¥{int(p['amount']):,}",
+                       "送信": ("メール送信 " + p["email"]) if "@" in (p.get("email") or "") else "メールなし（確定のみ）"}
+                      for _, p in items], use_container_width=True, hide_index=True)
+        if n_mail:
+            st.warning(f"{n_mail}件は宛先のメールアドレスへ請求書を送信します（送信後は取り消せません）。")
+        b1, b2 = st.columns(2)
+        if b1.button("✅ はい、すべて確定する", type="primary", key=f"bulk_yes_{cid}", use_container_width=True):
+            done, fails = 0, []
+            with st.spinner("確定しています…"):
+                for k, p in items:
+                    has_email = "@" in (p.get("email") or "")
+                    r = billing.send_pending(k) if has_email else billing.confirm_pending(k)
+                    if r.get("ok"):
+                        done += 1
+                    else:
+                        fails.append(f"{p['issue_date']}（書類番号{p['doc_number']}）：{r.get('msg')}")
+                if done:
+                    billing.sync_invoices()   # PCならこの場で発行書類フォルダへ保存
+            st.session_state.pop(ck, None)
+            msg = f"{done}件を確定しました。確定済みは「確定済み（履歴）」からいつでも開けます。"
+            if fails:
+                msg += " 確定できなかった分：" + " / ".join(fails)
+            _flash(msg)
+            st.rerun()
+        if b2.button("やめる", key=f"bulk_no_{cid}", use_container_width=True):
+            st.session_state.pop(ck, None)
+            st.rerun()
 
 
 def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
