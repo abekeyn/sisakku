@@ -35,6 +35,7 @@ _DEFAULT_CFG = {
     "default_variety": "コシヒカリ",
     "varieties": ["コシヒカリ", "ひとめぼれ", "天のつぶ", "ミルキークイーン", "あきたこまち"],
     "count_sent_invoices": True,          # 領収書のない請求先は、確定済みの請求書で数える
+    "client_monthly_kg": {},              # 卸先ごとの月の使用量（kg・白米換算）{請求先ID: kg}
     "milling_yield": 0.9,                 # 玄米→白米（精米）の歩留まり（玄米1kgで白米0.9kg）
     "harvest_month": 9,                   # 次の新米が入る月。ここまでの月数で「月の使える量」を割る
     "risk_high_months": 1.5,              # これ未満で欠品リスク「高」
@@ -580,9 +581,11 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
         if a / 3 >= 20 and b > 0 and a >= b * 1.3:
             hot.append((cust_name[ck], a / 3, b / 3))
 
+    usage = _client_usage(cfg=cfg, now=now, rows=live_out, clients=clients, cur_ym=cur_ym, span=span)
     plan = _plan(cfg=cfg, now=now, stock_rows=stock_rows, res_rows=res_rows, live_out=live_out,
                  out_month=out_month, cur_ym=cur_ym, span=span)
     waiting = _receipt_waiting(all_out, receipts, clients, pendings, cfg)
+    _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span)
 
     alerts = _alerts(cfg=cfg, now=now, total=total, has_base=has_base, has_counts=has_counts,
                      last_count=last_count, risk=risk, run_out=run_out, months_left=months_left,
@@ -606,7 +609,7 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
         "others": [{"取引先": cust_name[ck], "合計(kg)": round(fy_tot[ck], 1)} for ck in rest],
         "alerts": alerts, "out_rows": out_rows, "all_out": all_out,
         "forecast_text": _forecast_text(risk, run_out, months_left, cfg, now),
-        "plan": plan, "receipt_waiting": waiting,
+        "plan": plan, "receipt_waiting": waiting, "client_usage": usage,
     }
 
 
@@ -673,6 +676,69 @@ def _plan(*, cfg, now, stock_rows, res_rows, live_out, out_month, cur_ym, span) 
         "surplus_w": surplus_w if ok else None, "need_gap": need_gap, "line": line,
         "has_hist": has_hist,
     }
+
+
+def _client_usage(*, cfg, now, rows, clients, cur_ym, span) -> dict:
+    """卸先ごとの「月の使用量（計画）」に対する今月の使用状況。
+
+    実績は、領収書・確定済みの請求書として出庫に数えているもの（白米換算）。
+    今月の見込みは、ここまでの実績に「直近3か月の平均 × 月の残り割合」を足したもの
+    （平均が無ければ、ここまでのペースを月末まで延ばす。月の前半は延ばさない）。
+    """
+    import calendar
+    plans = {k: _f(v) for k, v in (cfg.get("client_monthly_kg") or {}).items()}
+    dim = calendar.monthrange(now.year, now.month)[1]
+    frac = now.day / dim
+    by_c: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for r in rows:
+        cl = r.get("b2b_client")
+        if cl and r["source"] != "注文":
+            by_c[cl][_month_key(r["date"])] += to_white(r["form"], r["kg"], cfg)
+    out = []
+    for c in clients:
+        cid = c["id"]
+        plan = plans.get(cid, 0.0)
+        used = by_c[cid].get(cur_ym, 0.0) if cid in by_c else 0.0
+        avg3 = (sum(by_c[cid].get(m, 0.0) for m in span) / 3.0) if cid in by_c else 0.0
+        if plan <= 0 and used <= 0 and avg3 <= 0:
+            continue
+        if avg3 > 0:
+            proj = used + avg3 * (1 - frac)
+        elif now.day >= 10 and frac > 0:
+            proj = used / frac
+        else:
+            proj = used
+        proj = max(proj, used)
+        out.append({"id": cid, "name": _clean_name(c.get("name") or "").rstrip("様").strip(),
+                    "plan": plan, "used": used, "avg3": avg3, "proj": proj,
+                    "remaining": plan - used, "surplus": (plan - proj) if plan > 0 else None})
+    out.sort(key=lambda d: (-d["plan"], -d["used"]))
+    planned = [d for d in out if d["plan"] > 0]
+    tot = {
+        "plan": sum(d["plan"] for d in planned), "used": sum(d["used"] for d in planned),
+        "proj": sum(d["proj"] for d in planned),
+        "unplanned_used": sum(d["used"] for d in out if d["plan"] <= 0),
+        "frac": frac,
+    }
+    tot["surplus"] = tot["plan"] - tot["proj"]
+    return {"rows": out, "total": tot, "frac": frac}
+
+
+def _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span) -> None:
+    """卸の計画合計と消費者向けの月平均を、全体の使える量（白米換算）と突き合わせる。"""
+    cons: dict[str, float] = defaultdict(float)
+    for r in live_out:
+        if r["source"] == "注文" and not r.get("b2b_client"):
+            cons[_month_key(r["date"])] += to_white(r["form"], r["kg"], cfg)
+    has_hist = any(m < cur_ym and v > 0 for m, v in cons.items())
+    cons_avg = (sum(cons.get(m, 0.0) for m in span) / 3.0) if has_hist else cons.get(cur_ym, 0.0)
+    tot = usage["total"]
+    expected = tot["plan"] + cons_avg
+    plan["wholesale_plan"] = tot["plan"]
+    plan["consumer_avg"] = cons_avg
+    plan["consumer_mtd"] = cons.get(cur_ym, 0.0)
+    plan["month_expected"] = expected
+    plan["month_room"] = plan["target_w"] - expected     # 計画どおり売れたあと、1か月の枠に残る(+)／超える(−)量
 
 
 def _receipt_waiting(all_out, receipts, clients, pendings, cfg=None) -> list[dict]:

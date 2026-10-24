@@ -124,14 +124,16 @@ def render() -> None:
     unfiltered = (variety, location, form) == ("すべて", "すべて", "すべて")
     base = m if unfiltered else stock.build(**period_kw)
 
-    t_dash, t_edit, t_out, t_set = st.tabs(
-        ["ダッシュボード", "在庫の登録・修正", "出庫の明細", "設定"])
+    t_dash, t_edit, t_out, t_cl, t_set = st.tabs(
+        ["ダッシュボード", "在庫の登録・修正", "出庫の明細", "卸先の月間使用量", "設定"])
     with t_dash:
         _dashboard(m)
     with t_edit:
         _editor(base, cfg)
     with t_out:
         _out_detail(base, cfg)
+    with t_cl:
+        _client_plan_editor(base, cfg)
     with t_set:
         _settings(cfg)
 
@@ -149,6 +151,8 @@ def _dashboard(m: dict) -> None:
     cur_ym = m["cur_ym"]
 
     _plan_panel(m)
+    st.write("")
+    _client_usage_panel(m)
     st.write("")
 
     def stock_val(v: float) -> str:
@@ -187,20 +191,6 @@ def _dashboard(m: dict) -> None:
                          f'直近3か月の平均 {_n(m["monthly_avg"])}kg／月'), unsafe_allow_html=True)
     k[2].markdown(ui.kpi("欠品リスク", risk_html, risk_sub), unsafe_allow_html=True)
 
-    # ---- 保管場所別 ＋ 出庫先の流れ ----
-    st.write("")
-    c1, c2 = st.columns([1, 1.25])
-    with c1:
-        ui.section("保管場所別の在庫")
-        _locations(m)
-    with c2:
-        ui.section("在庫の流れ（保管場所 → 出庫先）", f'{m["label"]}の出庫量')
-        svg = _sankey_svg(m)
-        if svg:
-            st.markdown(svg, unsafe_allow_html=True)
-        else:
-            st.caption("この期間の出庫がまだありません。")
-
     # ---- 推移と予測 ----
     ui.section("出庫量の推移と予測", "棒＝月ごとの出庫量（薄い棒は予測）／線＝在庫残量")
     st.altair_chart(_trend_chart(m), use_container_width=True)
@@ -220,6 +210,20 @@ def _dashboard(m: dict) -> None:
     # ---- 取引先別 月次表 ----
     ui.section("取引先別 月次出庫実績", "単位：kg／将来の月は直近3か月の平均からの予測")
     _customer_table(m)
+
+    # ---- 保管場所別・出庫先の流れ（普段は閉じておく） ----
+    with st.expander("保管場所別の在庫・在庫の流れ"):
+        c1, c2 = st.columns([1, 1.25])
+        with c1:
+            ui.section("保管場所別の在庫")
+            _locations(m)
+        with c2:
+            ui.section("在庫の流れ（保管場所 → 出庫先）", f'{m["label"]}の出庫量')
+            svg = _sankey_svg(m)
+            if svg:
+                st.markdown(svg, unsafe_allow_html=True)
+            else:
+                st.caption("この期間の出庫がまだありません。")
 
 
 def _kg(v: float) -> str:
@@ -297,6 +301,131 @@ def _plan_panel(m: dict) -> None:
             legend=alt.Legend(orient="top", title=None, direction="horizontal")),
         tooltip=[alt.Tooltip("月:N"), alt.Tooltip("ペース:N"), alt.Tooltip("在庫kg:Q", format=",.0f", title="kg")])
     st.altair_chart(_chart_cfg(ch.properties(height=240)), use_container_width=True)
+
+
+def _client_usage_panel(m: dict) -> None:
+    """卸先ごとの「月の使用量（計画）」に対する今月の使用状況と、このままだとどれくらい余るか。"""
+    u = m["client_usage"]
+    pl = m["plan"]
+    now = m["now"]
+    ui.section("卸先の今月の使用状況（月の使用量に対して）",
+               f'{now.month}月の{now.day}日まで。使用量は白米換算・領収書（なければ確定済みの請求書）で数えています')
+    planned = [d for d in u["rows"] if d["plan"] > 0]
+    if not planned:
+        st.info("卸先ごとの月の使用量がまだ登録されていません。「卸先の月間使用量」タブで入れると、"
+                "ここに今月の使用状況と余る量が出ます。")
+        return
+    t = u["total"]
+    k = st.columns(4)
+    k[0].markdown(ui.kpi("卸先の月の使用量（計画）", _kg(t["plan"]), f"{len(planned)}か所の合計"),
+                  unsafe_allow_html=True)
+    k[1].markdown(ui.kpi("今月ここまでの使用", _kg(t["used"]),
+                         f'計画の {t["used"] / t["plan"] * 100 if t["plan"] else 0:.0f}%'),
+                  unsafe_allow_html=True)
+    k[2].markdown(ui.kpi("月末までの見込み", _kg(t["proj"]), "ここまで＋直近3か月の平均ペース"),
+                  unsafe_allow_html=True)
+    sp = t["surplus"]
+    k[3].markdown(ui.kpi("このままだと今月分は", (f'余り {_kg(sp)}' if sp >= 0 else f'超過 {_kg(-sp)}'),
+                         "計画に対する、今月の使い残し" if sp >= 0 else "計画を上回る見込み"),
+                  unsafe_allow_html=True)
+
+    if pl.get("month_room") is not None and pl["start_w"] > 0:
+        room = pl["month_room"]
+        msg = (f'卸の計画（{_n(pl["wholesale_plan"])}kg）＋消費者向けの月平均（{_n(pl["consumer_avg"])}kg）'
+               f'＝{_n(pl["month_expected"])}kg に対して、1か月に使える量は{_n(pl["target_w"])}kgです。')
+        if room >= 0:
+            msg += f'計画どおり売れても、約{_n(room)}kg枠が余ります。'
+        else:
+            msg += f'計画どおり売れると、約{_n(-room)}kg枠を超えます。'
+        st.markdown(f'<div class="stk-card" style="margin:10px 0"><div class="sub">{msg}</div></div>',
+                    unsafe_allow_html=True)
+
+    frac = u["frac"]
+    html = []
+    for d in planned:
+        ratio = min(d["used"] / d["plan"], 1.0) if d["plan"] else 0.0
+        over = d["used"] > d["plan"]
+        sp = d["surplus"]
+        if d["used"] >= d["plan"]:
+            status = f'<span style="color:#F5A9A9">計画を{_n(d["used"] - d["plan"])}kg超えました</span>'
+        elif sp is not None and sp > 0.5:
+            status = f'あと{_n(d["remaining"])}kg ／ このままだと<b>{_n(sp)}kg余る</b>見込み'
+        elif sp is not None and sp < -0.5:
+            status = f'あと{_n(d["remaining"])}kg ／ このままだと<span style="color:#F5A9A9">{_n(-sp)}kg超える</span>見込み'
+        else:
+            status = f'あと{_n(d["remaining"])}kg ／ ほぼ計画どおり'
+        bar_color = "#E07A7A" if over else "#EBCC72"
+        html.append(
+            f'<div class="stk-card" style="margin-bottom:8px;padding:10px 14px">'
+            f'<div style="display:flex;justify-content:space-between;gap:12px">'
+            f'<span class="nm">{d["name"]}</span>'
+            f'<span style="font-variant-numeric:tabular-nums"><b>{_n(d["used"])}</b> / {_n(d["plan"])} kg</span></div>'
+            f'<div class="stk-bar" style="position:relative"><span style="width:{ratio * 100:.0f}%;'
+            f'background:{bar_color}"></span>'
+            f'<i style="position:absolute;left:{frac * 100:.0f}%;top:-2px;height:12px;width:2px;'
+            f'background:#9DC4FF" title="今日の位置"></i></div>'
+            f'<div class="sub">{status}</div></div>')
+    st.markdown("".join(html), unsafe_allow_html=True)
+    st.caption("青い線は「今月の経過（今日の位置）」です。棒がそれより左なら、計画より遅れています。")
+    extra = [d for d in u["rows"] if d["plan"] <= 0 and d["used"] > 0]
+    if extra:
+        names = "、".join(f'{d["name"]}（{_n(d["used"])}kg）' for d in extra)
+        st.caption(f"月の使用量が未設定の卸先（今月使った分）：{names}")
+
+
+def _client_plan_editor(m: dict, cfg: dict) -> None:
+    """卸先ごとの月の使用量（マスタ）。ダッシュボードの「卸先の今月の使用状況」の元になる。"""
+    from . import billing
+    ui.section("卸先の月間使用量（マスタ）",
+               "卸先ごとに、1か月に使う量（kg・白米換算）を入れます。ダッシュボードで、今月どれくらい使っていて、"
+               "このままだとどれくらい余るかを見られます。")
+    clients = [c for c in billing.get_clients() if c.get("active", True)]
+    plans = cfg.get("client_monthly_kg") or {}
+    usage = {d["id"]: d for d in m["client_usage"]["rows"]}
+    ver = st.session_state.setdefault("stk_cl_ver", 0)
+    if st.button("空欄を直近3か月の平均で埋める", key=f"stk_cl_fill_{ver}"):
+        for c in clients:
+            avg = (usage.get(c["id"]) or {}).get("avg3", 0.0)
+            if not plans.get(c["id"]) and avg > 0:
+                plans[c["id"]] = round(avg)
+        cfg["client_monthly_kg"] = plans
+        stock.save_config(cfg)
+        st.session_state["stk_cl_ver"] = ver + 1
+        st.rerun()
+    rows = [{"id": c["id"], "卸先": _short_name(c.get("name", "")),
+             "月の使用量kg": float(plans.get(c["id"]) or 0),
+             "直近3か月の平均kg": round((usage.get(c["id"]) or {}).get("avg3", 0.0), 1),
+             "今月ここまでkg": round((usage.get(c["id"]) or {}).get("used", 0.0), 1)}
+            for c in clients]
+    rows.sort(key=lambda r: (-r["月の使用量kg"], -r["直近3か月の平均kg"], r["卸先"]))
+    ed = st.data_editor(
+        pd.DataFrame(rows), hide_index=True, use_container_width=True, key=f"stk_cl_{ver}",
+        disabled=["卸先", "直近3か月の平均kg", "今月ここまでkg"],
+        column_config={
+            "id": None,
+            "月の使用量kg": st.column_config.NumberColumn("月の使用量(kg)　← ここに入れる", min_value=0.0, step=5.0, format="%.0f"),
+            "直近3か月の平均kg": st.column_config.NumberColumn("参考：直近3か月の平均(kg)", format="%.1f"),
+            "今月ここまでkg": st.column_config.NumberColumn("今月ここまで(kg)", format="%.1f"),
+        })
+    st.caption("0または空欄の卸先は、計画なしとして扱います（使った分はダッシュボードの下に注記されます）。"
+               "「卸先」の追加・名前の変更は、請求タブの請求先マスタで行います。")
+    if st.button("月の使用量を保存", type="primary", key=f"stk_cl_save_{ver}"):
+        new = {}
+        for _, r in ed.iterrows():
+            v = r["月の使用量kg"]
+            if not pd.isna(v) and float(v) > 0:
+                new[r["id"]] = float(v)
+        for k in [k for k in plans if k not in {c["id"] for c in clients}]:
+            new[k] = plans[k]       # 非表示（無効）の請求先の分は消さない
+        cfg["client_monthly_kg"] = new
+        stock.save_config(cfg)
+        st.session_state["stk_cl_ver"] = ver + 1
+        st.success("保存しました。ダッシュボードに反映されます。")
+        st.rerun()
+
+
+def _short_name(n: str) -> str:
+    return (n or "").replace("　", " ").strip().rstrip("様").strip()
 
 
 def _locations(m: dict) -> None:
