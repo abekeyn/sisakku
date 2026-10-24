@@ -701,6 +701,21 @@ def _client_usage(*, cfg, now, rows, clients, cur_ym, span) -> dict:
         cl = r.get("b2b_client")
         if cl and r["source"] != "注文":
             by_c[cl][_month_key(r["date"])] += to_white(r["form"], r["kg"], cfg)
+    # 一般のお客様（請求先でない注文）の月ごとの出庫。「その他」の計画の実績に使う
+    cons_m: dict[str, float] = defaultdict(float)
+    for r in rows:
+        if r["source"] == "注文" and not r.get("b2b_client"):
+            cons_m[_month_key(r["date"])] += to_white(r["form"], r["kg"], cfg)
+
+    def _proj(used: float, avg3: float) -> float:
+        if avg3 > 0:
+            p = used + avg3 * (1 - frac)
+        elif now.day >= 10 and frac > 0:
+            p = used / frac
+        else:
+            p = used
+        return max(p, used)
+
     out = []
     for c in clients:
         cid = c["id"]
@@ -709,16 +724,24 @@ def _client_usage(*, cfg, now, rows, clients, cur_ym, span) -> dict:
         avg3 = (sum(by_c[cid].get(m, 0.0) for m in span) / 3.0) if cid in by_c else 0.0
         if plan <= 0 and used <= 0 and avg3 <= 0:
             continue
-        if avg3 > 0:
-            proj = used + avg3 * (1 - frac)
-        elif now.day >= 10 and frac > 0:
-            proj = used / frac
-        else:
-            proj = used
-        proj = max(proj, used)
+        proj = _proj(used, avg3)
         out.append({"id": cid, "name": _clean_name(c.get("name") or "").rstrip("様").strip(),
                     "plan": plan, "used": used, "avg3": avg3, "proj": proj,
                     "remaining": plan - used, "surplus": (plan - proj) if plan > 0 else None})
+    # 請求先マスタにない卸先（キーが "name:名前"）。「その他」は一般のお客様の出庫を実績にする
+    for key, plan in plans.items():
+        if not key.startswith("name:") or plan <= 0:
+            continue
+        nm = key[5:]
+        if nm == "その他":
+            used = cons_m.get(cur_ym, 0.0)
+            avg3 = sum(cons_m.get(m, 0.0) for m in span) / 3.0
+        else:
+            used = avg3 = 0.0
+        proj = _proj(used, avg3)
+        out.append({"id": key, "name": nm, "plan": plan, "used": used, "avg3": avg3, "proj": proj,
+                    "remaining": plan - used, "surplus": plan - proj,
+                    "unregistered": nm != "その他"})
     out.sort(key=lambda d: (-d["plan"], -d["used"]))
     planned = [d for d in out if d["plan"] > 0]
     tot = {
@@ -740,9 +763,12 @@ def _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span) -> None:
     has_hist = any(m < cur_ym and v > 0 for m, v in cons.items())
     cons_avg = (sum(cons.get(m, 0.0) for m in span) / 3.0) if has_hist else cons.get(cur_ym, 0.0)
     tot = usage["total"]
-    expected = tot["plan"] + cons_avg
-    plan["wholesale_plan"] = tot["plan"]
-    plan["consumer_avg"] = cons_avg
+    # 「その他」の計画（一般のお客様向け）を入れている場合は、それを消費者向けの見込みとして使う
+    other_plan = _f((cfg.get("client_monthly_kg") or {}).get("name:その他"))
+    cons_part = other_plan if other_plan > 0 else cons_avg
+    expected = (tot["plan"] - other_plan) + cons_part
+    plan["wholesale_plan"] = tot["plan"] - other_plan
+    plan["consumer_avg"] = cons_part
     plan["consumer_mtd"] = cons.get(cur_ym, 0.0)
     plan["month_expected"] = expected
     plan["month_room"] = plan["target_w"] - expected     # 計画どおり売れたあと、1か月の枠に残る(+)／超える(−)量

@@ -367,6 +367,10 @@ def _client_usage_panel(m: dict) -> None:
             f'<div class="sub">{status}</div></div>')
     st.markdown("".join(html), unsafe_allow_html=True)
     st.caption("青い線は「今月の経過（今日の位置）」です。棒がそれより左なら、計画より遅れています。")
+    unreg = [d["name"] for d in planned if d.get("unregistered")]
+    if unreg:
+        st.caption("請求先に未登録の卸先（" + "、".join(unreg) + "）は、使用量の集計ができないため、計画だけを表示しています。"
+                   "請求先マスタに登録すると、使用状況も出ます。")
     extra = [d for d in u["rows"] if d["plan"] <= 0 and d["used"] > 0]
     if extra:
         names = "、".join(f'{d["name"]}（{_n(d["used"])}kg）' for d in extra)
@@ -407,21 +411,50 @@ def _client_plan_editor(m: dict, cfg: dict) -> None:
             "直近3か月の平均kg": st.column_config.NumberColumn("参考：直近3か月の平均(kg)", format="%.1f"),
             "今月ここまでkg": st.column_config.NumberColumn("今月ここまで(kg)", format="%.1f"),
         })
-    st.caption("0または空欄の卸先は、計画なしとして扱います（使った分はダッシュボードの下に注記されます）。"
-               "「卸先」の追加・名前の変更は、請求タブの請求先マスタで行います。")
+    st.markdown("**請求先マスタにない卸先**（まだ取引・請求が始まっていない先、「その他」など）")
+    extra_rows = [{"卸先": k[5:], "月の使用量kg": float(v)} for k, v in plans.items()
+                  if k.startswith("name:") and _f_ui(v) > 0]
+    ed2 = st.data_editor(
+        pd.DataFrame(extra_rows, columns=["卸先", "月の使用量kg"]),
+        hide_index=True, use_container_width=True, num_rows="dynamic", key=f"stk_cl_x_{ver}",
+        column_config={"卸先": st.column_config.TextColumn("卸先の名前"),
+                       "月の使用量kg": st.column_config.NumberColumn("月の使用量(kg)", min_value=0.0, step=5.0, format="%.0f")})
+    st.caption("「その他」という名前で入れると、一般のお客様（消費者向け）の出庫を実績として照らし合わせます。"
+               "0または空欄は計画なしとして扱います。卸先の追加・名前の変更は、請求タブの請求先マスタで行います。")
+
+    # 合計（保存前の入力どおり）：月間と、12か月ぶんの年間必要量（白米換算）
+    m_total = sum(float(v) for v in ed["月の使用量kg"] if not pd.isna(v)) + \
+        sum(float(v) for v in ed2["月の使用量kg"] if not pd.isna(v))
+    st.markdown(
+        f'<div class="stk-card"><div class="nm">合計（白米換算）</div>'
+        f'<div class="big">月 {m_total:,.0f} kg　／　年間 {m_total * 12:,.0f} kg（{m_total * 12 / 1000:,.2f}トン）</div>'
+        f'<div class="sub">月の合計 × 12か月</div></div>', unsafe_allow_html=True)
+
     if st.button("月の使用量を保存", type="primary", key=f"stk_cl_save_{ver}"):
         new = {}
         for _, r in ed.iterrows():
             v = r["月の使用量kg"]
             if not pd.isna(v) and float(v) > 0:
                 new[r["id"]] = float(v)
-        for k in [k for k in plans if k not in {c["id"] for c in clients}]:
+        for _, r in ed2.iterrows():
+            nm = (r["卸先"] or "").strip() if isinstance(r["卸先"], str) else ""
+            v = r["月の使用量kg"]
+            if nm and not pd.isna(v) and float(v) > 0:
+                new["name:" + nm] = float(v)
+        for k in [k for k in plans if not k.startswith("name:") and k not in {c["id"] for c in clients}]:
             new[k] = plans[k]       # 非表示（無効）の請求先の分は消さない
         cfg["client_monthly_kg"] = new
         stock.save_config(cfg)
         st.session_state["stk_cl_ver"] = ver + 1
         st.success("保存しました。ダッシュボードに反映されます。")
         st.rerun()
+
+
+def _f_ui(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _short_name(n: str) -> str:
