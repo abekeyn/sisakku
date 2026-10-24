@@ -85,6 +85,17 @@ def _poll_jobs() -> None:
         job = _JOBS[name]
         proc = job["proc"]
         if proc.poll() is not None:
+            # 子プロセスが結果を書かないまま終わった（クラッシュ・強制終了など）場合は、
+            # 画面がいつまでも待ち続けないよう、失敗として理由を残す
+            try:
+                cur = db.get_setting_live(job["result_key"])
+                if cur is not None and cur.get("pending"):
+                    db.set_setting(job["result_key"], {
+                        "ok": False, "at": datetime.now().isoformat(timespec="seconds"),
+                        "summary": f"処理が途中で異常終了しました（終了コード {proc.returncode}）。"
+                                   "PCのログ（agent.log）を確認するか、もう一度お試しください。"})
+            except Exception:  # noqa: BLE001
+                pass
             del _JOBS[name]
             continue
         if time.time() > job["deadline"]:
@@ -417,8 +428,12 @@ def main() -> None:
         return
     if "--watch" in sys.argv:
         print(f"常駐エージェント開始（{INTERVAL}秒ごとに監視）", flush=True)
+        last_hb = 0.0
         while True:
             try:
+                if time.time() - last_hb > 30:       # 生きていることをアプリに知らせる（30秒ごと）
+                    db.set_setting("agent_heartbeat", datetime.now().isoformat(timespec="seconds"))
+                    last_hb = time.time()
                 _process_exports()
                 _check_b2_request()
                 _check_b2_print()

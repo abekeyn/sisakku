@@ -544,14 +544,31 @@ def _agent_progress():
             st.progress(pct / 100, text=f'{prog.get("step", "準備中")}（{pct}%）')
     if watches:
         st.caption("PCで自動処理中です。他の操作を続けても大丈夫です。")
+        # PCの常駐プログラムが止まっている（電源オフ・未起動など）と、依頼は永久に待ち続けるので知らせる
+        hb = db.get_setting_live("agent_heartbeat")
+        try:
+            age = (datetime.now() - datetime.fromisoformat(hb)).total_seconds() if hb else None
+        except (TypeError, ValueError):
+            age = None
+        if age is None or age > 150:
+            st.warning("⚠️ PCの常駐プログラムが応答していません"
+                       + (f"（最後の応答は{int(age // 60)}分前）" if age is not None else "")
+                       + "。PCの電源・常駐プログラムが動いているか確認してください。"
+                         "依頼は残っているので、PCが戻ると実行されます。")
     # ---- アプリ内の裏タスク ----
     tasks = bg.snapshot()
     log: list = st.session_state.setdefault("bg_log", [])
+    # 画面を開いたとき1回：前に失敗した・途中で終わった記録（サーバの再起動など）を拾って出す
+    if not st.session_state.get("bg_recovered"):
+        st.session_state["bg_recovered"] = True
+        for r in bg.recover([e["id"] for e in log]):
+            log.append(r)
     done_new = [t for t in tasks if t["status"] in ("done", "error") and not t["seen"]]
     # PCへの指示の送信が成功しただけの完了は知らせない（進捗はPCの仕事の欄に出る）
     newly = [t for t in done_new if t["kind"] != "agent_send" or not t["ok"]]
     for t in newly:
-        log.insert(0, {"id": t["id"], "label": t["label"], "ok": bool(t["ok"]), "msg": t["msg"]})
+        log.insert(0, {"id": t["id"], "label": t["label"], "ok": bool(t["ok"]), "msg": t["msg"],
+                       "detail": t.get("detail", "")})
     if done_new:
         bg.mark_seen([t["id"] for t in done_new])
         del log[30:]
@@ -575,15 +592,28 @@ def _agent_progress():
         res = item["res"]
         ok = res.get("ok")
         c1, c2 = st.columns([12, 1])
-        (c1.success if ok else c1.warning)(("✅ " if ok else "⚠️ ") + f'{item["title"]}：{res.get("summary") or ""}')
+        (c1.success if ok else c1.error)(("✅ " if ok else "❌ ") + f'{item["title"]}：{res.get("summary") or "（理由が記録されていません）"}'
+                                          + ("" if ok else "　もう一度お試しください。"))
         if c2.button("✕", key=f"agent_dismiss_{rk}", help="閉じる"):
             last.pop(rk, None)
             st.rerun(scope="fragment")
-    for i, e in enumerate(log[:6]):
+    # 失敗は必ず先に・閉じるまで残す。成功は新しい順に最大5件
+    fails = [e for e in log if not e["ok"]]
+    oks = [e for e in log if e["ok"]][:5]
+    for e in fails + oks:
         c1, c2 = st.columns([12, 1])
-        (c1.success if e["ok"] else c1.warning)(("✅ " if e["ok"] else "⚠️ ") + f'{e["label"]}：{e["msg"] or "完了しました"}')
+        if e["ok"]:
+            c1.success(f'✅ {e["label"]}：{e["msg"] or "完了しました"}')
+        else:
+            c1.error(f'❌ {e["label"]}：{e["msg"] or "失敗しました（理由が記録されていません）"}'
+                     + (f'（{e["at"].replace("T", " ")}）' if e.get("at") else ""))
+            if e.get("detail"):
+                with c1.expander("エラーの詳しい内容（原因の調査用）"):
+                    st.code(e["detail"], language="text")
         if c2.button("✕", key=f"bg_dismiss_{e['id']}", help="閉じる"):
             log[:] = [x for x in log if x["id"] != e["id"]]
+            if not e["ok"]:
+                bg.acknowledge(e["id"])
             st.rerun(scope="fragment")
 
 

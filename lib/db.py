@@ -289,6 +289,12 @@ def get_setting_live(key: str, default=None):
         return row[0]
 
 
+def delete_setting(key: str) -> None:
+    with get_engine().begin() as c:
+        c.execute(delete(settings).where(settings.c.key == key))
+    clear_cache("setting:" + key)
+
+
 def list_setting_keys(prefix: str) -> list[str]:
     """prefix で始まる設定のキー一覧（値は読まない）。キャッシュは使わない。"""
     bs = chr(92)
