@@ -91,16 +91,16 @@ def render() -> None:
                "（領収書のない分は確定済みの請求書）、消費者向けは**出荷確定した注文**だけを数えます。月末の数字が違うときは「在庫の登録・修正」で直せます。")
 
     cfg = stock.load_config()
-    fy_now = ledger.fy_of(stock.today())
+    fy_now = stock.crop_year_of(stock.today())
     fys = [fy_now - i for i in range(4)]
     CUSTOM = "自由に指定"
 
     c_fy, c_flt = st.columns([1, 2])
     period = c_fy.selectbox("対象期間", fys + [CUSTOM], key="stk_fy",
-                            format_func=lambda y: y if y == CUSTOM else f"{y}年度（{y}/4〜{y + 1}/3）")
+                            format_func=lambda y: y if y == CUSTOM else f"{y}年産（{y}/10〜{y + 1}/9）")
     period_kw: dict = {}
     if period == CUSTOM:
-        d0, d1 = ledger.fy_range(fy_now)
+        d0, d1 = stock.crop_year_range(fy_now)
         rng = c_fy.date_input("期間（開始日〜終了日）", value=(d0, d1), key="stk_range",
                               help="月単位で集計します（開始日・終了日を含む月）。最大36か月。")
         if isinstance(rng, (list, tuple)) and len(rng) == 2 and rng[0] <= rng[1]:

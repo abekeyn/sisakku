@@ -346,8 +346,18 @@ def range_months(start: date, end: date, limit: int = 36) -> list[str]:
     return out
 
 
+def crop_year_of(d: date) -> int:
+    """その日が属する米の年度（10月始まり＝新米の入る前の9月末まで）。2027-09-30 → 2026。"""
+    return d.year if d.month >= 10 else d.year - 1
+
+
+def crop_year_range(y: int) -> tuple[date, date]:
+    return date(y, 10, 1), date(y + 1, 9, 30)
+
+
 def fy_months(fy: int) -> list[str]:
-    return [f"{fy}-{m:02d}" if m >= 4 else f"{fy + 1}-{m:02d}" for m in (4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3)]
+    """在庫画面の1年間の月（10月〜翌9月）。fy は10月が属する年。"""
+    return [f"{fy}-{m:02d}" if m >= 10 else f"{fy + 1}-{m:02d}" for m in (10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9)]
 
 
 def _month_end(ym: str) -> date:
@@ -438,14 +448,14 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
     available = total - reserved_kg
 
     # --- 出庫の月次 ---
-    # 対象期間：年度（4月〜翌3月）または、開始日・終了日の自由な期間（月単位で表示）
+    # 対象期間：米の年度（10月〜翌9月）または、開始日・終了日の自由な期間（月単位で表示）
     if start and end:
         months = range_months(start, end)
         label = f"{start:%Y/%m/%d}〜{end:%Y/%m/%d}"
     else:
-        fy = fy if fy is not None else ledger.fy_of(now)
+        fy = fy if fy is not None else crop_year_of(now)
         months = fy_months(fy)
-        label = f"{fy}年度"
+        label = f"{fy}年産（{fy}/10〜{fy + 1}/9）"
     cur_ym = _month_key(now)
     out_month: dict[str, float] = defaultdict(float)
     out_month_form: dict[str, dict] = defaultdict(lambda: {"玄米": 0.0, "精米": 0.0})
