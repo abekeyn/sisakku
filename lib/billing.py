@@ -21,7 +21,7 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-from lib import config, db
+from lib import bg, config, db
 from lib.granada_cloud import (JP_DATE_FMT, TEMPLATE_XLSX, _kg_from_name,
                                _ntfy, _smtp_send, pdf_filename, xlsx_to_pdf)
 
@@ -60,6 +60,19 @@ DEFAULT_CLIENTS = [{
 
 
 # ===== マスタCRUD ===================================================================
+import functools as _ft
+
+
+def _locked(fn):
+    """請求書・領収書のデータは1つの大きな設定値を丸ごと読み書きするため、同時に書くと
+    片方の更新が消える。裏のタスク（lib/bg.py）と画面の処理が重ならないよう順番に実行する。"""
+    @_ft.wraps(fn)
+    def wrapper(*a, **kw):
+        with bg.lock("billing"):
+            return fn(*a, **kw)
+    return wrapper
+
+
 def get_clients() -> list[dict]:
     cs = db.get_setting(CLIENTS_KEY)
     if not cs:
@@ -76,6 +89,7 @@ def save_clients(clients: list[dict]) -> None:
     db.set_setting(CLIENTS_KEY, clients)
 
 
+@_locked
 def upsert_client(client: dict) -> None:
     cs = get_clients()
     for i, c in enumerate(cs):
@@ -87,6 +101,7 @@ def upsert_client(client: dict) -> None:
     save_clients(cs)
 
 
+@_locked
 def delete_client(client_id: str) -> None:
     save_clients([c for c in get_clients() if c["id"] != client_id])
 
@@ -182,6 +197,7 @@ def _save_pendings(p: dict) -> None:
     db.set_setting(PENDING_KEY, p)
 
 
+@_locked
 def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
                    workdir: str | Path = ".") -> dict:
     """1請求先の当月分を作成し承認待ちに登録。返り値はpendingの要約。"""
@@ -220,6 +236,7 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
             "amount": s["amount"], "qty": s["qty"], "status": "prepared"}
 
 
+@_locked
 def regenerate_pending(pending_key: str, qty: float, unit_price: float,
                        issue_date: date | None = None, unit_kg: float | None = None,
                        amount_override: int | None = None, allow_sent: bool = False) -> dict:
@@ -292,6 +309,7 @@ def build_delivery_note(p: dict, issue_date: date | None = None,
     return pdf, invoice_pdf.delivery_note_filename(d, p["client_name"])
 
 
+@_locked
 def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: float,
                    unit_kg: float | None = None, amount_override: int | None = None) -> dict:
     """自動集計を使わず、発行日・数量・単価を手入力して請求書をその場で新規作成する。
@@ -391,6 +409,7 @@ def _finalize_pending(pending_key: str, p: dict, allp: dict) -> None:
     db.set_setting(HISTORY_KEY, hist)
 
 
+@_locked
 def send_pending(pending_key: str) -> dict:
     """承認待ち1件をメールで顧客へ送信し、確定する。pending_key='client:ym'。"""
     allp = get_pendings()
@@ -420,6 +439,7 @@ def send_pending(pending_key: str) -> dict:
     return {"ok": True, "msg": msg, "pending": p}
 
 
+@_locked
 def confirm_pending(pending_key: str) -> dict:
     """メール送信を伴わずに最終確定する（手渡し・郵送などメール宛先が無い請求先向け）。
 
@@ -444,6 +464,7 @@ def confirm_pending(pending_key: str) -> dict:
     return {"ok": True, "pending": p}
 
 
+@_locked
 def discard_pending(pending_key: str) -> None:
     allp = get_pendings()
     if pending_key in allp:
@@ -456,6 +477,7 @@ RECEIPTS_KEY = "billing_receipts"  # {receipt_id: {...}}
 RECEIPT_SEQ_KEY = "billing_receipt_seq"  # 領収書専用の通し番号（最後に払い出した番号）
 
 
+@_locked
 def next_receipt_no() -> int:
     """領収書専用の通し番号を1つ払い出す（請求書のdoc_numberとは独立の採番）。
 
@@ -497,6 +519,7 @@ def receipts_for(pending_key: str, p: dict) -> list[tuple[str, dict]]:
     return sorted(out, key=lambda t: t[1].get("created_at", ""), reverse=True)
 
 
+@_locked
 def save_receipt(client_id: str, issue_date: date, doc_no, pdf_bytes: bytes,
                  filename: str, payment_method: str, amount: int,
                  invoice_key: str = "", honorific: str = "御中") -> str:
@@ -619,6 +642,7 @@ def _write_synced(key: str, rec: dict, records: dict, suffix: str, folder: Path)
     return path
 
 
+@_locked
 def sync_receipts() -> list[dict]:
     """【PC側】未保存の領収書をクライアントのローカルフォルダ（発行書類/○○様/）へ書き出す。
 
@@ -646,6 +670,7 @@ def sync_receipts() -> list[dict]:
     return out
 
 
+@_locked
 def sync_invoices() -> list[dict]:
     """【PC側】確定済み（送信・最終確定）だが未保存の請求書PDFを
     クライアントのローカルフォルダ（発行書類/○○様/）へ書き出す。
@@ -677,6 +702,7 @@ def sync_invoices() -> list[dict]:
 
 
 # ===== PC側：ローカルExcel台帳へ同期追記 =========================================
+@_locked
 def sync_local_xlsx() -> list[dict]:
     """送信済みだがローカル台帳未反映の請求書を、各請求先のlocal_xlsxへ追記。"""
     out = []

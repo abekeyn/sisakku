@@ -62,12 +62,13 @@ def _kill_tree(pid: int) -> None:
         pass
 
 
-def _launch_job(name: str, flag: str, result_key: str, label: str) -> None:
-    """B2クラウド操作を別プロセスで起動する（既に実行中なら何もしない）。"""
+def _launch_job(name: str, flag: str, result_key: str, label: str, job_id: str = "") -> None:
+    """B2クラウド操作を別プロセスで起動する（同じ種類が実行中なら何もしない）。"""
     if name in _JOBS:
         return
+    args = [sys.executable, AGENT_PATH, flag] + ([job_id] if job_id else [])
     proc = subprocess.Popen(
-        [sys.executable, AGENT_PATH, flag], cwd=AGENT_DIR,
+        args, cwd=AGENT_DIR,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     _JOBS[name] = {"proc": proc, "deadline": time.time() + _JOB_TIMEOUTS[name],
@@ -141,15 +142,21 @@ def _check_b2_request() -> bool:
     return False
 
 
-def _run_b2_print() -> None:
-    """B2で送り状を発行し、PDFを既定プリンタへ印刷する。"""
+def _run_b2_print(jid: str = "") -> None:
+    """B2で送り状を発行し、PDFを既定プリンタへ印刷する。jid があれば待ち行列の1件分。"""
     import base64
     from lib import b2_fetch, printing
     started = datetime.now().isoformat(timespec="seconds")
-    prog = _progress("b2_print_progress")
+    sfx = f"_{jid}" if jid else ""
+    prog = _progress(f"b2_print_progress{sfx}")
     prog(5, "PCで処理を開始しました")
     try:
-        b64 = db.get_setting("b2_print_csv")
+        if jid:
+            job = db.get_setting(f"b2_print_job_{jid}") or {}
+            b64 = job.get("csv_b64")
+            db.set_setting(f"b2_print_job_{jid}", {"status": "running"})
+        else:
+            b64 = db.get_setting("b2_print_csv")
         if not b64:
             raise RuntimeError("印刷するデータがありません")
         csv_bytes = base64.b64decode(b64)
@@ -167,18 +174,27 @@ def _run_b2_print() -> None:
         prog(100, "失敗")
         print("B2発行・印刷 失敗:", e, flush=True)
         traceback.print_exc()
-    db.set_setting("b2_print_result", result)
+    if jid:
+        db.set_setting(f"b2_print_job_{jid}", {"status": "done"})
+        db.set_setting(f"b2_print_result_{jid}", result)
+    db.set_setting("b2_print_result", result)   # 「前回の結果」表示用
 
 
-def _run_print_pdf() -> None:
+def _run_print_pdf(jid: str = "") -> None:
     """アプリから渡されたPDF（支払いQR・請求書・領収書など）を印刷する。B2には触れない。"""
     import base64
     from lib import printing
     started = datetime.now().isoformat(timespec="seconds")
-    prog = _progress("print_pdf_progress")
+    sfx = f"_{jid}" if jid else ""
+    prog = _progress(f"print_pdf_progress{sfx}")
     prog(10, "PCで処理を開始しました")
     try:
-        b64 = db.get_setting("print_pdf_b64")
+        if jid:
+            job = db.get_setting(f"print_pdf_job_{jid}") or {}
+            b64 = job.get("b64")
+            db.set_setting(f"print_pdf_job_{jid}", {"status": "running"})
+        else:
+            b64 = db.get_setting("print_pdf_b64")
         if not b64:
             raise RuntimeError("印刷するデータがありません")
         prog(40, "プリンタへ送信中")
@@ -190,28 +206,55 @@ def _run_print_pdf() -> None:
         print("PDF印刷 失敗:", e, flush=True)
         traceback.print_exc()
     prog(100, "完了")
+    if jid:
+        db.set_setting(f"print_pdf_job_{jid}", {"status": "done"})
+        db.set_setting(f"print_pdf_result_{jid}", result)
     db.set_setting("print_pdf_result", result)
 
 
-def _check_print_pdf() -> bool:
-    req = db.get_setting("print_pdf_request")
-    done = db.get_setting("print_pdf_handled")
-    if req and req != done:
-        db.set_setting("print_pdf_handled", req)
-        _launch_job("print_pdf", "--print-pdf", "print_pdf_result", "PDFの印刷")
+# ---- 待ち行列：アプリが「{名前}_job_{ID}」を1件ずつ登録する。古い順に、同じ種類は1つずつ実行 ----
+_QUEUE_SEEN: set[str] = set()
+_QUEUE_WAIT: dict[str, list[str]] = {"b2_print": [], "print_pdf": []}
+_QUEUE_CFG = {
+    "b2_print": ("--b2-print", "送り状の発行・印刷"),
+    "print_pdf": ("--print-pdf", "PDFの印刷"),
+}
+
+
+def _check_queue(name: str) -> bool:
+    """待ち行列の新しい仕事を拾い、同じ種類が動いていなければ次の1件を起動する。"""
+    prefix = f"{name}_job_"
+    for key in db.list_setting_keys(prefix):
+        jid = key[len(prefix):]
+        if jid in _QUEUE_SEEN:
+            continue
+        _QUEUE_SEEN.add(jid)
+        job = db.get_setting_live(key) or {}
+        if job.get("status") == "queued":
+            _QUEUE_WAIT[name].append((job.get("created") or "", jid))
+        elif job.get("status") == "running":
+            # 前回のエージェント停止で途中になった仕事は、二重実行を避けて失敗扱いにする
+            db.set_setting(f"{name}_result_{jid}", {
+                "ok": False, "at": datetime.now().isoformat(timespec="seconds"),
+                "summary": "PCの常駐プログラムが途中で止まったため、実行されませんでした。もう一度お試しください。"})
+            db.set_setting(key, {"status": "done"})
+    waiting = _QUEUE_WAIT[name]
+    if waiting and name not in _JOBS:
+        waiting.sort()
+        _created, jid = waiting.pop(0)
+        flag, label = _QUEUE_CFG[name]
+        _launch_job(name, flag, f"{name}_result_{jid}", label, jid)
         return True
     return False
+
+
+def _check_print_pdf() -> bool:
+    return _check_queue("print_pdf")
 
 
 def _check_b2_print() -> bool:
-    """アプリからの印刷指示があれば実行する。"""
-    req = db.get_setting("b2_print_request")
-    done = db.get_setting("b2_print_handled")
-    if req and req != done:
-        db.set_setting("b2_print_handled", req)
-        _launch_job("b2_print", "--b2-print", "b2_print_result", "送り状の発行・印刷")
-        return True
-    return False
+    """アプリからの印刷・発行の依頼（待ち行列）を実行する。"""
+    return _check_queue("b2_print")
 
 
 def _run_b2_history() -> None:
@@ -353,10 +396,12 @@ def main() -> None:
         _run_b2_fetch()
         return
     if "--b2-print" in sys.argv:
-        _run_b2_print()
+        i = sys.argv.index("--b2-print")
+        _run_b2_print(sys.argv[i + 1] if len(sys.argv) > i + 1 else "")
         return
     if "--print-pdf" in sys.argv:
-        _run_print_pdf()
+        i = sys.argv.index("--print-pdf")
+        _run_print_pdf(sys.argv[i + 1] if len(sys.argv) > i + 1 else "")
         return
     if "--b2-pickup" in sys.argv:
         _run_b2_pickup()

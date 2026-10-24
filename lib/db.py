@@ -184,38 +184,83 @@ def init_db() -> None:
 
 # ---------------------------------------------------------------------------
 # 読み取りキャッシュ（速度対策）
-# クラウドではアプリ(米国)→DB(ソウル)の往復が遅いため、読み取り結果を
-# 短時間キャッシュする。書き込み時は clear_cache() で即座に消す。
+# クラウドではアプリ(米国)→DB(ソウル)の往復が遅いため、読み取り結果を短時間キャッシュする。
+# - 書き込み時は、書いた対象のタグだけを破棄する（以前は全部破棄していたため、1つ保存するたびに
+#   巨大な請求書データまで読み直して遅かった）。
+# - 設定(settings)は書いた値をそのままキャッシュへ入れる（書いた直後の読み直しをなくす）。
+# - 裏で動くタスク（lib/bg.py）の別スレッドからも安全に使える。
 # Streamlit実行中のみ有効（常駐エージェント等では素通し）。
 # ---------------------------------------------------------------------------
-def _cacheable(ttl: int):
+import functools as _functools
+import pickle as _pickle
+import threading as _threading
+import time as _time
+
+_CACHE: dict = {}          # key -> (期限, タグ, pickleした値)
+_VERS: dict = {}           # タグ -> 版（読み込み中に書き込まれた古い結果を捨てるため）
+_CLOCK = _threading.RLock()
+
+
+def _cache_enabled() -> bool:
+    try:
+        from streamlit import runtime
+        return bool(runtime.exists())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cacheable(ttl: int, tag=None):
+    """読み取り関数をキャッシュする。tag は文字列、または引数から文字列を返す関数。"""
     def deco(fn):
-        try:
-            import streamlit as st
-            from streamlit import runtime
-            if runtime.exists():
-                return st.cache_data(ttl=ttl, show_spinner=False)(fn)
-        except Exception:  # noqa: BLE001
-            pass
-        return fn
+        if not _cache_enabled():
+            return fn
+
+        @_functools.wraps(fn)
+        def wrapper(*a, **kw):
+            t = tag(*a, **kw) if callable(tag) else (tag or fn.__name__)
+            key = (fn.__name__, a, tuple(sorted(kw.items())))
+            now = _time.time()
+            with _CLOCK:
+                hit = _CACHE.get(key)
+                ver = _VERS.get(t, 0)
+                if hit and hit[0] > now:
+                    return _pickle.loads(hit[2])
+            val = fn(*a, **kw)
+            with _CLOCK:
+                if _VERS.get(t, 0) == ver:   # 読んでいる間に書き込まれていなければ保存
+                    _CACHE[key] = (now + ttl, t, _pickle.dumps(val))
+            return val
+        return wrapper
     return deco
 
 
-def clear_cache() -> None:
-    """書き込み後に読み取りキャッシュを破棄する（Streamlit実行中のみ）。"""
-    try:
-        import streamlit as st
-        from streamlit import runtime
-        if runtime.exists():
-            st.cache_data.clear()
-    except Exception:  # noqa: BLE001
-        pass
+def clear_cache(*tags: str) -> None:
+    """書き込み後にキャッシュを破棄する。タグを指定するとそのタグだけ、省略すると全部。"""
+    with _CLOCK:
+        if not tags:
+            _CACHE.clear()
+            for k in list(_VERS):
+                _VERS[k] += 1
+            return
+        for t in tags:
+            _VERS[t] = _VERS.get(t, 0) + 1
+        for k in [k for k, v in _CACHE.items() if v[1] in tags]:
+            _CACHE.pop(k, None)
+
+
+def _prime_cache(fn_name: str, args: tuple, tag: str, value, ttl: int) -> None:
+    """書いた値をそのままキャッシュへ入れる（書き込み直後の読み直しを省く）。"""
+    if not _cache_enabled():
+        return
+    with _CLOCK:
+        _VERS[tag] = _VERS.get(tag, 0) + 1
+        _CACHE[(fn_name, args, ())] = (_time.time() + ttl, tag, _pickle.dumps(value))
 
 
 # ---------------------------------------------------------------------------
 # 設定 (settings)
 # ---------------------------------------------------------------------------
-@_cacheable(ttl=120)
+@_cacheable(ttl=120, tag=lambda key: "setting:" + key)
 def _get_setting_raw(key: str):
     with get_engine().connect() as c:
         row = c.execute(select(settings.c.value).where(settings.c.key == key)).first()
@@ -244,6 +289,15 @@ def get_setting_live(key: str, default=None):
         return row[0]
 
 
+def list_setting_keys(prefix: str) -> list[str]:
+    """prefix で始まる設定のキー一覧（値は読まない）。キャッシュは使わない。"""
+    bs = chr(92)
+    like = prefix.replace(bs, bs * 2).replace("%", bs + "%").replace("_", bs + "_") + "%"
+    with get_engine().connect() as c:
+        rows = c.execute(select(settings.c.key).where(settings.c.key.like(like, escape=bs))).all()
+    return [r[0] for r in rows]
+
+
 def set_setting(key: str, value) -> None:
     payload = json.dumps(value, ensure_ascii=False)
     with get_engine().begin() as c:
@@ -252,7 +306,7 @@ def set_setting(key: str, value) -> None:
             c.execute(update(settings).where(settings.c.key == key).values(value=payload))
         else:
             c.execute(insert(settings).values(key=key, value=payload))
-    clear_cache()
+    _prime_cache("_get_setting_raw", (key,), "setting:" + key, payload, 120)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +316,7 @@ _CUST_FIELDS = ("name", "kana", "tel", "zip", "address", "address2",
                 "company", "honorific", "note", "addr_updated_at")
 
 
-@_cacheable(ttl=120)
+@_cacheable(ttl=120, tag="customers")
 def list_customers():
     with get_engine().connect() as c:
         rows = c.execute(select(customers).order_by(customers.c.name)).mappings().all()
@@ -338,12 +392,12 @@ def upsert_customer(data: dict) -> int:
             ).mappings().first()
             vals = {f: (data.get(f) or existing[f]) for f in _CUST_FIELDS}
             c.execute(update(customers).where(customers.c.id == cid).values(**vals))
-            clear_cache()
+            clear_cache("customers", "orders")
             return cid
         vals = {f: data.get(f, "") for f in _CUST_FIELDS}
         vals["created_at"] = datetime.now().isoformat()
         res = c.execute(insert(customers).values(**vals))
-        clear_cache()
+        clear_cache("customers", "orders")
         return res.inserted_primary_key[0]
 
 
@@ -354,13 +408,13 @@ def update_customer(cid: int, data: dict) -> None:
         return
     with get_engine().begin() as c:
         c.execute(update(customers).where(customers.c.id == cid).values(**vals))
-    clear_cache()
+    clear_cache("customers", "orders")
 
 
 def delete_customer(cid: int) -> None:
     with get_engine().begin() as c:
         c.execute(delete(customers).where(customers.c.id == cid))
-    clear_cache()
+    clear_cache("customers", "orders")
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +424,7 @@ _PROD_FIELDS = ("name", "category", "weight_kg", "needs_milling",
                 "yamato_name", "sort_order", "active", "price", "ship_type")
 
 
-@_cacheable(ttl=120)
+@_cacheable(ttl=120, tag="products")
 def list_products(active_only: bool = True):
     q = select(products)
     if active_only:
@@ -399,10 +453,10 @@ def upsert_product(data: dict) -> int:
             if "ship_type" not in data:      # 呼び出し側が指定しないとき、既存の発送方法を消さない
                 vals.pop("ship_type")
             c.execute(update(products).where(products.c.id == existing[0]).values(**vals))
-            clear_cache()
+            clear_cache("products", "orders")
             return existing[0]
         res = c.execute(insert(products).values(**vals))
-        clear_cache()
+        clear_cache("products", "orders")
         return res.inserted_primary_key[0]
 
 
@@ -420,7 +474,7 @@ def add_order(data: dict) -> int:
     vals["created_at"] = datetime.now().isoformat()
     with get_engine().begin() as c:
         res = c.execute(insert(orders).values(**vals))
-        clear_cache()
+        clear_cache("orders")
         return res.inserted_primary_key[0]
 
 
@@ -459,7 +513,7 @@ _ORDER_JOIN_SQL = """
 """
 
 
-@_cacheable(ttl=45)
+@_cacheable(ttl=45, tag="orders")
 def list_orders(status: str | None = None):
     where = "WHERE o.status = :status" if status else ""
     sql = text(_ORDER_JOIN_SQL.format(where=where))
@@ -474,7 +528,7 @@ def update_order_status(order_ids: list[int], status: str) -> None:
         return
     with get_engine().begin() as c:
         c.execute(update(orders).where(orders.c.id.in_(order_ids)).values(status=status))
-    clear_cache()
+    clear_cache("orders")
 
 
 def update_order(order_id: int, data: dict) -> None:
@@ -486,13 +540,13 @@ def update_order(order_id: int, data: dict) -> None:
         return
     with get_engine().begin() as c:
         c.execute(update(orders).where(orders.c.id == order_id).values(**vals))
-    clear_cache()
+    clear_cache("orders")
 
 
 def delete_order(order_id: int) -> None:
     with get_engine().begin() as c:
         c.execute(delete(orders).where(orders.c.id == order_id))
-    clear_cache()
+    clear_cache("orders")
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +557,7 @@ _LEDGER_FIELDS = ("entry_date", "kind", "rice_type", "form",
                   "location", "variety", "to_location")
 
 
-@_cacheable(ttl=45)
+@_cacheable(ttl=45, tag="ledger")
 def list_ledger_entries():
     with get_engine().connect() as c:
         rows = c.execute(
@@ -520,7 +574,7 @@ def add_ledger_entry(data: dict) -> int:
     vals["created_at"] = datetime.now().isoformat()
     with get_engine().begin() as c:
         res = c.execute(insert(ledger_entries).values(**vals))
-    clear_cache()
+    clear_cache("ledger")
     return res.inserted_primary_key[0]
 
 
@@ -531,13 +585,13 @@ def update_ledger_entry(entry_id: int, data: dict) -> None:
     with get_engine().begin() as c:
         c.execute(update(ledger_entries)
                   .where(ledger_entries.c.id == entry_id).values(**vals))
-    clear_cache()
+    clear_cache("ledger")
 
 
 def delete_ledger_entry(entry_id: int) -> None:
     with get_engine().begin() as c:
         c.execute(delete(ledger_entries).where(ledger_entries.c.id == entry_id))
-    clear_cache()
+    clear_cache("ledger")
 
 
 # ---------------------------------------------------------------------------

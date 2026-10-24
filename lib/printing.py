@@ -177,6 +177,37 @@ def _reachable(host: str, port: int = 9100, tries: int = 4) -> bool:
 
 
 def print_pdf(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
+    """PDFを印刷する（同時に複数の印刷依頼が来ても、プリンタへは1件ずつ順番に送る）。
+
+    複数のプロセス（B2発行後の印刷とPDF印刷など）が同時に送ると、「新しいジョブが出来たか」の
+    判定が混ざって成功・失敗を取り違えるため、ロックファイルで直列にする。
+    """
+    lock_dir = Path(tempfile.gettempdir()) / "abe_print.lock"
+    deadline = time.time() + 300
+    while True:
+        try:
+            lock_dir.mkdir()
+            break
+        except FileExistsError:
+            try:   # 5分以上前の古いロックは、異常終了の残りとみなして取り除く
+                if time.time() - lock_dir.stat().st_mtime > 300:
+                    lock_dir.rmdir()
+                    continue
+            except OSError:
+                pass
+            if time.time() > deadline:
+                break
+            time.sleep(1.0)
+    try:
+        return _print_pdf_unlocked(pdf_bytes, printer)
+    finally:
+        try:
+            lock_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _print_pdf_unlocked(pdf_bytes: bytes, printer: str | None = None) -> tuple[bool, str]:
     """PDFを印刷する。
 
     プリンタは EP-810A(EPSON) を名前で優先的に狙う。既定プリンタが CubePDF 等の

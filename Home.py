@@ -27,7 +27,7 @@ def today() -> date:
 def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
-from lib import (analytics, base_api, billing, bootstrap, costing, db,
+from lib import (analytics, base_api, billing, bg, bootstrap, costing, db,
                  exporter, komeful, ledger, logic, payslip, paysheet, postal,
                  quote, receipt, seed, shipping, shopify_api, square_pay,
                  stock_ui, ui, yamato)
@@ -130,10 +130,9 @@ def _print_pdf_button(pdf_bytes: bytes, key: str, label: str = "🖨 PCのプリ
     """PDFをPCの常駐プログラム経由でEP-810Aへ印刷する（PCとプリンタが起動している必要あり）。"""
     import base64
     if st.button(label, key=f"pp_{key}", use_container_width=True,
-                 help="PCの常駐プログラムが、このPDFをプリンタ（EP-810A・白黒）へ送ります。"):
-        _start_agent("print_pdf_request", "print_pdf_progress", "print_pdf_result",
-                     "PDFの印刷", payload_key="print_pdf_b64",
-                     payload=base64.b64encode(pdf_bytes).decode())
+                 help="PCの常駐プログラムが、このPDFをプリンタ（EP-810A・白黒）へ送ります。"
+                      "続けて何枚でも押せます（順番に印刷されます）。"):
+        _queue_agent_job("print_pdf", {"b64": base64.b64encode(pdf_bytes).decode()}, "PDFの印刷")
 
 
 def _pdf_preview(b64: str, height: int = 480) -> None:
@@ -403,65 +402,96 @@ def dlg_confirm_shipment():
 
     if st.button(f"✓ {len(matches)}件を出荷完了にする（BASEにも反映）",
                  type="primary", use_container_width=True):
-        result = shipping.confirm_shipments(matches)
-        msgs = [f"**{result['shipped']} 件を出荷完了にしました。**"] + result["messages"]
-        st.session_state["ship_result"] = msgs
-        st.rerun(scope="fragment")
+        def _confirm(ms=list(matches)):
+            result = shipping.confirm_shipments(ms)
+            return True, " / ".join([f"{result['shipped']} 件を出荷完了にしました。"] + list(result["messages"]))
+        _run_bg(f"{len(matches)}件の出荷確定", _confirm, lock_name="orders")
 
 
 # ===========================================================================
 # 🏠 ホーム（今日やること）
 # ===========================================================================
+def _run_bg(label: str, fn, *args, lock_name: str = "", kind: str = "") -> str:
+    """重い処理を裏で実行し、画面はすぐ次の操作に進める。結果は画面上部の「実行中のタスク」に出る。
+
+    fn は st.* に触れず、(成功か, メッセージ) を返すこと。同じ lock_name のタスクは順番に、
+    違うもの同士は同時に動く。
+    """
+    tid = bg.submit(label, fn, *args, lock_name=lock_name, kind=kind)
+    st.toast(f"{label}：裏で処理を始めました。続けて操作できます", icon="⏳")
+    st.rerun()
+    return tid
+
+
+def _agent_watch(req_key: str, prog_key: str, res_key: str, title: str, tid: str | None = None) -> None:
+    w = st.session_state.setdefault("agent_watches", {})
+    w[res_key] = {"prog": prog_key, "res": res_key, "title": title, "tid": tid}
+    st.session_state.setdefault("agent_last", {}).pop(res_key, None)
+
+
 def _start_agent(req_key, prog_key, res_key, title, payload_key=None, payload=None):
-    """PC常駐エージェントに作業を指示し、進捗バーの監視を開始する。"""
-    db.set_setting(res_key, {"pending": True})
-    db.set_setting(prog_key, {"pct": 1, "step": "PCに指示を送信しました"})
-    if payload_key is not None:
-        db.set_setting(payload_key, payload)
-    db.set_setting(req_key, now_iso())
-    st.session_state.pop("agent_last", None)
-    st.session_state["agent_watch"] = {"prog": prog_key, "res": res_key, "title": title}
+    """PC常駐エージェントに作業を指示する（B2取得・集荷依頼など、1つずつ動かす処理）。
+
+    DBへの書き込み（数回の往復で遅い）は裏で行い、画面はすぐ戻る。進捗は画面上部に出る。
+    """
+    def _send():
+        db.set_setting(res_key, {"pending": True})
+        db.set_setting(prog_key, {"pct": 1, "step": "PCに指示を送信しました"})
+        if payload_key is not None:
+            db.set_setting(payload_key, payload)
+        db.set_setting(req_key, now_iso())
+        return True, ""
+    tid = bg.submit(f"{title}をPCへ指示", _send, kind="agent_send")
+    _agent_watch(req_key, prog_key, res_key, title, tid)
     st.rerun()
 
 
-def _cloud_issue_and_print(csv_bytes: bytes) -> None:
-    """PC不要ルート：クラウドでB2発行→PDF取得→プリンタへメール送信して印刷。"""
+def _queue_agent_job(name: str, payload, title: str) -> None:
+    """PCの常駐エージェントに「印刷・発行」の仕事を1件、待ち行列へ入れる。
+
+    押した分だけ別々の仕事になり、続けて何件でも依頼できる（PC側で順番に処理する）。
+    payload は dict、または裏で dict を作る関数（CSVの作成などの重い準備も裏で行う）。
+    """
+    import uuid
+    jid = uuid.uuid4().hex[:8]
+    res_key, prog_key = f"{name}_result_{jid}", f"{name}_progress_{jid}"
+
+    def _send():
+        data = payload() if callable(payload) else payload
+        db.set_setting(res_key, {"pending": True})
+        db.set_setting(prog_key, {"pct": 1, "step": "PCに指示を送信しました"})
+        db.set_setting(f"{name}_job_{jid}", dict(data, status="queued", created=now_iso()))
+        return True, ""
+    tid = bg.submit(f"{title}をPCへ指示", _send, kind="agent_send")
+    _agent_watch("", prog_key, res_key, title, tid)
+    st.rerun()
+
+
+def _cloud_issue_and_print(csv_fn, label: str = "") -> None:
+    """PC不要ルート：クラウドでB2発行→PDF取得→プリンタへメール送信して印刷（裏で実行）。"""
     from lib import b2_fetch, mailer
     ok, why = mailer.is_configured()
     if not ok:
         st.error(f"メール印刷の設定が未完了です（{why}）。設定 → 印刷 で登録してください。")
         return
-    with st.status("クラウドで発行・印刷しています…", expanded=True) as status:
-        bar = st.progress(0)
+    holder: dict = {}
 
+    def _task():
         def cb(p, s):
-            try:
-                bar.progress(min(int(p), 100) / 100, text=s)
-            except Exception:  # noqa: BLE001
-                pass
-
-        try:
-            r = b2_fetch.issue_and_print(csv_bytes, progress=cb)
-        except Exception as e:  # noqa: BLE001
-            status.update(label="送り状の発行に失敗", state="error")
-            st.error(f"発行に失敗しました：{e}")
-            return
+            bg.set_progress(holder.get("tid", ""), f"{s}（{int(p)}%）")
+        csv_bytes = csv_fn()
+        r = b2_fetch.issue_and_print(csv_bytes, progress=cb)
         if not r.get("pdf"):
-            status.update(label="PDFを取得できませんでした", state="error")
-            st.warning((r.get("message", "") or "") + " PDFが取得できませんでした。")
-            return
+            return False, (r.get("message", "") or "") + " PDFが取得できませんでした。"
         cb(97, "プリンタへPDFを送信中")
         mok, mmsg = mailer.send_pdf_to_printer(r["pdf"], filename="soujou.pdf")
         if mok:
-            cb(100, "完了")
-            status.update(label="完了：プリンタへ送信しました", state="complete")
-            st.success(f"{r.get('message','')} ／ {mmsg}")
-        else:
-            status.update(label="メール送信に失敗", state="error")
-            st.error(mmsg)
-            st.download_button("送り状PDFをダウンロード", data=r["pdf"],
-                               file_name="soujou.pdf", mime="application/pdf",
-                               use_container_width=True)
+            return True, f"{r.get('message', '')} ／ {mmsg}"
+        return False, f"送り状は発行されましたが、プリンタへのメール送信に失敗しました：{mmsg}"
+
+    holder["tid"] = bg.submit(f"クラウドで{label}の送り状を発行・印刷", _task)
+    st.toast("クラウドで発行・印刷を裏で始めました。続けて操作できます", icon="⏳")
+    st.rerun()
 
 
 def _auto_sync_history():
@@ -484,40 +514,77 @@ def _auto_sync_history():
 
 @st.fragment(run_every=2)
 def _agent_progress():
-    """実行中はライブ進捗バー、完了後は結果を表示する（2秒ごとに自動更新）。"""
-    w = st.session_state.get("agent_watch")
-    if w:
+    """裏で動いている処理（アプリ内のタスク・PCへの依頼）の進み具合と結果を、画面上部に出す。
+
+    どの画面にいても出て、完了すると画面全体を最新にする（2秒ごとに自動更新）。
+    """
+    finished = False
+    watches: dict = st.session_state.get("agent_watches") or {}
+    last: dict = st.session_state.setdefault("agent_last", {})
+    # ---- PC常駐エージェントへ依頼した仕事 ----
+    for rk, w in list(watches.items()):
+        tid = w.get("tid")
+        mine = next((t for t in bg.snapshot() if t["id"] == tid), None) if tid else None
+        if mine and mine["status"] in ("queued", "running"):
+            st.markdown(f'<div class="prog-title">⏳ {w["title"]}：PCへ指示を送っています…</div>',
+                        unsafe_allow_html=True)
+            continue
+        if mine and mine["status"] == "error":
+            watches.pop(rk, None)      # 指示の送信に失敗（理由は下の結果欄に出る）
+            continue
         res = db.get_setting_live(w["res"])
         if res and not res.get("pending"):
-            st.session_state["agent_last"] = {"title": w["title"], "res": res}
-            st.session_state.pop("agent_watch", None)
-            # 完了直後にページ全体を再実行し、注文一覧（出荷済みが消える等）も
-            # 最新状態にする（ここはfragmentなので自分だけだと他が古いままになる）
-            st.rerun()
+            last[rk] = {"title": w["title"], "res": res}
+            watches.pop(rk, None)
+            finished = True
         else:
-            # 開始直後の1回だけ最上部へスクロールして進捗バーを見せる
-            if st.session_state.get("_scrolled_for") != w.get("res"):
-                st.session_state["_scrolled_for"] = w.get("res")
-                import streamlit.components.v1 as _components
-                _components.html(
-                    "<script>try{var d=window.parent.document;"
-                    "var m=d.querySelector('[data-testid=stMain]')||d.querySelector('section.main');"
-                    "if(m){m.scrollTo({top:0,behavior:'smooth'});}"
-                    "else{window.parent.scrollTo({top:0,behavior:'smooth'});}}"
-                    "catch(e){}</script>", height=0)
             prog = db.get_setting_live(w["prog"]) or {}
             pct = max(1, min(99, int(prog.get("pct", 1))))
-            st.markdown(f'<div class="prog-title">{w["title"]}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f'<div class="prog-title">{w["title"]}</div>', unsafe_allow_html=True)
             st.progress(pct / 100, text=f'{prog.get("step", "準備中")}（{pct}%）')
-            st.caption("PCで自動処理中です。完了まで数十秒〜1分ほどお待ちください。")
-            return
-    last = st.session_state.get("agent_last")
-    if last:
-        res = last["res"]
+    if watches:
+        st.caption("PCで自動処理中です。他の操作を続けても大丈夫です。")
+    # ---- アプリ内の裏タスク ----
+    tasks = bg.snapshot()
+    log: list = st.session_state.setdefault("bg_log", [])
+    done_new = [t for t in tasks if t["status"] in ("done", "error") and not t["seen"]]
+    # PCへの指示の送信が成功しただけの完了は知らせない（進捗はPCの仕事の欄に出る）
+    newly = [t for t in done_new if t["kind"] != "agent_send" or not t["ok"]]
+    for t in newly:
+        log.insert(0, {"id": t["id"], "label": t["label"], "ok": bool(t["ok"]), "msg": t["msg"]})
+    if done_new:
+        bg.mark_seen([t["id"] for t in done_new])
+        del log[30:]
+    if newly:
+        finished = True
+    running = [t for t in tasks if t["status"] in ("queued", "running") and t["kind"] != "agent_send"]
+    for t in running:
+        sec = int(__import__("time").time() - t["t0"])
+        state = "待機中" if t["status"] == "queued" else "実行中"
+        extra = f"　{t['progress']}" if t.get("progress") else ""
+        st.markdown(f'<div class="prog-title">⏳ {t["label"]}（{state}・{sec}秒）{extra}</div>',
+                    unsafe_allow_html=True)
+    if running:
+        st.caption(f"裏で{len(running)}件を処理中です。他の操作を続けても大丈夫です（終わると自動で画面が最新になります）。")
+    # ---- 終わったものの結果 ----
+    for t in newly:
+        st.toast(f'{t["label"]}：{(t["msg"] or "完了しました")[:80]}', icon="✅" if t["ok"] else "⚠️")
+    if finished:
+        st.rerun()
+    for rk, item in list(last.items()):
+        res = item["res"]
         ok = res.get("ok")
-        box = st.success if ok else st.warning
-        box(("✅ " if ok else "⚠️ ") + f'{last["title"]}：{res.get("summary") or ""}')
+        c1, c2 = st.columns([12, 1])
+        (c1.success if ok else c1.warning)(("✅ " if ok else "⚠️ ") + f'{item["title"]}：{res.get("summary") or ""}')
+        if c2.button("✕", key=f"agent_dismiss_{rk}", help="閉じる"):
+            last.pop(rk, None)
+            st.rerun(scope="fragment")
+    for i, e in enumerate(log[:6]):
+        c1, c2 = st.columns([12, 1])
+        (c1.success if e["ok"] else c1.warning)(("✅ " if e["ok"] else "⚠️ ") + f'{e["label"]}：{e["msg"] or "完了しました"}')
+        if c2.button("✕", key=f"bg_dismiss_{e['id']}", help="閉じる"):
+            log[:] = [x for x in log if x["id"] != e["id"]]
+            st.rerun(scope="fragment")
 
 
 @st.fragment
@@ -544,24 +611,22 @@ def view_home():
         if not cfg.get("refresh_token"):
             st.warning("設定タブでBASE連携を登録してください。")
         else:
-            with st.spinner("BASEから未発送の注文を取得中..."):
+            def _imp_base():
                 r = base_api.fetch_orders_via_api()
-            if r.get("error"):
-                st.error(r["error"])
-            else:
-                st.toast(f"BASE：未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込", icon="✅")
-                st.rerun(scope="fragment")
+                if r.get("error"):
+                    return False, r["error"]
+                return True, f"未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込みました"
+            _run_bg("BASEの注文取込", _imp_base, lock_name="orders")
     if a2.button("⟳ Shopify取込", use_container_width=True):
         if not shopify_api.is_configured():
             st.warning("設定タブでShopify連携を登録してください。")
         else:
-            with st.spinner("Shopifyから未発送の注文を取得中..."):
+            def _imp_shop():
                 r = shopify_api.fetch_orders_via_api()
-            if r.get("error"):
-                st.error(r["error"])
-            else:
-                st.toast(f"Shopify：{r.get('read', 0)}件読込中、新規 {r['added']} 件を取込", icon="✅")
-                st.rerun(scope="fragment")
+                if r.get("error"):
+                    return False, r["error"]
+                return True, f"{r.get('read', 0)}件を読み込み、新規 {r['added']} 件を取込みました"
+            _run_bg("Shopifyの注文取込", _imp_shop, lock_name="orders")
     if a3.button("＋ 注文追加", use_container_width=True):
         dlg_add_order()
     if a4.button("CSV取込", use_container_width=True):
@@ -701,12 +766,11 @@ def view_home():
             _run_kind = "nekopos"
         if _run_kind:
             import base64
-            csv_bytes = _build_csv_for_selected(_run_kind)
-            st.session_state["csv_data"] = csv_bytes
-            db.set_setting("b2_print_csv", base64.b64encode(csv_bytes).decode())
-            _start_agent("b2_print_request", "b2_print_progress", "b2_print_result",
-                         "ネコポスの発行・自動印刷" if _run_kind == "nekopos"
-                         else "宅急便の発行・自動印刷")
+
+            def _payload(kind=_run_kind):
+                return {"csv_b64": base64.b64encode(_build_csv_for_selected(kind)).decode()}
+            _queue_agent_job("b2_print", _payload,
+                             "ネコポスの発行・自動印刷" if _run_kind == "nekopos" else "宅急便の発行・自動印刷")
 
         pr = db.get_setting("b2_print_result")
         if pr and not pr.get("pending"):
@@ -719,10 +783,10 @@ def view_home():
             _chelp = "このアプリ（クラウド）がB2で送り状を発行し、PDFをプリンタへメール送信して印刷します。PCは不要。"
             if _c1.button(f"☁ 宅急便をクラウドで印刷（{n_taku}件）",
                           use_container_width=True, disabled=not n_taku, help=_chelp):
-                _cloud_issue_and_print(_build_csv_for_selected("takkyubin"))
+                _cloud_issue_and_print(lambda: _build_csv_for_selected("takkyubin"), "宅急便")
             if _c2.button(f"☁ ネコポスをクラウドで印刷（{n_neko}件）",
                           use_container_width=True, disabled=not n_neko, help=_chelp):
-                _cloud_issue_and_print(_build_csv_for_selected("nekopos"))
+                _cloud_issue_and_print(lambda: _build_csv_for_selected("nekopos"), "ネコポス")
 
         with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
             if st.button(f"ヤマトCSVを作成（{len(sel_ids)}件）", use_container_width=True,
@@ -759,22 +823,21 @@ def view_home():
             if st.button(f"🤝 手渡しで完了にする（{len(hand_orders)}件）",
                          use_container_width=True,
                          help="送り状なしで出荷済みにします。BASEの注文は発送完了も送ります。"):
-                msgs, komeful_flag = [], False
-                for o in hand_orders:
-                    res = shipping.dispatch_to_channel(o)
-                    if res is not None:
-                        ok, msg = res
-                        msgs.append(("✓ " if ok else "⚠ ") + f'{o["customer_name"]}様：{msg}')
-                    elif o["channel"] == "komeful":
-                        komeful_flag = True
-                db.update_order_status([o["id"] for o in hand_orders], "shipped")
-                st.success(f"{len(hand_orders)} 件を手渡し完了（出荷済み）にしました。")
-                for m in msgs:
-                    st.write(m)
-                if komeful_flag:
-                    st.link_button("コメフルの出荷処理を開く", komeful.SELLER_URL,
-                                   use_container_width=True)
-                st.rerun(scope="fragment")
+                def _hand_done(orders=[dict(o) for o in hand_orders]):
+                    msgs, komeful_flag = [], False
+                    for o in orders:
+                        res = shipping.dispatch_to_channel(o)
+                        if res is not None:
+                            ok, msg = res
+                            msgs.append(("✓ " if ok else "⚠ ") + f'{o["customer_name"]}様：{msg}')
+                        elif o["channel"] == "komeful":
+                            komeful_flag = True
+                    db.update_order_status([o["id"] for o in orders], "shipped")
+                    text = f"{len(orders)} 件を手渡し完了（出荷済み）にしました。" + " ".join(msgs)
+                    if komeful_flag:
+                        text += "（コメフルの注文は、コメフル側で出荷処理をしてください）"
+                    return True, text
+                _run_bg(f"手渡し{len(hand_orders)}件を完了", _hand_done, lock_name="orders")
 
     # ======= STEP 4｜出荷を確定する =======
     ui.step(4, "出荷を確定する",
@@ -1583,26 +1646,30 @@ def _receipt_button(key: str, p: dict) -> None:
 
     if st.button("📄 領収書を再発行" if issued else "📄 領収書を発行", key=f"recbtn_{key}",
                  use_container_width=True):
-        issue_d = date.fromisoformat(p["issue_date"])
-        # 書類番号は請求書とは別の領収書専用の通し番号。同じ請求書の再発行なら前回と同じ番号。
-        receipt_no = billing.receipt_doc_no(p["client_id"], issue_d, key)
-        pdf = receipt.build_receipt_pdf(
-            invoice_to=client.get("invoice_to", p["client_name"]),
-            amount=r_amount,
-            item_desc=client.get("item_desc", ""),
-            issue_date=issue_d,
-            doc_no=str(receipt_no),
-            payment_method=payment_method, payment_note=payment_note,
-            qty=p.get("qty", 1), total_kg=p.get("total_kg"), honorific=honorific,
-        )
-        # 発行した時点で記録＋フォルダ保存まで済ませる（ダウンロードし忘れても控えが残る）。
-        fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
-        rid = billing.save_receipt(p["client_id"], issue_d, receipt_no, pdf, fname,
-                                   payment_method, r_amount, invoice_key=key, honorific=honorific)
-        saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
-        path = next((s["path"] for s in saved if s.get("id") == rid), "")
-        _flash(("再発行しました。" if issued else "発行しました。") + _saved_note(client, path))
-        st.rerun()
+        def _issue_receipt(p=dict(p), key=key, client=dict(client), r_amount=int(r_amount),
+                           payment_method=payment_method, payment_note=payment_note,
+                           honorific=honorific, reissue=bool(issued)):
+            issue_d = date.fromisoformat(p["issue_date"])
+            # 書類番号は請求書とは別の領収書専用の通し番号。同じ請求書の再発行なら前回と同じ番号。
+            receipt_no = billing.receipt_doc_no(p["client_id"], issue_d, key)
+            pdf = receipt.build_receipt_pdf(
+                invoice_to=client.get("invoice_to", p["client_name"]),
+                amount=r_amount,
+                item_desc=client.get("item_desc", ""),
+                issue_date=issue_d,
+                doc_no=str(receipt_no),
+                payment_method=payment_method, payment_note=payment_note,
+                qty=p.get("qty", 1), total_kg=p.get("total_kg"), honorific=honorific,
+            )
+            # 発行した時点で記録＋フォルダ保存まで済ませる（ダウンロードし忘れても控えが残る）。
+            fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
+            rid = billing.save_receipt(p["client_id"], issue_d, receipt_no, pdf, fname,
+                                       payment_method, r_amount, invoice_key=key, honorific=honorific)
+            saved = billing.sync_receipts()   # PCならこの場で発行書類フォルダへ書き出す
+            path = next((s["path"] for s in saved if s.get("id") == rid), "")
+            return True, ("再発行しました。" if reissue else "発行しました。") + _saved_note(client, path)
+        _run_bg(f"{p['client_name']}の領収書を{'再発行' if issued else '発行'}", _issue_receipt,
+                lock_name="billing")
 
 
 def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
@@ -1636,19 +1703,21 @@ def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
                    "領収書も直すときは「領収書」から再発行します。")
     if st.button("この内容で再発行する" if allow_sent else "この内容で作り直す", key=f"regen_{key}",
                  use_container_width=True, disabled=ekg <= 0):
-        r = billing.regenerate_pending(key, ekg / e_unit_kg, eprice, issue_date=edate,
-                                       unit_kg=e_unit_kg, amount_override=eamount,
-                                       allow_sent=allow_sent)
-        if r.get("ok"):
+        def _regen(key=key, p=dict(p), qty=ekg / e_unit_kg, price=eprice, edate=edate,
+                   unit_kg=e_unit_kg, amount=eamount, allow_sent=allow_sent):
+            r = billing.regenerate_pending(key, qty, price, issue_date=edate,
+                                           unit_kg=unit_kg, amount_override=amount,
+                                           allow_sent=allow_sent)
+            if not r.get("ok"):
+                return False, r.get("msg", "作り直せませんでした。")
             client = billing.get_client(p["client_id"]) or {}
             msg = f"{'再発行' if allow_sent else '作り直'}しました（¥{r['amount']:,}）。"
             if allow_sent:
                 saved = billing.sync_invoices()
                 msg += _saved_note(client, next((x["path"] for x in saved if x.get("key") == key), ""))
-            _flash(msg)
-            st.rerun()
-        else:
-            st.error(r.get("msg", "作り直せませんでした。"))
+            return True, msg
+        _run_bg(f"{p['client_name']}の請求書を{'再発行' if allow_sent else '作り直し'}", _regen,
+                lock_name="billing")
 
 
 def _render_pending_card(key: str, p: dict) -> None:
@@ -1696,19 +1765,18 @@ def _render_pending_card(key: str, p: dict) -> None:
             cc1, cc2 = st.columns(2)
             if cc1.button("✅ はい、確定する", type="primary",
                           key=f"yes_{key}", use_container_width=True):
-                with st.spinner("確定しています…"):
+                st.session_state.pop(ck, None)
+
+                def _confirm_one(key=key, p=dict(p), has_email=has_email):
                     r = billing.send_pending(key) if has_email else billing.confirm_pending(key)
-                if r.get("ok"):
+                    if not r.get("ok"):
+                        return False, f"確定できませんでした：{r.get('msg')}"
                     saved = billing.sync_invoices()  # PCならこの場で発行書類フォルダへ保存
-                    st.session_state.pop(ck, None)
                     path = next((x["path"] for x in saved if x.get("key") == key), "")
                     client = billing.get_client(p["client_id"]) or {}
-                    _flash(("送信しました。" if has_email else "確定しました。")
-                           + "確定済みは「確定済み（履歴）」からいつでも開けます。"
-                           + _saved_note(client, path))
-                    st.rerun()
-                else:
-                    st.error(f"確定できませんでした：{r.get('msg')}")
+                    return True, (("送信しました。" if has_email else "確定しました。")
+                                  + "確定済みは「確定済み（履歴）」から開けます。" + _saved_note(client, path))
+                _run_bg(f"{p['client_name']}の請求書を確定", _confirm_one, lock_name="billing")
             if cc2.button("やめる", key=f"no_{key}", use_container_width=True):
                 st.session_state.pop(ck, None)
                 st.rerun()
@@ -1759,14 +1827,15 @@ def _billing_issue() -> None:
                 st.caption(f"自動計算では ¥{man_calc:,} ですが、¥{man_amount:,} で作成します。")
             if st.button("作成する", type="primary", use_container_width=True,
                         disabled=mkg <= 0, key="man_create"):
-                r = billing.prepare_manual(mcid, mdate, mkg / man_unit_kg, mprice,
-                                           unit_kg=man_unit_kg, amount_override=man_amount)
-                if r.get("ok"):
-                    _flash(f"作成しました（¥{r['amount']:,}）。下の一覧から内容を確認して確定してください。")
-                    st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
-                    st.rerun()
-                else:
-                    st.error(r.get("msg", "作成できませんでした。"))
+                def _create(mcid=mcid, mdate=mdate, qty=mkg / man_unit_kg, price=mprice,
+                            unit_kg=man_unit_kg, amount=man_amount):
+                    r = billing.prepare_manual(mcid, mdate, qty, price, unit_kg=unit_kg,
+                                               amount_override=amount)
+                    if not r.get("ok"):
+                        return False, r.get("msg", "作成できませんでした。")
+                    return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"
+                st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
+                _run_bg("請求書の作成", _create, lock_name="billing")
 
     _billing_browser()
 
@@ -1906,8 +1975,10 @@ def _bulk_confirm_bar(cid: str, name: str, items: list) -> None:
             st.warning(f"{n_mail}件は宛先のメールアドレスへ請求書を送信します（送信後は取り消せません）。")
         b1, b2 = st.columns(2)
         if b1.button("✅ はい、すべて確定する", type="primary", key=f"bulk_yes_{cid}", use_container_width=True):
-            done, fails = 0, []
-            with st.spinner("確定しています…"):
+            st.session_state.pop(ck, None)
+
+            def _bulk(items=[(k, dict(p)) for k, p in items]):
+                done, fails = 0, []
                 for k, p in items:
                     has_email = "@" in (p.get("email") or "")
                     r = billing.send_pending(k) if has_email else billing.confirm_pending(k)
@@ -1917,12 +1988,11 @@ def _bulk_confirm_bar(cid: str, name: str, items: list) -> None:
                         fails.append(f"{p['issue_date']}（書類番号{p['doc_number']}）：{r.get('msg')}")
                 if done:
                     billing.sync_invoices()   # PCならこの場で発行書類フォルダへ保存
-            st.session_state.pop(ck, None)
-            msg = f"{done}件を確定しました。確定済みは「確定済み（履歴）」からいつでも開けます。"
-            if fails:
-                msg += " 確定できなかった分：" + " / ".join(fails)
-            _flash(msg)
-            st.rerun()
+                msg = f"{done}件を確定しました。確定済みは「確定済み（履歴）」から開けます。"
+                if fails:
+                    msg += " 確定できなかった分：" + " / ".join(fails)
+                return (not fails or done > 0), msg
+            _run_bg(f"{name}の請求書{len(items)}件を確定", _bulk, lock_name="billing")
         if b2.button("やめる", key=f"bulk_no_{cid}", use_container_width=True):
             st.session_state.pop(ck, None)
             st.rerun()
@@ -2064,28 +2134,28 @@ def _paysheet_issue() -> None:
                          value="本状は領収書ではありません。")
 
     pk = "paysheet_pdf"
+    got = bg.take_result("paysheet")       # 裏で作り終えた分を受け取る
+    if got:
+        st.session_state[pk] = got
     if st.button("🧾 お支払いのご案内を作成", key="ps_make", use_container_width=True):
         if not item_name.strip():
             st.error("品名を入力してください。")
         else:
-            try:
-                # 決済リンクは1回しか払えないので、紙1枚ごとに必ず新しく作る
-                link = square_pay.create_payment_link(item_name.strip(), int(amount))
-            except Exception as e:  # noqa: BLE001  通信/設定エラーは文面をそのまま出す
-                st.error(f"Squareの決済リンクを作れませんでした：{e}")
-                link = None
-            if link:
+            def _make(inv_to=invoice_to.strip(), item=item_name.strip(), amt=int(amount),
+                      dt=issue_dt, nt=note.strip(), bank=show_bank):
+                try:
+                    # 決済リンクは1回しか払えないので、紙1枚ごとに必ず新しく作る
+                    link = square_pay.create_payment_link(item, amt)
+                except Exception as e:  # noqa: BLE001  通信/設定エラーは文面をそのまま出す
+                    return False, f"Squareの決済リンクを作れませんでした：{e}"
                 pdf = paysheet.build_pay_sheet_pdf(
-                    invoice_to=invoice_to.strip(), item_name=item_name.strip(),
-                    amount=int(amount), pay_url=link["url"], issue_date=issue_dt,
-                    note=note.strip(), show_bank=show_bank)
-                paysheet.add_history(invoice_to.strip(), item_name.strip(), int(amount),
-                                     issue_dt, link, note=note.strip(), show_bank=show_bank)
-                st.session_state[pk] = {
+                    invoice_to=inv_to, item_name=item, amount=amt, pay_url=link["url"],
+                    issue_date=dt, note=nt, show_bank=bank)
+                paysheet.add_history(inv_to, item, amt, dt, link, note=nt, show_bank=bank)
+                return True, "お支払いのご案内を作成しました（下の欄からPDFを開けます）。", {
                     "pdf": pdf, "url": link["url"],
-                    "filename": paysheet.pay_sheet_filename(
-                        issue_dt.isoformat(), invoice_to.strip()),
-                }
+                    "filename": paysheet.pay_sheet_filename(dt.isoformat(), inv_to)}
+            _run_bg("お支払いのご案内を作成", _make, kind="paysheet")
 
     if st.session_state.get(pk):
         d = st.session_state[pk]
