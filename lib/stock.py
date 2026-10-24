@@ -35,6 +35,7 @@ _DEFAULT_CFG = {
     "default_variety": "コシヒカリ",
     "varieties": ["コシヒカリ", "ひとめぼれ", "天のつぶ", "ミルキークイーン", "あきたこまち"],
     "count_sent_invoices": True,          # 領収書のない請求先は、確定済みの請求書で数える
+    "plan_start_ym": "",                  # 卸先の月の使用量（想定）を使い始めた月 'YYYY-MM'。空なら今期の初め
     "client_monthly_kg": {},              # 卸先ごとの月の使用量（kg・白米換算）{請求先ID: kg}
     "milling_yield": 0.9,                 # 玄米→白米（精米）の歩留まり（玄米1kgで白米0.9kg）
     "harvest_month": 9,                   # 次の新米が入る月。ここまでの月数で「月の使える量」を割る
@@ -593,6 +594,9 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
                  out_month=out_month, cur_ym=cur_ym, span=span)
     waiting = _receipt_waiting(all_out, receipts, clients, pendings, cfg)
     _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span)
+    start_ym = (cfg.get("plan_start_ym") or "").strip() or fy_months(crop_year_of(now))[0]
+    hist_months = range_months(date(int(start_ym[:4]), int(start_ym[5:7]), 1), now, 36)
+    history = _plan_history(usage, hist_months, cur_ym)
 
     alerts = _alerts(cfg=cfg, now=now, total=total, has_base=has_base, has_counts=has_counts,
                      last_count=last_count, risk=risk, run_out=run_out, months_left=months_left,
@@ -616,7 +620,7 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
         "others": [{"取引先": cust_name[ck], "合計(kg)": round(fy_tot[ck], 1)} for ck in rest],
         "alerts": alerts, "out_rows": out_rows, "all_out": all_out,
         "forecast_text": _forecast_text(risk, run_out, months_left, cfg, now),
-        "plan": plan, "receipt_waiting": waiting, "client_usage": usage,
+        "plan": plan, "receipt_waiting": waiting, "client_usage": usage, "plan_history": history,
     }
 
 
@@ -751,7 +755,43 @@ def _client_usage(*, cfg, now, rows, clients, cur_ym, span) -> dict:
         "frac": frac,
     }
     tot["surplus"] = tot["plan"] - tot["proj"]
-    return {"rows": out, "total": tot, "frac": frac}
+    by_month = {d["id"]: dict(by_c[d["id"]]) for d in out if d["id"] in by_c}
+    for d in out:
+        if d["id"] == "name:その他":
+            by_month[d["id"]] = dict(cons_m)
+    return {"rows": out, "total": tot, "frac": frac, "by_month": by_month}
+
+
+def _plan_history(usage, months, cur_ym) -> dict:
+    """毎月の「想定（卸先の月の使用量の合計）」に対する実績と、余った量。
+
+    余り＝想定 − 実績（マイナスは想定を超えた）。今月は途中なので、ここまでの実績で出し、
+    見込みの余りも添える。請求先に未登録の卸先は実績を集計できないため、実績0として数える
+    （想定がそのまま余りになる）。
+    """
+    planned = [d for d in usage["rows"] if d["plan"] > 0]
+    by_month = usage.get("by_month") or {}
+    rows = []
+    cum = 0.0
+    for ym in months:
+        if ym > cur_ym:
+            break
+        plan_t = sum(d["plan"] for d in planned)
+        used_t = sum(by_month.get(d["id"], {}).get(ym, 0.0) for d in planned)
+        cur = ym == cur_ym
+        surplus = plan_t - used_t
+        proj = sum(d["proj"] for d in planned) if cur else used_t
+        if not cur:
+            cum += surplus
+        rows.append({"ym": ym, "plan": plan_t, "used": used_t, "surplus": surplus,
+                     "cur": cur, "proj_surplus": plan_t - proj, "cum": cum})
+    per_client = []
+    for d in planned:
+        per_client.append({"name": d["name"], "plan": d["plan"], "unregistered": bool(d.get("unregistered")),
+                           "months": {r["ym"]: d["plan"] - by_month.get(d["id"], {}).get(r["ym"], 0.0)
+                                      for r in rows}})
+    return {"rows": rows, "per_client": per_client,
+            "unregistered": [d["name"] for d in planned if d.get("unregistered")]}
 
 
 def _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span) -> None:

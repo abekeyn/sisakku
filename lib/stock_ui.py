@@ -154,6 +154,8 @@ def _dashboard(m: dict) -> None:
     st.write("")
     _client_usage_panel(m)
     st.write("")
+    _plan_history_panel(m)
+    st.write("")
 
     def stock_val(v: float) -> str:
         return f'{_n(v)}<span style="font-size:1rem;font-weight:600"> kg</span>' if known else "—"
@@ -377,6 +379,74 @@ def _client_usage_panel(m: dict) -> None:
         st.caption(f"月の使用量が未設定の卸先（今月使った分）：{names}")
 
 
+def _plan_history_panel(m: dict) -> None:
+    """毎月、想定（卸先の月の使用量の合計）に対して、実際にいくら使って、いくら余ったか。"""
+    h = m["plan_history"]
+    rows = h["rows"]
+    ui.section("毎月の想定に対する余り",
+               "想定＝卸先の月の使用量の合計。余り＝想定 − 実績（白米換算）。マイナスは想定を超えた分です")
+    if not rows or rows[0]["plan"] <= 0:
+        st.caption("卸先の月の使用量がまだ登録されていません。「卸先の月間使用量」タブで入れると出ます。")
+        return
+    cur_ym = m["cur_ym"]
+    df = pd.DataFrame([{
+        "月": f'{int(r["ym"][5:])}月' + ("（今月・途中）" if r["cur"] else ""),
+        "想定kg": round(r["plan"]), "実績kg": round(r["used"]),
+        "余りkg": round(r["surplus"]),
+        "月末の見込み余りkg": round(r["proj_surplus"]) if r["cur"] else None,
+        "累計の余りkg": round(r["cum"]) if not r["cur"] else None,
+    } for r in rows])
+    cum_done = sum(r["surplus"] for r in rows if not r["cur"])
+    done = [r for r in rows if not r["cur"]]
+    k = st.columns(3)
+    k[0].markdown(ui.kpi("毎月の想定", _kg(rows[0]["plan"]), "卸先の月の使用量の合計"), unsafe_allow_html=True)
+    if done:
+        k[1].markdown(ui.kpi("今期の余り（終わった月の累計）",
+                             (f'{_kg(cum_done)}' if cum_done >= 0 else f'超過 {_kg(-cum_done)}'),
+                             f'{len(done)}か月分（今月は除く）'), unsafe_allow_html=True)
+    else:
+        k[1].markdown(ui.kpi("今期の余り（終わった月の累計）", "—", "終わった月がまだありません"),
+                      unsafe_allow_html=True)
+    cur = rows[-1]
+    k[2].markdown(ui.kpi("今月の余り（ここまで）",
+                         (_kg(cur["surplus"]) if cur["surplus"] >= 0 else f'超過 {_kg(-cur["surplus"])}'),
+                         f'月末の見込みは {_n(cur["proj_surplus"])}kg'), unsafe_allow_html=True)
+
+    cdf = pd.DataFrame([{"月": f'{int(r["ym"][5:])}月', "余りkg": round(r["surplus"], 1),
+                         "区分": "今月（途中）" if r["cur"] else ("余り" if r["surplus"] >= 0 else "超過")}
+                        for r in rows])
+    order = list(cdf["月"])
+    bars = alt.Chart(cdf).mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5, size=38).encode(
+        x=alt.X("月:N", sort=order, axis=alt.Axis(title=None, labelAngle=0)),
+        y=alt.Y("余りkg:Q", axis=alt.Axis(title="想定に対する余り (kg)")),
+        color=alt.Color("区分:N", scale=alt.Scale(domain=["余り", "超過", "今月（途中）"],
+                                                  range=[GOLD, "#E07A7A", "rgba(201,162,75,.45)"]),
+                        legend=alt.Legend(orient="top", title=None, direction="horizontal")),
+        tooltip=[alt.Tooltip("月:N"), alt.Tooltip("余りkg:Q", format=",.0f", title="余り(kg)")])
+    labels = alt.Chart(cdf).mark_text(dy=-8, color="#F2EDE0", fontSize=11).encode(
+        x=alt.X("月:N", sort=order), y="余りkg:Q", text=alt.Text("余りkg:Q", format=",.0f"))
+    st.altair_chart(_chart_cfg((bars + labels).properties(height=220)), use_container_width=True)
+    num_cols = [c for c in df.columns if c != "月"]
+    st.dataframe(df.style.format("{:,.0f}", subset=num_cols, na_rep="－"),
+                 use_container_width=True, hide_index=True)
+    if h["unregistered"]:
+        st.caption("※ 請求先に未登録の卸先（" + "、".join(h["unregistered"]) + "）は、実績を集計できないので、"
+                   "想定がそのまま余りに入っています。")
+    with st.expander("卸先ごとの余り（月別）"):
+        mrows = []
+        for c in h["per_client"]:
+            row = {"卸先": c["name"] + ("（未登録）" if c["unregistered"] else ""), "想定kg": round(c["plan"])}
+            for r in rows:
+                row[f'{int(r["ym"][5:])}月'] = round(c["months"].get(r["ym"], 0.0))
+            mrows.append(row)
+        tot = {"卸先": "合計", "想定kg": round(sum(c["plan"] for c in h["per_client"]))}
+        for r in rows:
+            tot[f'{int(r["ym"][5:])}月'] = round(sum(c["months"].get(r["ym"], 0.0) for c in h["per_client"]))
+        mrows.append(tot)
+        st.dataframe(pd.DataFrame(mrows), use_container_width=True, hide_index=True)
+        st.caption("数字は 想定 − 実績（kg）。マイナスは想定を超えて使った分です。")
+
+
 def _client_plan_editor(m: dict, cfg: dict) -> None:
     """卸先ごとの月の使用量（マスタ）。ダッシュボードの「卸先の今月の使用状況」の元になる。"""
     from . import billing
@@ -411,6 +481,19 @@ def _client_plan_editor(m: dict, cfg: dict) -> None:
             "直近3か月の平均kg": st.column_config.NumberColumn("参考：直近3か月の平均(kg)", format="%.1f"),
             "今月ここまでkg": st.column_config.NumberColumn("今月ここまで(kg)", format="%.1f"),
         })
+    ym_opts = []
+    _y, _m = stock.today().year, stock.today().month
+    for _ in range(24):
+        ym_opts.append(f"{_y}-{_m:02d}")
+        _m -= 1
+        if _m == 0:
+            _y, _m = _y - 1, 12
+    cur_start = cfg.get("plan_start_ym") or stock.fy_months(stock.crop_year_of(stock.today()))[0]
+    if cur_start not in ym_opts:
+        ym_opts.append(cur_start)
+    start_ym = st.selectbox("この月の使用量を、いつから使う想定にするか", ym_opts,
+                            index=ym_opts.index(cur_start), key=f"stk_cl_start_{ver}",
+                            help="「毎月の想定に対する余り」は、この月から数えます（それより前の月は想定がなかったとみなす）。")
     st.markdown("**請求先マスタにない卸先**（まだ取引・請求が始まっていない先、「その他」など）")
     extra_rows = [{"卸先": k[5:], "月の使用量kg": float(v)} for k, v in plans.items()
                   if k.startswith("name:") and _f_ui(v) > 0]
@@ -444,6 +527,7 @@ def _client_plan_editor(m: dict, cfg: dict) -> None:
         for k in [k for k in plans if not k.startswith("name:") and k not in {c["id"] for c in clients}]:
             new[k] = plans[k]       # 非表示（無効）の請求先の分は消さない
         cfg["client_monthly_kg"] = new
+        cfg["plan_start_ym"] = start_ym
         stock.save_config(cfg)
         st.session_state["stk_cl_ver"] = ver + 1
         st.success("保存しました。ダッシュボードに反映されます。")
@@ -604,9 +688,8 @@ def _customer_table(m: dict) -> None:
         row["合計"] = r["合計"]
         rows.append(row)
     df = pd.DataFrame(rows).astype({c: "float64" for c in rows[0] if c != "取引先"})
-    st.dataframe(df, use_container_width=True, hide_index=True,
-                 column_config={c: st.column_config.NumberColumn(c, format="%.1f")
-                                for c in df.columns if c != "取引先"})
+    st.dataframe(df.style.format("{:,.1f}", subset=[c for c in df.columns if c != "取引先"], na_rep="－"),
+                 use_container_width=True, hide_index=True)
     if m.get("others"):
         with st.expander(f"「その他の一般のお客様（{len(m['others'])}名）」の内訳を見る"):
             st.caption("領収書・請求書を出す卸先は、すべて個別に表示しています。"
