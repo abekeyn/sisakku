@@ -575,8 +575,9 @@ def _customer_table(m: dict) -> None:
                  column_config={c: st.column_config.NumberColumn(c, format="%.1f")
                                 for c in df.columns if c != "取引先"})
     if m.get("others"):
-        with st.expander(f"「その他（{len(m['others'])}名）」の内訳を見る"):
-            st.caption("上位8名以外のお客様です。1人あたりの出庫量が少ないため、表では1行にまとめています。")
+        with st.expander(f"「その他の一般のお客様（{len(m['others'])}名）」の内訳を見る"):
+            st.caption("領収書・請求書を出す卸先は、すべて個別に表示しています。"
+                       "ここは一般のお客様（消費者向け）のうち、出庫量が少ない方々で、表では1行にまとめています。")
             st.dataframe(pd.DataFrame(m["others"]), use_container_width=True, hide_index=True,
                          column_config={"合計(kg)": st.column_config.NumberColumn(format="%.1f")})
     st.download_button("↓ CSVで保存", df.to_csv(index=False).encode("utf-8-sig"),
@@ -592,10 +593,15 @@ def _sankey_svg(m: dict) -> str:
     for (loc, ck), v in flow.items():
         by_c[ck] += v
         by_l[loc] += v
-    top = [ck for ck, _ in sorted(by_c.items(), key=lambda kv: -kv[1])[:5]]
+    # 卸先（b:）は個別に出す（多いときは出庫量の多い8か所）。一般のお客様は上位3名だけ個別にして、残りは1つにまとめる
+    ordered = [ck for ck, _ in sorted(by_c.items(), key=lambda kv: -kv[1])]
+    top = [ck for ck in ordered if ck.startswith("b:")][:8] + [ck for ck in ordered if not ck.startswith("b:")][:3]
+    top = sorted(top, key=lambda ck: -by_c[ck])
     right = top + (["__other__"] if len(by_c) > len(top) else [])
     rname = {ck: m["cust_name"].get(ck, "") for ck in top}
-    rname["__other__"] = f"その他（{len(by_c) - len(top)}名）"
+    others_all_consumer = all(not ck.startswith("b:") for ck in by_c if ck not in top)
+    rname["__other__"] = (f"その他の一般のお客様（{len(by_c) - len(top)}名）" if others_all_consumer
+                          else f"その他（{len(by_c) - len(top)}名）")
     rval = {ck: by_c[ck] for ck in top}
     if "__other__" in right:
         rval["__other__"] = sum(v for ck, v in by_c.items() if ck not in top)

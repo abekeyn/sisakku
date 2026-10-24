@@ -212,7 +212,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         form = "玄米" if ("玄米" in item and "精米" not in item) else "精米"
         variety = detect_variety(item, cfg)
         out.append({
-            "id": f"r{rid}", "date": d, "customer_key": f"c{cid}" if cid else f"n{cname}",
+            "id": f"r{rid}", "date": d, "customer_key": f"b:{c['id']}",
             "customer": cname, "customer_id": cid, "source": "領収書",
             "variety": variety, "form": form, "kg": kg,
             "location": _default_loc(form, cfg, variety), "dup": False,
@@ -238,7 +238,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
             cname = _clean_name(c.get("name") or "").rstrip("様").strip()
             cid = int(c.get("customer_id") or 0)
             out.append({
-                "id": f"i{k}", "date": d, "customer_key": f"c{cid}" if cid else f"n{cname}",
+                "id": f"i{k}", "date": d, "customer_key": f"b:{c['id']}",
                 "customer": cname, "customer_id": cid, "source": "請求書",
                 "variety": variety, "form": form, "kg": kg,
                 "location": _default_loc(form, cfg, variety), "dup": False,
@@ -530,7 +530,11 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
         cust_name.setdefault(r["customer_key"], r["customer"] or "（名前なし）")
     fy_tot = {ck: sum(v for m, v in mm.items() if m in months) for ck, mm in cust_month.items()}
     ranked = [ck for ck, _ in sorted(fy_tot.items(), key=lambda kv: -kv[1]) if fy_tot[ck] > 0]
-    top = ranked[:8]
+    # 領収書・請求書を出す卸先（キーが b: で始まる）はすべて個別に表示する。
+    # 「その他」にまとめるのは一般のお客様（消費者向け）だけ。
+    whole = [ck for ck in ranked if ck.startswith("b:")]
+    cons = [ck for ck in ranked if not ck.startswith("b:")]
+    top = sorted(whole + cons[:5], key=lambda ck: -fy_tot[ck])
 
     cust_forecast: dict[str, float] = {}
     for ck in top:
@@ -548,14 +552,15 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
                 row[m] = round(cust_forecast[ck], 1) if ck in cust_forecast else None
         row["合計"] = round(sum(v for k, v in row.items() if k in months and v), 1)
         table.append(row)
-    rest = [ck for ck in ranked[8:]]
+    rest = cons[5:]
     if rest:
-        row = {"取引先": f"その他（{len(rest)}名）"}
+        row = {"取引先": f"その他の一般のお客様（{len(rest)}名）"}
         for m in months:
             if m <= cur_ym:
                 row[m] = round(sum(cust_month[ck].get(m, 0.0) for ck in rest), 1)
             else:
-                row[m] = round(max(monthly_avg - sum(cust_forecast.values()), 0.0), 1) if monthly_avg else None
+                rest_avg = sum(cust_month[ck].get(x, 0.0) for ck in rest for x in span) / 3.0
+                row[m] = round(rest_avg, 1) if rest_avg > 0 else None
         row["合計"] = round(sum(v for k, v in row.items() if k in months and v), 1)
         table.append(row)
     total_row = {"取引先": "合計"}
