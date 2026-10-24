@@ -2,9 +2,9 @@
 """在庫管理ダッシュボードの集計（画面とは切り離した純粋なロジック）。
 
 元データ（出庫として数えるもの）
-- 請求先（取引先マスタに登録のあるお客様）… **発行済みの領収書**だけを数える。
-    数量(kg)は、その領収書に紐づく請求書の数量。請求書の下書き・注文は数えない
-    （同じ納品を注文・請求書・領収書で二重に数えないため）。
+- 請求先（取引先マスタに登録のあるお客様）… **発行済みの領収書**を数える。
+    数量(kg)は、その領収書に紐づく請求書の数量。領収書のない請求書は、**確定済み**のものだけ
+    設定で数える（下書き・注文は数えない。同じ納品を二重に数えないため）。
 - それ以外のお客様（消費者向けの注文）… **出荷確定した注文**（発送済み・手渡し完了）を数える。
     同じ伝票番号の注文は1件として数える（LINE入力の注文とヤマト履歴の取込行が
     同じ出荷を二重に持っていることがあるため）。
@@ -34,6 +34,7 @@ _DEFAULT_CFG = {
     "variety_location": {},               # 品種ごとの上書き {品種: {"玄米": 場所, "精米": 場所}}
     "default_variety": "コシヒカリ",
     "varieties": ["コシヒカリ", "ひとめぼれ", "天のつぶ", "ミルキークイーン", "あきたこまち"],
+    "count_sent_invoices": True,          # 領収書のない請求先は、確定済みの請求書で数える
     "milling_yield": 0.9,                 # 玄米→白米（精米）の歩留まり（玄米1kgで白米0.9kg）
     "harvest_month": 9,                   # 次の新米が入る月。ここまでの月数で「月の使える量」を割る
     "risk_high_months": 1.5,              # これ未満で欠品リスク「高」
@@ -217,6 +218,32 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
             "excluded": f"r{rid}" in excluded, "skip": False, "note": note,
             "product": item, "b2b_client": c["id"],
         })
+    # 領収書を発行していない請求先：確定済み（送信・確定した）請求書で数える
+    if cfg.get("count_sent_invoices", True):
+        rec_keys = {v.get("invoice_key") for v in receipts.values() if v.get("invoice_key")}
+        rec_pairs = {(v.get("client_id"), v.get("issue_date")) for v in receipts.values()
+                     if not v.get("invoice_key")}
+        for k, p in pendings.items():
+            if p.get("status") != "sent" or k in rec_keys                     or (p.get("client_id"), p.get("issue_date")) in rec_pairs:
+                continue
+            c = cl_by_id.get(p.get("client_id"))
+            d = ledger.parse_date(p.get("issue_date"))
+            kg = _f(p.get("total_kg"))
+            if c is None or d is None or kg <= 0:
+                continue
+            item = c.get("item_desc") or ""
+            form = "玄米" if ("玄米" in item and "精米" not in item) else "精米"
+            variety = detect_variety(item, cfg)
+            cname = _clean_name(c.get("name") or "").rstrip("様").strip()
+            cid = int(c.get("customer_id") or 0)
+            out.append({
+                "id": f"i{k}", "date": d, "customer_key": f"c{cid}" if cid else f"n{cname}",
+                "customer": cname, "customer_id": cid, "source": "請求書",
+                "variety": variety, "form": form, "kg": kg,
+                "location": _default_loc(form, cfg, variety), "dup": False,
+                "excluded": f"i{k}" in excluded, "skip": False,
+                "note": "確定済みの請求書（領収書は未発行）", "product": item, "b2b_client": c["id"],
+            })
     out.sort(key=lambda r: (r["date"], r["id"]))
     return out, reserved
 
@@ -545,7 +572,7 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
 
     plan = _plan(cfg=cfg, now=now, stock_rows=stock_rows, res_rows=res_rows, live_out=live_out,
                  out_month=out_month, cur_ym=cur_ym, span=span)
-    waiting = _receipt_waiting(all_out, receipts, clients, pendings)
+    waiting = _receipt_waiting(all_out, receipts, clients, pendings, cfg)
 
     alerts = _alerts(cfg=cfg, now=now, total=total, has_base=has_base, has_counts=has_counts,
                      last_count=last_count, risk=risk, run_out=run_out, months_left=months_left,
@@ -638,13 +665,18 @@ def _plan(*, cfg, now, stock_rows, res_rows, live_out, out_month, cur_ym, span) 
     }
 
 
-def _receipt_waiting(all_out, receipts, clients, pendings) -> list[dict]:
-    """請求先ごとに、最後の領収書より後に出荷した注文（＝領収書を出すまで在庫から引かれない量）。"""
+def _receipt_waiting(all_out, receipts, clients, pendings, cfg=None) -> list[dict]:
+    """請求先ごとに、最後の領収書（確定済み請求書で数える設定なら請求書も）より後に出荷した注文
+    （＝領収書を出すまで在庫から引かれない量）。"""
     last: dict[str, date] = {}
-    for v in (receipts or {}).values():
-        d = ledger.parse_date(v.get("issue_date"))
-        if d and (v.get("client_id") not in last or d > last[v["client_id"]]):
-            last[v["client_id"]] = d
+    docs = [(v.get("client_id"), v.get("issue_date")) for v in (receipts or {}).values()]
+    if (cfg or {}).get("count_sent_invoices", True):
+        docs += [(p.get("client_id"), p.get("issue_date")) for p in (pendings or {}).values()
+                 if p.get("status") == "sent"]
+    for cl, iso in docs:
+        d = ledger.parse_date(iso)
+        if d and (cl not in last or d > last[cl]):
+            last[cl] = d
     names = {c["id"]: _clean_name(c.get("name") or "").rstrip("様").strip() for c in clients}
     agg: dict[str, float] = defaultdict(float)
     for r in all_out:
@@ -711,8 +743,8 @@ def _alerts(*, cfg, now, total, has_base, has_counts, last_count, risk, run_out,
     for name, a, b in hot[:2]:
         add("info", "高回転取引先", f"{name}の直近3か月の月平均は{a:,.0f}kgで、その前の3か月（{b:,.0f}kg）より増えています。")
     for w in (waiting or [])[:4]:
-        add("info", "領収書待ち", f"{w['client']}：領収書の発行前に出荷した分が約{w['kg']:,.0f}kgあります"
-            "（領収書を発行すると在庫から引かれます）。")
+        add("info", "領収書待ち", f"{w['client']}：領収書（請求書）の発行前に出荷した分が約{w['kg']:,.0f}kgあります"
+            "（発行すると在庫から引かれます）。")
     if plan and plan.get("surplus_w") is not None and plan["surplus_w"] > 0.15 * max(plan["start_w"], 1):
         add("warn", "在庫が余る見込み",
             f"このペースだと次の新米までに白米換算で約{plan['surplus_w']:,.0f}kg余ります。"

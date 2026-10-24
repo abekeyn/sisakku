@@ -87,8 +87,8 @@ def _chart_cfg(ch: alt.Chart | alt.LayerChart) -> alt.Chart:
 def render() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
     st.subheader("📦 在庫管理")
-    st.caption("在庫は「棚卸（実数）＋入庫 − 出庫」で計算します。出庫は、請求先は**発行済みの領収書**、"
-               "消費者向けは**出荷確定した注文**だけを数えます。月末の数字が違うときは「在庫の登録・修正」で直せます。")
+    st.caption("在庫は「棚卸（実数）＋入庫 − 出庫」で計算します。出庫は、請求先は**発行済みの領収書**"
+               "（領収書のない分は確定済みの請求書）、消費者向けは**出荷確定した注文**だけを数えます。月末の数字が違うときは「在庫の登録・修正」で直せます。")
 
     cfg = stock.load_config()
     fy_now = ledger.fy_of(stock.today())
@@ -805,6 +805,10 @@ def _settings(cfg: dict) -> None:
     hi = t1.number_input("欠品リスク「高」（か月未満）", min_value=0.1, value=float(cfg["risk_high_months"]), step=0.5)
     mid = t2.number_input("欠品リスク「中」（か月未満）", min_value=0.2, value=float(cfg["risk_mid_months"]), step=0.5)
     stale = t3.number_input("棚卸が古いとお知らせ（日）", min_value=7, value=int(cfg["stale_count_days"]), step=5)
+    inv = st.checkbox("領収書のない請求先は、確定済みの請求書で出庫に数える",
+                      value=bool(cfg.get("count_sent_invoices", True)),
+                      help="振込払いなどで領収書を出さない請求先（例：グラナダ）の出荷を、確定した請求書の数量で在庫から引きます。"
+                           "領収書を発行した請求書は領収書で数えるので二重にはなりません。")
     y1, y2 = st.columns(2)
     myield = y1.number_input("精米の歩留まり（玄米→白米）", min_value=0.5, max_value=1.0,
                              value=float(cfg.get("milling_yield") or 0.9), step=0.01, format="%.2f",
@@ -821,7 +825,8 @@ def _settings(cfg: dict) -> None:
                 "locations": [{"name": n, "capacity_kg": caps.get(n, 0.0)} for n in names],
                 "default_location": dloc, "varieties": vlist, "default_variety": dvar,
                 "risk_high_months": hi, "risk_mid_months": max(mid, hi), "stale_count_days": int(stale),
-                "milling_yield": float(myield), "harvest_month": int(hmonth)})
+                "milling_yield": float(myield), "harvest_month": int(hmonth),
+                "count_sent_invoices": bool(inv)})
             new_vl = {}
             for _, r in vloc_ed.iterrows():
                 d = {f: r[f + "の出庫元"] for f in ("玄米", "精米") if r[f + "の出庫元"] in names}
