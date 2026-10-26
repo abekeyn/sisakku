@@ -568,7 +568,7 @@ def _agent_progress():
     newly = [t for t in done_new if t["kind"] != "agent_send" or not t["ok"]]
     for t in newly:
         log.insert(0, {"id": t["id"], "label": t["label"], "ok": bool(t["ok"]), "msg": t["msg"],
-                       "detail": t.get("detail", "")})
+                       "detail": t.get("detail", ""), "ts": __import__("time").time()})
     if done_new:
         bg.mark_seen([t["id"] for t in done_new])
         del log[30:]
@@ -588,6 +588,18 @@ def _agent_progress():
         st.toast(f'{t["label"]}：{(t["msg"] or "完了しました")[:80]}', icon="✅" if t["ok"] else "⚠️")
     if finished:
         st.rerun()
+    # 成功のお知らせは1分たったら自動で消す（失敗は閉じるまで残す）
+    _now_ts = __import__("time").time()
+    log[:] = [e for e in log if (not e["ok"]) or _now_ts - e.get("ts", _now_ts) < 60]
+    # 通知が溜まったら、まとめて閉じられるようにする（失敗の記録もDBから消す）
+    if len(last) + len(log) >= 2:
+        if st.button(f"✕ 通知をすべて閉じる（{len(last) + len(log)}件）", key="notif_clear_all"):
+            for e in list(log):
+                if not e["ok"]:
+                    bg.acknowledge(e["id"])
+            log.clear()
+            last.clear()
+            st.rerun(scope="fragment")
     for rk, item in list(last.items()):
         res = item["res"]
         ok = res.get("ok")
