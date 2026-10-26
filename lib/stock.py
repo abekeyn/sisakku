@@ -790,7 +790,20 @@ def _plan_history(usage, months, cur_ym) -> dict:
         per_client.append({"name": d["name"], "plan": d["plan"], "unregistered": bool(d.get("unregistered")),
                            "months": {r["ym"]: d["plan"] - by_month.get(d["id"], {}).get(r["ym"], 0.0)
                                       for r in rows}})
-    return {"rows": rows, "per_client": per_client,
+    # 直近13か月（今月＋前の12か月）の単月の想定・実績・余り。「前月分」などをいつでも見られるように、
+    # 想定の使い始め月に関係なく、いまの想定に対して計算する。
+    recent = []
+    ym = cur_ym
+    for _ in range(13):
+        used_t = sum(by_month.get(d["id"], {}).get(ym, 0.0) for d in planned)
+        plan_t = sum(d["plan"] for d in planned)
+        recent.append({"ym": ym, "plan": plan_t, "used": used_t, "surplus": plan_t - used_t,
+                       "cur": ym == cur_ym,
+                       "clients": [{"name": d["name"], "plan": d["plan"],
+                                    "used": by_month.get(d["id"], {}).get(ym, 0.0),
+                                    "unregistered": bool(d.get("unregistered"))} for d in planned]})
+        ym = _prev_ym(ym)
+    return {"rows": rows, "per_client": per_client, "recent": recent,
             "unregistered": [d["name"] for d in planned if d.get("unregistered")]}
 
 

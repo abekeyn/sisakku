@@ -398,19 +398,42 @@ def _plan_history_panel(m: dict) -> None:
     } for r in rows])
     cum_done = sum(r["surplus"] for r in rows if not r["cur"])
     done = [r for r in rows if not r["cur"]]
+    recent = h["recent"]
+    prev, cur = recent[1], recent[0]
+
+    def _sur(v: float) -> str:
+        return _kg(v) if v >= 0 else f'超過 {_kg(-v)}'
+
     k = st.columns(3)
-    k[0].markdown(ui.kpi("毎月の想定", _kg(rows[0]["plan"]), "卸先の月の使用量の合計"), unsafe_allow_html=True)
+    k[0].markdown(ui.kpi(f'先月（{int(prev["ym"][5:])}月）の余り', _sur(prev["surplus"]),
+                         f'想定 {_n(prev["plan"])}kg − 実績 {_n(prev["used"])}kg'), unsafe_allow_html=True)
+    k[1].markdown(ui.kpi(f'今月（{int(cur["ym"][5:])}月）の余り（ここまで）', _sur(cur["surplus"]),
+                         f'月末の見込みは {_n(rows[-1]["proj_surplus"])}kg' if rows else ""),
+                  unsafe_allow_html=True)
     if done:
-        k[1].markdown(ui.kpi("今期の余り（終わった月の累計）",
-                             (f'{_kg(cum_done)}' if cum_done >= 0 else f'超過 {_kg(-cum_done)}'),
-                             f'{len(done)}か月分（今月は除く）'), unsafe_allow_html=True)
-    else:
-        k[1].markdown(ui.kpi("今期の余り（終わった月の累計）", "—", "終わった月がまだありません"),
+        k[2].markdown(ui.kpi("今期の余り（終わった月の累計）", _sur(cum_done), f'{len(done)}か月分（今月は除く）'),
                       unsafe_allow_html=True)
-    cur = rows[-1]
-    k[2].markdown(ui.kpi("今月の余り（ここまで）",
-                         (_kg(cur["surplus"]) if cur["surplus"] >= 0 else f'超過 {_kg(-cur["surplus"])}'),
-                         f'月末の見込みは {_n(cur["proj_surplus"])}kg'), unsafe_allow_html=True)
+    else:
+        k[2].markdown(ui.kpi("毎月の想定", _kg(rows[0]["plan"]), "卸先の月の使用量の合計"), unsafe_allow_html=True)
+    st.caption("先月などの過去の月は、いまの想定（卸先の月の使用量）に対して計算しています。")
+
+    # 月を選んで、その単月の卸先別の想定・実績・余りを見る（初期値は先月）
+    sel_opts = [r["ym"] for r in recent[1:7]] + [cur["ym"]]
+    pick = st.segmented_control(
+        "単月の内訳を見る", sel_opts, default=prev["ym"], key="stk_ph_month",
+        format_func=lambda ym: f'{int(ym[5:])}月' + ("（今月）" if ym == cur["ym"] else ""),
+        label_visibility="collapsed") or prev["ym"]
+    rec = next(r for r in recent if r["ym"] == pick)
+    crow = [{"卸先": c["name"] + ("（未登録）" if c["unregistered"] else ""),
+             "想定kg": round(c["plan"]), "実績kg": round(c["used"]), "余りkg": round(c["plan"] - c["used"])}
+            for c in rec["clients"]]
+    crow.append({"卸先": "合計", "想定kg": round(rec["plan"]), "実績kg": round(rec["used"]),
+                 "余りkg": round(rec["surplus"])})
+    st.markdown(f'**{int(pick[5:])}月の単月：想定{_n(rec["plan"])}kg − 実績{_n(rec["used"])}kg ＝ '
+                f'{"余り " if rec["surplus"] >= 0 else "超過 "}{_n(abs(rec["surplus"]))}kg**'
+                + ("（今月は途中のため、ここまでの実績）" if pick == cur["ym"] else ""))
+    st.dataframe(pd.DataFrame(crow).style.format("{:,.0f}", subset=["想定kg", "実績kg", "余りkg"]),
+                 use_container_width=True, hide_index=True)
 
     cdf = pd.DataFrame([{"月": f'{int(r["ym"][5:])}月', "余りkg": round(r["surplus"], 1),
                          "区分": "今月（途中）" if r["cur"] else ("余り" if r["surplus"] >= 0 else "超過")}
