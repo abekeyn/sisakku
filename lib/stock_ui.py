@@ -453,7 +453,8 @@ def _client_plan_editor(m: dict, cfg: dict) -> None:
     ui.section("卸先の月間使用量（マスタ）",
                "卸先ごとに、1か月に使う量（kg・白米換算）を入れます。ダッシュボードで、今月どれくらい使っていて、"
                "このままだとどれくらい余るかを見られます。")
-    clients = [c for c in billing.get_clients() if c.get("active", True)]
+    # 「有効」は月末の自動作成の対象かどうかだけを表す（手入力で請求する卸先は無効のことが多い）ので、ここでは全員出す
+    clients = list(billing.get_clients())
     plans = cfg.get("client_monthly_kg") or {}
     usage = {d["id"]: d for d in m["client_usage"]["rows"]}
     ver = st.session_state.setdefault("stk_cl_ver", 0)
