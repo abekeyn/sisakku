@@ -293,7 +293,14 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="通知も状態保存もしない")
     ap.add_argument("--no-llm", action="store_true", help="足切りだけ確認(API不要)")
     ap.add_argument("--test-last", type=int, default=0, help="直近N通を状態に関係なく判定")
+    ap.add_argument("--notify", action="store_true",
+                    help="標準入力のJSON(from_name/thrid/topic/summary/action/reply/urgency)をそのままスマホへ通知")
     a = ap.parse_args()
+    if a.notify:
+        v = json.load(sys.stdin)
+        _notify({"from_name": v.get("from_name", ""), "from_addr": "", "thrid": v.get("thrid", "")}, v)
+        print("sent")
+        return 0
     try:
         run(a.dry_run, a.no_llm, a.test_last)
         return 0
