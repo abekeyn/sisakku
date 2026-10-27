@@ -536,7 +536,11 @@ def _agent_progress():
         if res and not res.get("pending"):
             last[rk] = {"title": w["title"], "res": res}
             watches.pop(rk, None)
-            finished = True
+            # 印刷の結果はアプリのデータを変えないので、画面全体を再実行しない。全体の再実行は、
+            # ちょうどそのとき別のボタンを押していると、そのクリックを取りこぼす原因になる
+            # （印刷を続けて押したとき、2回目が届かなかった）。
+            if not rk.startswith(("print_pdf_result", "b2_print_result")):
+                finished = True
         else:
             prog = db.get_setting_live(w["prog"]) or {}
             pct = max(1, min(99, int(prog.get("pct", 1))))
