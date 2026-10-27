@@ -1,0 +1,38 @@
+name: メール監視（気になるメールをスマホへ通知）
+
+# 日中(JST 7:00〜22:59)に10分おきで受信箱を確認し、AIが「気になる」と判定したものだけ
+# ntfyでスマホへ通知する。広告等はルールで足切りし、AIに回すのは残りだけ（コスト抑制）。
+# このリポジトリは公開なので、ログにメールの内容は出さない（件数のみ）。
+on:
+  schedule:
+    - cron: "*/10 22-23,0-13 * * *"   # UTC。JSTの7:00〜22:59に相当
+  workflow_dispatch:
+
+concurrency:
+  group: mail-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/mail-watch.yml
+
+      - name: 依存パッケージ
+        run: pip install SQLAlchemy "psycopg[binary]"
+
+      - name: 新着メールを判定して通知
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python -m lib.mail_watch
