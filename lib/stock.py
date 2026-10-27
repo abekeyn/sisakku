@@ -34,6 +34,7 @@ _DEFAULT_CFG = {
     "variety_location": {},               # 品種ごとの上書き {品種: {"玄米": 場所, "精米": 場所}}
     "default_variety": "コシヒカリ",
     "varieties": ["コシヒカリ", "ひとめぼれ", "天のつぶ", "ミルキークイーン", "あきたこまち"],
+    "count_uninvoiced_orders": True,      # 請求書・領収書がまだ無い請求先の出荷（注文）も、出庫に数える
     "count_sent_invoices": True,          # 領収書のない請求先は、確定済みの請求書で数える
     "plan_start_ym": "",                  # 卸先の月の使用量（想定）を使い始めた月 'YYYY-MM'。空なら今期の初め
     "client_monthly_kg": {},              # 卸先ごとの月の使用量（kg・白米換算）{請求先ID: kg}
@@ -145,6 +146,20 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
     cl_by_id = {c["id"]: c for c in clients}
     b2b_ids = {int(c["customer_id"]): c for c in clients if c.get("customer_id")}
 
+    # 請求先ごとの書類（発行済みの領収書・確定済みの請求書）の日付。出荷日の後31日以内に書類があれば、
+    # その出荷は書類で数えるので、注文は数えない（二重計上を防ぐ）。書類がまだ無い出荷は注文で数える。
+    doc_dates: dict[str, list[date]] = defaultdict(list)
+    for v in receipts.values():
+        dd = ledger.parse_date(v.get("issue_date"))
+        if dd:
+            doc_dates[v.get("client_id")].append(dd)
+    if cfg.get("count_sent_invoices", True):
+        for p in pendings.values():
+            dd = ledger.parse_date(p.get("issue_date"))
+            if p.get("status") == "sent" and dd:
+                doc_dates[p.get("client_id")].append(dd)
+    count_uninv = bool(cfg.get("count_uninvoiced_orders", True))
+
     shipped = [o for o in orders if o.get("status") == "shipped"]
     shipped.sort(key=lambda o: (_order_date(o) or date.min, int(o.get("id") or 0)))
     seen_tracking: set[tuple] = set()
@@ -165,6 +180,10 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         variety = detect_variety(o.get("product_name") or "", cfg)
         cname = _clean_name(o.get("customer_name") or "")
         b2b = cid in b2b_ids
+        covered = b2b
+        if b2b and count_uninv:
+            ccl = b2b_ids[cid]["id"]
+            covered = any(0 <= (dd - d).days <= 31 for dd in doc_dates.get(ccl, ()))
         for (rt, fm), kg in parts.items():
             rid = f'o{int(o["id"])}:{fm}'
             out.append({
@@ -172,8 +191,9 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
                 "customer": cname, "customer_id": cid,
                 "source": "注文", "variety": variety, "form": fm, "kg": float(kg),
                 "location": _default_loc(fm, cfg, variety), "dup": dup,
-                "excluded": rid in excluded, "skip": b2b,
-                "note": ("請求先のため領収書で数えます（注文は数えません）" if b2b
+                "excluded": rid in excluded, "skip": covered,
+                "note": ("領収書・請求書で数えるため、注文は数えません" if covered
+                         else "請求書・領収書の発行前の出荷（発行されると書類で数えます）" if b2b
                          else "同じ伝票番号の注文と重複" if dup else ""),
                 "product": o.get("product_name") or "",
                 "b2b_client": b2b_ids[cid]["id"] if b2b else "",
@@ -703,7 +723,7 @@ def _client_usage(*, cfg, now, rows, clients, cur_ym, span) -> dict:
     by_c: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for r in rows:
         cl = r.get("b2b_client")
-        if cl and r["source"] != "注文":
+        if cl:
             by_c[cl][_month_key(r["date"])] += to_white(r["form"], r["kg"], cfg)
     # 一般のお客様（請求先でない注文）の月ごとの出庫。「その他」の計画の実績に使う
     cons_m: dict[str, float] = defaultdict(float)
@@ -828,25 +848,15 @@ def _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span) -> None:
 
 
 def _receipt_waiting(all_out, receipts, clients, pendings, cfg=None) -> list[dict]:
-    """請求先ごとに、最後の領収書（確定済み請求書で数える設定なら請求書も）より後に出荷した注文
-    （＝領収書を出すまで在庫から引かれない量）。"""
-    last: dict[str, date] = {}
-    docs = [(v.get("client_id"), v.get("issue_date")) for v in (receipts or {}).values()]
-    if (cfg or {}).get("count_sent_invoices", True):
-        docs += [(p.get("client_id"), p.get("issue_date")) for p in (pendings or {}).values()
-                 if p.get("status") == "sent"]
-    for cl, iso in docs:
-        d = ledger.parse_date(iso)
-        if d and (cl not in last or d > last[cl]):
-            last[cl] = d
+    """請求先ごとの、請求書・領収書の発行前の出荷（注文）。すでに在庫から引いている分で、
+    書類が発行されると、その書類で数え直す。"""
     names = {c["id"]: _clean_name(c.get("name") or "").rstrip("様").strip() for c in clients}
     agg: dict[str, float] = defaultdict(float)
     for r in all_out:
         cl = r.get("b2b_client")
-        if r["source"] != "注文" or not cl or r["dup"] or r["kg"] <= 0:
+        if r["source"] != "注文" or not cl or r["dup"] or r.get("skip") or r["excluded"] or r["kg"] <= 0:
             continue
-        if cl not in last or r["date"] > last[cl]:
-            agg[cl] += r["kg"]
+        agg[cl] += r["kg"]
     return [{"client": names.get(cl, cl), "kg": kg}
             for cl, kg in sorted(agg.items(), key=lambda t: -t[1]) if kg >= 1]
 
@@ -905,8 +915,8 @@ def _alerts(*, cfg, now, total, has_base, has_counts, last_count, risk, run_out,
     for name, a, b in hot[:2]:
         add("info", "高回転取引先", f"{name}の直近3か月の月平均は{a:,.0f}kgで、その前の3か月（{b:,.0f}kg）より増えています。")
     for w in (waiting or [])[:4]:
-        add("info", "領収書待ち", f"{w['client']}：領収書（請求書）の発行前に出荷した分が約{w['kg']:,.0f}kgあります"
-            "（発行すると在庫から引かれます）。")
+        add("info", "書類の発行前", f"{w['client']}：請求書・領収書の発行前に出荷した約{w['kg']:,.0f}kgを、"
+            "注文のとおり在庫から引いています（書類を発行すると、その書類で数えます）。")
     if plan and plan.get("surplus_w") is not None and plan["surplus_w"] > 0.15 * max(plan["start_w"], 1):
         add("warn", "在庫が余る見込み",
             f"このペースだと次の新米までに白米換算で約{plan['surplus_w']:,.0f}kg余ります。"

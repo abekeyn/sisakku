@@ -88,7 +88,8 @@ def render() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
     st.subheader("📦 在庫管理")
     st.caption("在庫は「棚卸（実数）＋入庫 − 出庫」で計算します。出庫は、請求先は**発行済みの領収書**"
-               "（領収書のない分は確定済みの請求書）、消費者向けは**出荷確定した注文**だけを数えます。月末の数字が違うときは「在庫の登録・修正」で直せます。")
+               "（領収書のない分は確定済みの請求書。書類がまだ無い出荷は注文のまま）、消費者向けは**出荷確定した注文**を数えます。"
+               "月末の数字が違うときは「在庫の登録・修正」で直せます。")
 
     cfg = stock.load_config()
     fy_now = stock.crop_year_of(stock.today())
@@ -995,11 +996,12 @@ def _history_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
 # 出庫の明細
 # ---------------------------------------------------------------------------
 def _out_detail(m: dict, cfg: dict) -> None:
-    st.caption("在庫から出たものとして数えている一覧です。請求先は**発行済みの領収書**、"
-               "消費者向けは**出荷確定した注文**を数えます（請求先の注文は領収書で数えるので計上しません）。"
+    st.caption("在庫から出たものとして数えている一覧です。請求先は**発行済みの領収書・確定済みの請求書**、"
+               "消費者向けは**出荷確定した注文**を数えます。請求先でも、書類がまだ無い出荷は注文のまま数え、"
+               "書類が発行されたらそちらで数え直します（二重に数えません）。"
                "同じ伝票番号の注文は自動で1件にまとめます。違うと思う行は「除外」にチェックすると、在庫の計算から外せます。")
     for w in (m.get("receipt_waiting") or [])[:6]:
-        st.caption(f'🧾 {w["client"]}：領収書の発行前に出荷した分が約{w["kg"]:,.0f}kg（領収書を発行すると計上されます）')
+        st.caption(f'🧾 {w["client"]}：請求書・領収書の発行前の出荷 約{w["kg"]:,.0f}kg（注文のまま計上中。書類を発行するとそちらで数えます）')
     months = set(m["months"])
     rows = [r for r in m["all_out"] if f'{r["date"].year}-{r["date"].month:02d}' in months]
     if not rows:
@@ -1009,14 +1011,14 @@ def _out_detail(m: dict, cfg: dict) -> None:
     df = pd.DataFrame([{
         "id": r["id"], "日付": r["date"], "取引先": r["customer"], "元": r["source"],
         "品種": r["variety"], "形態": r["form"], "kg": r["kg"], "保管場所": r["location"],
-        "状態": ("請求先の注文（領収書で計上）" if r.get("skip") else
+        "状態": ("書類で計上済み（注文は数えない）" if r.get("skip") else
                  "重複（自動除外）" if r["dup"] else "計上" if not r["excluded"] else "手動で除外"),
         "メモ": r["note"], "除外": bool(r["excluded"])} for r in rows])
-    flt = st.segmented_control("表示", ["すべて", "計上のみ", "除外・重複・領収書待ち"], default="すべて",
+    flt = st.segmented_control("表示", ["すべて", "計上のみ", "除外・重複・書類で計上済み"], default="すべて",
                                key="stk_out_flt", label_visibility="collapsed") or "すべて"
     if flt == "計上のみ":
         df = df[df["状態"] == "計上"]
-    elif flt == "除外・重複・領収書待ち":
+    elif flt == "除外・重複・書類で計上済み":
         df = df[df["状態"] != "計上"]
     ed = st.data_editor(
         df, hide_index=True, use_container_width=True, key=f"stk_out_{flt}",
@@ -1084,6 +1086,10 @@ def _settings(cfg: dict) -> None:
                       value=bool(cfg.get("count_sent_invoices", True)),
                       help="振込払いなどで領収書を出さない請求先（例：グラナダ）の出荷を、確定した請求書の数量で在庫から引きます。"
                            "領収書を発行した請求書は領収書で数えるので二重にはなりません。")
+    uninv = st.checkbox("請求書・領収書がまだ無い請求先の出荷も、注文のまま出庫に数える",
+                        value=bool(cfg.get("count_uninvoiced_orders", True)),
+                        help="請求先（卸先）の出荷は、書類が発行されるまで在庫から引かれず、実際より多く見えてしまうのを防ぎます。"
+                             "書類が発行されると（出荷日から31日以内）そちらで数え直すので、二重にはなりません。")
     y1, y2 = st.columns(2)
     myield = y1.number_input("精米の歩留まり（玄米→白米）", min_value=0.5, max_value=1.0,
                              value=float(cfg.get("milling_yield") or 0.9), step=0.01, format="%.2f",
@@ -1101,7 +1107,7 @@ def _settings(cfg: dict) -> None:
                 "default_location": dloc, "varieties": vlist, "default_variety": dvar,
                 "risk_high_months": hi, "risk_mid_months": max(mid, hi), "stale_count_days": int(stale),
                 "milling_yield": float(myield), "harvest_month": int(hmonth),
-                "count_sent_invoices": bool(inv)})
+                "count_sent_invoices": bool(inv), "count_uninvoiced_orders": bool(uninv)})
             new_vl = {}
             for _, r in vloc_ed.iterrows():
                 d = {f: r[f + "の出庫元"] for f in ("玄米", "精米") if r[f + "の出庫元"] in names}
