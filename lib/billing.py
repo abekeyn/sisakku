@@ -187,10 +187,21 @@ def month_summary(ym: str) -> list[dict]:
         sm = _summarize_shipments(by_cust.get(c.get("customer_id") or -1, []), c, unit_kg)
         price = float(c.get("price_per_5kg", 4000))
         ex = existing.get(c["id"], [])
+        count, total_kg, qty = sm["count"], sm["total_kg"], sm["qty"]
+        warning, from_invoices = sm["warning"], False
+        # 出荷（注文）が記録されていない請求先は、納品のたびに手入力した確定済みの請求書が、
+        # 納品の記録になっている。その件数・数量を出荷として数える（表で合計を確認できるように）。
+        sent_inv = [p for p in existing.get(c["id"], []) if p.get("status") == "sent"]
+        if count == 0 and sent_inv:
+            count = len(sent_inv)
+            total_kg = sum(float(p.get("total_kg") or 0) for p in sent_inv)
+            qty = total_kg / unit_kg
+            from_invoices = True
+            warning = ""
         out.append({
-            "client_id": c["id"], "name": c["name"], "count": sm["count"], "total_kg": sm["total_kg"],
-            "qty": sm["qty"], "unit_kg": unit_kg, "price": price,
-            "amount": int(round(sm["qty"] * price)), "warning": sm["warning"], "rows": sm["rows"],
+            "client_id": c["id"], "name": c["name"], "count": count, "total_kg": total_kg,
+            "qty": qty, "unit_kg": unit_kg, "price": price, "from_invoices": from_invoices,
+            "amount": int(round(qty * price)), "warning": warning, "rows": sm["rows"],
             "existing": [{"status": p.get("status"), "amount": p.get("amount"), "issue_date": p.get("issue_date")}
                          for p in ex],
             "shared_customer": bool(c.get("customer_id")) and shared.get(c["customer_id"], 0) > 1,

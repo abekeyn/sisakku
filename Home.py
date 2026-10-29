@@ -1898,6 +1898,8 @@ def _monthly_bulk_panel() -> None:
             notes.append("同じ顧客に複数の請求先が紐づいています（出荷が重なる可能性）")
         if r["warning"] and r["count"]:
             notes.append("ヤマト取込が未同期の可能性")
+        if r.get("from_invoices"):
+            notes.append("出荷の記録がないため、確定済みの請求書（手入力）の合計を表示")
         return " / ".join(notes)
 
     orig = {r["client_id"]: r for r in rows}
