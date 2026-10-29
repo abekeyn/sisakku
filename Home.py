@@ -1839,8 +1839,113 @@ def _render_pending_card(key: str, p: dict) -> None:
                 st.rerun()
 
 
+def _monthly_bulk_panel() -> None:
+    """その月の出荷から、全請求先の請求書をまとめて作る（1ボタン）。作成は裏で行う。"""
+    import calendar
+    import pandas as pd
+
+    t = today()
+    yms = []
+    y, m = t.year, t.month
+    for _ in range(7):
+        yms.append(f"{y}-{m:02d}")
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    default_ym = yms[1] if t.day <= 10 else yms[0]      # 月初は先月分を作ることが多い
+    c1, c2 = st.columns([1, 1])
+    ym = c1.selectbox("対象の月", yms, index=yms.index(default_ym), key="mb_ym",
+                      format_func=lambda v: f"{int(v[:4])}年{int(v[5:])}月分")
+    yy, mm = int(ym[:4]), int(ym[5:])
+    month_end = date(yy, mm, calendar.monthrange(yy, mm)[1])
+    issue = c2.date_input("発行日", value=month_end, key=f"mb_date_{ym}",
+                          help="通常は月末日です。")
+    rows = billing.month_summary(ym)
+    if not rows:
+        st.caption("請求先が登録されていません。")
+        return
+    ex_label = {"sent": "確定済み", "pending": "未確定"}
+
+    def _state(r):
+        if r["existing"]:
+            return "作成済み（" + "・".join(f'{ex_label.get(e["status"], e["status"])}¥{int(e["amount"] or 0):,}'
+                                          for e in r["existing"]) + "）"
+        return "出荷なし" if r["count"] == 0 else "作成できます"
+
+    def _note(r):
+        notes = []
+        if r["shared_customer"]:
+            notes.append("同じ顧客に複数の請求先が紐づいています（出荷が重なる可能性）")
+        if r["warning"] and r["count"]:
+            notes.append("ヤマト取込が未同期の可能性")
+        return " / ".join(notes)
+
+    df = pd.DataFrame([{
+        "作成": bool(r["count"] and r["qty"] > 0 and not r["existing"] and not r["shared_customer"]),
+        "請求先": r["name"], "出荷": r["count"], "数量kg": round(r["total_kg"], 1),
+        "金額": r["amount"], "状態": _state(r), "注意": _note(r), "id": r["client_id"],
+    } for r in rows])
+    df = df.sort_values(["作成", "出荷"], ascending=[False, False]).reset_index(drop=True)
+    ed = st.data_editor(
+        df, hide_index=True, use_container_width=True, key=f"mb_tbl_{ym}",
+        disabled=[c for c in df.columns if c != "作成"],
+        column_config={
+            "id": None,
+            "作成": st.column_config.CheckboxColumn("作成"),
+            "出荷": st.column_config.NumberColumn("出荷件数", format="%d"),
+            "数量kg": st.column_config.NumberColumn("数量(kg)", format="%.1f"),
+            "金額": st.column_config.NumberColumn("請求額(税込)", format="¥%d"),
+        })
+    picked = [r for _, r in ed.iterrows() if r["作成"]]
+    amount_total = sum(int(r["金額"]) for r in picked)
+    st.caption("その月の出荷（ヤマトの伝票を重複なく数えたもの）×請求先ごとの単価で作ります。"
+               "作成済みの請求先と、出荷のない請求先は、初期状態でチェックを外してあります。"
+               "作った請求書は「未確定」に入るので、内容を確認してから確定できます。")
+    confirm_now = st.checkbox("作成したら、そのまま確定する（メール宛先のある請求先には、その場で送信されます）",
+                              key=f"mb_confirm_{ym}")
+    n_mail = 0
+    if confirm_now and picked:
+        by_id = {c["id"]: c for c in billing.get_clients()}
+        n_mail = sum(1 for r in picked if "@" in (by_id.get(r["id"], {}).get("email") or ""))
+        if n_mail:
+            st.warning(f"{n_mail}か所の請求先には、請求書をメールで送信します（取り消せません）。")
+    label = (f"✅ {int(ym[5:])}月分の請求書を{len(picked)}件まとめて作成"
+             + ("して確定" if confirm_now else "") + (f"（合計 ¥{amount_total:,}）" if picked else ""))
+    if st.button(label, type="primary", use_container_width=True, disabled=not picked, key=f"mb_go_{ym}"):
+        ids = [r["id"] for r in picked]
+
+        def _make_all(ids=ids, ym=ym, issue=issue, confirm=confirm_now):
+            made, fails, confirmed = [], [], 0
+            for cid in ids:
+                r = billing.prepare_month(cid, ym, issue)
+                nm = (billing.get_client(cid) or {}).get("name", cid)
+                if not r.get("ok"):
+                    fails.append(f"{nm}：{r.get('msg')}")
+                    continue
+                made.append((nm, r))
+                if confirm:
+                    p = billing.get_pendings().get(r["key"]) or {}
+                    has_email = "@" in (p.get("email") or "")
+                    cr = billing.send_pending(r["key"]) if has_email else billing.confirm_pending(r["key"])
+                    if cr.get("ok"):
+                        confirmed += 1
+                    else:
+                        fails.append(f"{nm}：作成しましたが確定できませんでした（{cr.get('msg')}）")
+            if confirmed:
+                billing.sync_invoices()
+            msg = f"{len(made)}件の請求書を作成" + (f"し、{confirmed}件を確定" if confirm else "") + "しました。"
+            if made and not confirm:
+                msg += "「未確定」から内容を確認して確定してください。"
+            if fails:
+                msg += " うまくいかなかった分：" + " / ".join(fails)
+            return (len(made) > 0, msg)
+        _run_bg(f"{int(ym[5:])}月分の請求書を{len(picked)}件作成", _make_all, lock_name="billing")
+
+
 def _billing_issue() -> None:
     _show_flash()
+    with st.expander("📅 月の請求書をまとめて作成（1ボタン）", expanded=True):
+        _monthly_bulk_panel()
     with st.expander("＋ 手入力で請求書を新規作成（自動集計を使わない）"):
         # 「有効（月末に自動作成する）」は自動集計フローだけの設定。手入力作成は
         # それとは独立の操作なので、無効な請求先も選べるようにする。

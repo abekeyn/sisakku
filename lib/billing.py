@@ -120,6 +120,11 @@ def month_shipments(client: dict, target_ym: str) -> dict:
         raw = [dict(r._mapping) for r in
                c.execute(q, {"cid": client["customer_id"], "like": like})]
 
+    return _summarize_shipments(raw, client)
+
+
+def _summarize_shipments(raw: list[dict], client: dict, unit_kg: float = UNIT_KG) -> dict:
+    """出荷行（raw）を、伝票で重複排除して数量・金額にまとめる。unit_kg あたりの単価で金額を出す。"""
     yamato, seen = [], set()
     for r in raw:
         ext = (r.get("external_id") or "").strip()
@@ -145,9 +150,76 @@ def month_shipments(client: dict, target_ym: str) -> dict:
         total_kg += kg
         rows.append({"date": r["ship_date"], "product": r["pname"], "kg": kg, "denpyo": d})
     price = client.get("price_per_5kg", 4000)
-    qty = total_kg / UNIT_KG
+    qty = total_kg / unit_kg
     return {"qty": qty, "total_kg": total_kg, "count": len(rows), "rows": rows,
             "amount": int(round(qty * price)), "source": source, "warning": warning}
+
+
+def month_summary(ym: str) -> list[dict]:
+    """全請求先の ym（'YYYY-MM'）の出荷集計と、その月の請求書の有無（一括作成の確認表用）。
+
+    数量は請求先ごとの単位（unit_kg）で割った個数。金額＝個数×単価（税込）。
+    """
+    like = ym.replace("-", "/") + "%"
+    q = sa.text("""
+        select o.customer_id, o.id, o.ship_date, o.external_id, p.name as pname, p.weight_kg
+        from orders o join products p on p.id = o.product_id
+        where o.ship_date like :like
+        order by o.ship_date
+    """)
+    by_cust: dict[int, list[dict]] = {}
+    with db.get_engine().connect() as c:
+        for r in c.execute(q, {"like": like}).mappings():
+            by_cust.setdefault(int(r["customer_id"] or 0), []).append(dict(r))
+    existing: dict[str, list[dict]] = {}
+    for k, p in get_pendings().items():
+        if p.get("target_ym") == ym:
+            existing.setdefault(p["client_id"], []).append(p)
+    clients = get_clients()
+    shared: dict[int, int] = {}
+    for c in clients:
+        if c.get("customer_id"):
+            shared[c["customer_id"]] = shared.get(c["customer_id"], 0) + 1
+    out = []
+    for c in clients:
+        unit_kg = float(c.get("unit_kg") or UNIT_KG)
+        sm = _summarize_shipments(by_cust.get(c.get("customer_id") or -1, []), c, unit_kg)
+        price = float(c.get("price_per_5kg", 4000))
+        ex = existing.get(c["id"], [])
+        out.append({
+            "client_id": c["id"], "name": c["name"], "count": sm["count"], "total_kg": sm["total_kg"],
+            "qty": sm["qty"], "unit_kg": unit_kg, "price": price,
+            "amount": int(round(sm["qty"] * price)), "warning": sm["warning"], "rows": sm["rows"],
+            "existing": [{"status": p.get("status"), "amount": p.get("amount"), "issue_date": p.get("issue_date")}
+                         for p in ex],
+            "shared_customer": bool(c.get("customer_id")) and shared.get(c["customer_id"], 0) > 1,
+        })
+    return out
+
+
+@_locked
+def prepare_month(client_id: str, ym: str, issue_date: date) -> dict:
+    """ym の出荷をまとめた月の請求書を、その場で作る（未確定の下書き）。reportlabで即時生成。"""
+    client = get_client(client_id)
+    if not client:
+        return {"ok": False, "msg": "請求先マスタが見つかりません"}
+    row = next((r for r in month_summary(ym) if r["client_id"] == client_id), None)
+    if not row or row["qty"] <= 0:
+        return {"ok": False, "msg": f"{ym} の出荷がないため作成しませんでした"}
+    r = prepare_manual(client_id, issue_date, row["qty"], row["price"], unit_kg=row["unit_kg"])
+    if not r.get("ok"):
+        return r
+    allp = get_pendings()
+    p = allp[r["key"]]
+    p["rows"] = row["rows"]
+    p["warning"] = row["warning"]
+    p["target_ym"] = ym
+    p["month"] = int(ym[5:7])
+    p["monthly"] = True
+    allp[r["key"]] = p
+    _save_pendings(allp)
+    return {"ok": True, "key": r["key"], "amount": r["amount"], "qty": r["qty"],
+            "total_kg": row["total_kg"], "count": row["count"]}
 
 
 # ===== 帳票生成 ===================================================================
