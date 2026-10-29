@@ -365,7 +365,7 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
     unit_kg = unit_kg or p.get("unit_kg") or UNIT_KG
     amount = amount_override if amount_override is not None else int(round(qty * unit_price))
     pdf = invoice_pdf.build_invoice_pdf(
-        invoice_to=client["invoice_to"], item_desc=client.get("item_desc", ""),
+        invoice_to=client["invoice_to"], item_desc=item_with_unit(client.get("item_desc", ""), unit_kg),
         qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=p["doc_number"],
         amount=amount)
     p.update({
@@ -381,6 +381,18 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
     allp[pending_key] = p
     _save_pendings(allp)
     return {"ok": True, "amount": amount, "qty": qty}
+
+
+def item_with_unit(desc: str, unit_kg: float | None) -> str:
+    """請求書の品名の末尾の重さ（「…(精米) 5㎏」）を、実際の単位（unit_kg）に合わせる。
+
+    数量は「単位kgあたり何個」で出すので、品名の重さが単位と違うと、品名と量が食い違って見える
+    （例：30kg単位で請求するのに品名が「5㎏」のまま）。末尾の重さを外して、単位の重さを付け直す。
+    """
+    base = re.sub(r"[\s　]*[\d.]+[\s　]*(?:㎏|kg|KG|Kg|キロ)[\s　]*$", "", desc or "").rstrip()
+    if not unit_kg:
+        return desc or ""
+    return f"{base} {unit_kg:g}㎏".strip()
 
 
 def build_delivery_note(p: dict, issue_date: date | None = None,
@@ -431,7 +443,7 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
     unit_kg = unit_kg or client.get("unit_kg") or UNIT_KG
     amount = amount_override if amount_override is not None else int(round(qty * unit_price))
     pdf = invoice_pdf.build_invoice_pdf(
-        invoice_to=client["invoice_to"], item_desc=client.get("item_desc", ""),
+        invoice_to=client["invoice_to"], item_desc=item_with_unit(client.get("item_desc", ""), unit_kg),
         qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=doc_no,
         amount=amount)
     pending = {
