@@ -158,13 +158,14 @@ def _summarize_shipments(raw: list[dict], client: dict, unit_kg: float = UNIT_KG
 def month_summary(ym: str) -> list[dict]:
     """全請求先の ym（'YYYY-MM'）の出荷集計と、その月の請求書の有無（一括作成の確認表用）。
 
+    数えるのは、出荷確定した（発送済み・手渡し完了）出荷だけ。
     数量は請求先ごとの単位（unit_kg）で割った個数。金額＝個数×単価（税込）。
     """
     like = ym.replace("-", "/") + "%"
     q = sa.text("""
         select o.customer_id, o.id, o.ship_date, o.external_id, p.name as pname, p.weight_kg
         from orders o join products p on p.id = o.product_id
-        where o.ship_date like :like
+        where o.ship_date like :like and o.status = 'shipped'
         order by o.ship_date
     """)
     by_cust: dict[int, list[dict]] = {}
@@ -198,15 +199,27 @@ def month_summary(ym: str) -> list[dict]:
 
 
 @_locked
-def prepare_month(client_id: str, ym: str, issue_date: date) -> dict:
-    """ym の出荷をまとめた月の請求書を、その場で作る（未確定の下書き）。reportlabで即時生成。"""
+def prepare_month(client_id: str, ym: str, issue_date: date, total_kg: float | None = None,
+                  unit_kg: float | None = None, unit_price: float | None = None,
+                  amount: int | None = None) -> dict:
+    """ym の出荷をまとめた月の請求書を、その場で作る（未確定の下書き）。reportlabで即時生成。
+
+    出荷の件数・数量は確定済みの出荷から出す。total_kg（数量の手修正）、unit_kg・unit_price
+    （単位と単価。例：30kgあたり14,000円）、amount（金額の手修正）を渡すと、その値で作る。
+    省略時は請求先マスタの単位・単価で、数量×単価を自動計算する。
+    """
     client = get_client(client_id)
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
     row = next((r for r in month_summary(ym) if r["client_id"] == client_id), None)
-    if not row or row["qty"] <= 0:
+    kg = float(total_kg) if total_kg is not None else (row["total_kg"] if row else 0.0)
+    if not row or (row["count"] <= 0 and total_kg is None) or kg <= 0:
         return {"ok": False, "msg": f"{ym} の出荷がないため作成しませんでした"}
-    r = prepare_manual(client_id, issue_date, row["qty"], row["price"], unit_kg=row["unit_kg"])
+    ukg = float(unit_kg or row["unit_kg"])
+    price = float(unit_price if unit_price is not None else row["price"])
+    qty = kg / ukg
+    r = prepare_manual(client_id, issue_date, qty, price, unit_kg=ukg,
+                       amount_override=int(amount) if amount is not None else None)
     if not r.get("ok"):
         return r
     allp = get_pendings()
@@ -219,7 +232,7 @@ def prepare_month(client_id: str, ym: str, issue_date: date) -> dict:
     allp[r["key"]] = p
     _save_pendings(allp)
     return {"ok": True, "key": r["key"], "amount": r["amount"], "qty": r["qty"],
-            "total_kg": row["total_kg"], "count": row["count"]}
+            "total_kg": kg, "count": row["count"]}
 
 
 # ===== 帳票生成 ===================================================================

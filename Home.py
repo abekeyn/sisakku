@@ -1840,7 +1840,11 @@ def _render_pending_card(key: str, p: dict) -> None:
 
 
 def _monthly_bulk_panel() -> None:
-    """その月の出荷から、全請求先の請求書をまとめて作る（1ボタン）。作成は裏で行う。"""
+    """その月の確定済みの出荷から、全請求先の請求書をまとめて作る（1ボタン）。作成は裏で行う。
+
+    件数・数量は確定済み（出荷確定した）の出荷から出し、金額は「単位kgあたり◯円」で自動計算する。
+    数量と金額は、表で手修正できる。
+    """
     import calendar
     import pandas as pd
 
@@ -1858,13 +1862,29 @@ def _monthly_bulk_panel() -> None:
                       format_func=lambda v: f"{int(v[:4])}年{int(v[5:])}月分")
     yy, mm = int(ym[:4]), int(ym[5:])
     month_end = date(yy, mm, calendar.monthrange(yy, mm)[1])
-    issue = c2.date_input("発行日", value=month_end, key=f"mb_date_{ym}",
-                          help="通常は月末日です。")
+    issue = c2.date_input("発行日", value=month_end, key=f"mb_date_{ym}", help="通常は月末日です。")
+
+    # 単価の決め方：既定は「30kgあたり14,000円」。請求先マスタの単価を使うこともできる
+    p1, p2, p3 = st.columns([1.2, 1, 1])
+    mode = p1.radio("単価", ["一括指定", "請求先マスタの単価"], horizontal=True, key="mb_mode",
+                    help="一括指定：全員に同じ「単位kgあたり◯円」を使います。")
+    bulk_unit = p2.number_input("単位（kg）", min_value=0.1, value=30.0, step=1.0, key="mb_unit",
+                                disabled=mode != "一括指定")
+    bulk_price = p3.number_input("単位あたりの金額（税込・円）", min_value=0, value=14000, step=100,
+                                 key="mb_price", disabled=mode != "一括指定")
+
     rows = billing.month_summary(ym)
     if not rows:
         st.caption("請求先が登録されていません。")
         return
     ex_label = {"sent": "確定済み", "pending": "未確定"}
+
+    def _unit_price(r):
+        return (bulk_unit, float(bulk_price)) if mode == "一括指定" else (r["unit_kg"], r["price"])
+
+    def _auto(kg: float, r) -> int:
+        u, pr = _unit_price(r)
+        return int(round(kg / u * pr)) if kg > 0 else 0
 
     def _state(r):
         if r["existing"]:
@@ -1880,45 +1900,61 @@ def _monthly_bulk_panel() -> None:
             notes.append("ヤマト取込が未同期の可能性")
         return " / ".join(notes)
 
+    orig = {r["client_id"]: r for r in rows}
     df = pd.DataFrame([{
-        "作成": bool(r["count"] and r["qty"] > 0 and not r["existing"] and not r["shared_customer"]),
-        "請求先": r["name"], "出荷": r["count"], "数量kg": round(r["total_kg"], 1),
-        "金額": r["amount"], "状態": _state(r), "注意": _note(r), "id": r["client_id"],
+        "作成": bool(r["count"] and r["total_kg"] > 0 and not r["existing"] and not r["shared_customer"]),
+        "請求先": r["name"], "出荷件数": r["count"], "数量kg": round(r["total_kg"], 2),
+        "金額": _auto(r["total_kg"], r), "状態": _state(r), "注意": _note(r), "id": r["client_id"],
+        "_kg0": round(r["total_kg"], 2), "_auto0": _auto(r["total_kg"], r),
     } for r in rows])
-    df = df.sort_values(["作成", "出荷"], ascending=[False, False]).reset_index(drop=True)
+    df = df.sort_values(["作成", "出荷件数"], ascending=[False, False]).reset_index(drop=True)
     ed = st.data_editor(
-        df, hide_index=True, use_container_width=True, key=f"mb_tbl_{ym}",
-        disabled=[c for c in df.columns if c != "作成"],
+        df, hide_index=True, use_container_width=True,
+        key=f"mb_tbl_{ym}_{mode}_{bulk_unit}_{bulk_price}",
+        disabled=["請求先", "出荷件数", "状態", "注意"],
         column_config={
-            "id": None,
+            "id": None, "_kg0": None, "_auto0": None,
             "作成": st.column_config.CheckboxColumn("作成"),
-            "出荷": st.column_config.NumberColumn("出荷件数", format="%d"),
-            "数量kg": st.column_config.NumberColumn("数量(kg)", format="%.1f"),
-            "金額": st.column_config.NumberColumn("請求額(税込)", format="¥%d"),
+            "出荷件数": st.column_config.NumberColumn("出荷件数", format="%d"),
+            "数量kg": st.column_config.NumberColumn("数量(kg)　←直せます", min_value=0.0, step=1.0, format="%.1f"),
+            "金額": st.column_config.NumberColumn("請求額(税込)　←直せます", min_value=0, step=100, format="¥%d"),
         })
-    picked = [r for _, r in ed.iterrows() if r["作成"]]
-    amount_total = sum(int(r["金額"]) for r in picked)
-    st.caption("その月の出荷（ヤマトの伝票を重複なく数えたもの）×請求先ごとの単価で作ります。"
-               "作成済みの請求先と、出荷のない請求先は、初期状態でチェックを外してあります。"
-               "作った請求書は「未確定」に入るので、内容を確認してから確定できます。")
+
+    # 手修正の反映：数量を直したら金額を自動で再計算、金額を直接直したらその金額で作る
+    picked = []
+    for _, r in ed.iterrows():
+        if not r["作成"]:
+            continue
+        kg = float(r["数量kg"] or 0)
+        amt = int(r["金額"] or 0)
+        base = orig[r["id"]]
+        if abs(kg - float(r["_kg0"])) > 1e-9 and amt == int(r["_auto0"]):
+            amt = _auto(kg, base)
+        picked.append({"id": r["id"], "name": r["請求先"], "kg": kg, "amount": amt})
+    amount_total = sum(x["amount"] for x in picked)
+    u0, p0 = (bulk_unit, bulk_price) if mode == "一括指定" else (None, None)
+    st.caption(
+        (f"出荷件数・数量は、その月に**出荷確定した**出荷から出しています。金額は {bulk_unit:g}kgあたり¥{int(bulk_price):,} で"
+         "自動計算（数量を直すと金額も再計算されます）。" if mode == "一括指定" else
+         "出荷件数・数量は、その月に**出荷確定した**出荷から出しています。金額は請求先マスタの単価で自動計算します。")
+        + "金額を直接書き換えると、その金額で作成します。作成済み・出荷のない請求先は、チェックを外してあります。"
+          "作った請求書は「未確定」に入るので、内容を確認してから確定できます。")
     confirm_now = st.checkbox("作成したら、そのまま確定する（メール宛先のある請求先には、その場で送信されます）",
                               key=f"mb_confirm_{ym}")
-    n_mail = 0
     if confirm_now and picked:
         by_id = {c["id"]: c for c in billing.get_clients()}
-        n_mail = sum(1 for r in picked if "@" in (by_id.get(r["id"], {}).get("email") or ""))
+        n_mail = sum(1 for x in picked if "@" in (by_id.get(x["id"], {}).get("email") or ""))
         if n_mail:
             st.warning(f"{n_mail}か所の請求先には、請求書をメールで送信します（取り消せません）。")
     label = (f"✅ {int(ym[5:])}月分の請求書を{len(picked)}件まとめて作成"
              + ("して確定" if confirm_now else "") + (f"（合計 ¥{amount_total:,}）" if picked else ""))
     if st.button(label, type="primary", use_container_width=True, disabled=not picked, key=f"mb_go_{ym}"):
-        ids = [r["id"] for r in picked]
-
-        def _make_all(ids=ids, ym=ym, issue=issue, confirm=confirm_now):
+        def _make_all(items=list(picked), ym=ym, issue=issue, confirm=confirm_now, u0=u0, p0=p0):
             made, fails, confirmed = [], [], 0
-            for cid in ids:
-                r = billing.prepare_month(cid, ym, issue)
-                nm = (billing.get_client(cid) or {}).get("name", cid)
+            for x in items:
+                r = billing.prepare_month(x["id"], ym, issue, total_kg=x["kg"], unit_kg=u0,
+                                          unit_price=p0, amount=x["amount"])
+                nm = x["name"]
                 if not r.get("ok"):
                     fails.append(f"{nm}：{r.get('msg')}")
                     continue
