@@ -155,6 +155,8 @@ def _dashboard(m: dict) -> None:
     st.write("")
     _client_usage_panel(m)
     st.write("")
+    _headroom_panel(m)
+    st.write("")
     _plan_history_panel(m)
     st.write("")
 
@@ -378,6 +380,54 @@ def _client_usage_panel(m: dict) -> None:
     if extra:
         names = "、".join(f'{d["name"]}（{_n(d["used"])}kg）' for d in extra)
         st.caption(f"月の使用量が未設定の卸先（今月使った分）：{names}")
+
+
+def _headroom_panel(m: dict) -> None:
+    """新規契約に回せる量（毎月・白米換算）。新しい取引先をどれくらい取っていいかの目安。"""
+    h = m["headroom"]
+    ui.section("新規契約の余白（毎月あと何kg取れるか）",
+               f'いまの在庫から、次の新米（{int(h["harvest_ym"][5:])}月）まで足りる範囲で、来月から毎月何kg増やせるか（白米換算）')
+    if not h["ok"]:
+        st.caption("在庫が未登録、または次の新米までの月数が残っていないため、算出できません。")
+        return
+    y = h["yield"]
+    k = st.columns(len(h["scen"]))
+    for col, sc in zip(k, h["scen"]):
+        room = sc["room"]
+        if room >= 0:
+            val = _kg(room)
+            sub = (f'玄米なら約{_n(room / y)}kg ／ 30kg袋で約{room / 30:.1f}袋分<br>'
+                   f'毎月の消費 {_n(sc["monthly"])}kg が続く前提')
+        else:
+            val = f'不足 {_kg(-room)}'
+            sub = f'すでにこの前提だけで新米前に足りなくなる見込み（毎月の消費 {_n(sc["monthly"])}kg）'
+        col.markdown(ui.kpi(sc["label"], val, sub), unsafe_allow_html=True)
+    st.caption(f'いまの在庫 {_n(h["stock"])}kg（白米換算）／来月から新米の月まで {h["months"]}か月。'
+               "上の数字は「新規で毎月この量まで増えても、新米まで在庫が足りる」上限の目安です。"
+               "出荷待ちの注文や、新規契約の開始時期によって変わります。")
+
+    # 新規契約の試算
+    base = h["scen"][0]
+    default_try = max(int(base["room"] // 5 * 5), 0)
+    t1, t2 = st.columns([1, 2])
+    trial = t1.number_input("新規で取る契約の量（毎月・kg）", min_value=0, value=default_try, step=10,
+                            key="stk_hr_trial", help="来月から毎月この量が出ていく前提で、新米までの在庫を試算します。")
+    for sc in h["scen"]:
+        end = sc["end_stock"] - trial * h["months"]
+        t2.markdown(
+            f'<div class="sub" style="margin-top:6px"><b>{sc["label"].split("（")[0]}</b>：月{trial:,}kgを取ると、'
+            f'新米の前の在庫は約{_n(max(end, 0))}kg'
+            + ('（足ります）' if end >= 0 else f'<span style="color:#F5A9A9">、{_n(-end)}kg足りません</span>')
+            + '</div>', unsafe_allow_html=True)
+    sc = base
+    rows = [{"月": f'{int(r["ym"][5:])}月末', "毎月の消費kg": round(r["use"]),
+             "在庫(想定どおり)kg": round(r["stock"]),
+             f"在庫(新規{trial:,}kg/月を取った場合)kg": round(r["stock"] - trial * (i + 1))}
+            for i, r in enumerate(sc["rows"])]
+    with st.expander("月ごとの在庫の見込み（計画どおりの場合）"):
+        st.dataframe(pd.DataFrame(rows).style.format("{:,.0f}", subset=[c for c in rows[0] if c != "月"]),
+                     use_container_width=True, hide_index=True)
+        st.caption("今月の残りの消費は、想定の月量から今月ここまでの出庫を引いた分で見ています。")
 
 
 def _plan_history_panel(m: dict) -> None:

@@ -617,6 +617,7 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
     start_ym = (cfg.get("plan_start_ym") or "").strip() or fy_months(crop_year_of(now))[0]
     hist_months = range_months(date(int(start_ym[:4]), int(start_ym[5:7]), 1), now, 36)
     history = _plan_history(usage, hist_months, cur_ym)
+    headroom = _headroom(plan, usage, cfg, cur_ym)
 
     alerts = _alerts(cfg=cfg, now=now, total=total, has_base=has_base, has_counts=has_counts,
                      last_count=last_count, risk=risk, run_out=run_out, months_left=months_left,
@@ -641,6 +642,7 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
         "alerts": alerts, "out_rows": out_rows, "all_out": all_out,
         "forecast_text": _forecast_text(risk, run_out, months_left, cfg, now),
         "plan": plan, "receipt_waiting": waiting, "client_usage": usage, "plan_history": history,
+        "headroom": headroom,
     }
 
 
@@ -825,6 +827,38 @@ def _plan_history(usage, months, cur_ym) -> dict:
         ym = _prev_ym(ym)
     return {"rows": rows, "per_client": per_client, "recent": recent,
             "unregistered": [d["name"] for d in planned if d.get("unregistered")]}
+
+
+def _headroom(plan: dict, usage: dict, cfg: dict, cur_ym: str) -> dict:
+    """新規契約に回せる量（毎月・白米換算）。
+
+    いまの在庫（白米換算）から、次の新米の月まで「今月の残りの消費」と「毎月の想定の消費」を引いた残りを、
+    来月から新米の月までの月数で割る。＝ 新規で毎月これだけ増えても、新米まで在庫が足りる量。
+    想定は2通り：①卸先の月の使用量（計画）＋一般向けの想定、②直近3か月の実績ペース。
+    """
+    S = plan["total_w"]
+    n = plan["n_months"]
+    m = n - 1                                   # 来月から新米の月までの月数
+    mtd = plan["mtd_w"]
+    out = {"stock": S, "months": m, "yield": plan["yield"], "harvest_ym": plan["harvest_ym"], "scen": []}
+    if S <= 0 or m <= 0:
+        out["ok"] = False
+        return out
+    scens = [("計画どおり（卸先の月の使用量＋一般向けの想定）", plan.get("month_expected", 0.0)),
+             ("直近3か月の実績ペース", plan["avg_w"] if plan.get("has_hist") else plan["mtd_w"])]
+    for label, P in scens:
+        rem_cur = max(P - mtd, 0.0)             # 今月の残りの消費
+        x = (S - rem_cur - P * m) / m
+        rows = []
+        stock = S - rem_cur
+        for k in range(1, m + 1):
+            ym = _next_ym(cur_ym, k)
+            stock -= P
+            rows.append({"ym": ym, "use": P, "stock": stock, "stock_with": stock - x * k})
+        out["scen"].append({"label": label, "monthly": P, "rem_cur": rem_cur, "room": x,
+                            "end_stock": S - rem_cur - P * m, "rows": rows})
+    out["ok"] = True
+    return out
 
 
 def _merge_usage_into_plan(plan, usage, live_out, cfg, cur_ym, span) -> None:
