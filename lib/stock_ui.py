@@ -406,6 +406,42 @@ def _headroom_panel(m: dict) -> None:
                "上の数字は「新規で毎月この量まで増えても、新米まで在庫が足りる」上限の目安です。"
                "出荷待ちの注文や、新規契約の開始時期によって変わります。")
 
+    # 安全のために、新米の前に「◯か月分」の余力を残す場合
+    ui.section("安全のために余力を残す場合",
+               "新米が入る直前に、○か月分の在庫を残したままにするには、いま在庫をいくら持ち、毎月いくらまで出荷すればよいか")
+    buf_m = st.number_input("残しておく余力（か月分）", min_value=0.0, max_value=6.0, value=1.0, step=0.5,
+                            key="stk_hr_buf", help="新米の直前に、この月数ぶんの消費ができる在庫を残します。")
+    n_m = h["months"]
+    S = h["stock"]
+    cols = st.columns(len(h["scen"]))
+    for col, sc in zip(cols, h["scen"]):
+        P = sc["monthly"]
+        rem = sc["rem_cur"]
+        B = P * buf_m                                   # 残す在庫（安全在庫）
+        need_now = rem + P * n_m + B                    # いま必要な在庫
+        diff = S - need_now                             # いまの在庫の過不足
+        ship_cap = (S - B - rem) / n_m                  # 毎月の出荷の上限（余力を残す）
+        gap = ship_cap - P                              # 想定との差
+        if diff >= 0:
+            stock_line = f'いま必要な在庫 {_n(need_now)}kg に対して、<b>{_n(diff)}kg 余裕</b>があります'
+        else:
+            stock_line = (f'いま必要な在庫 {_n(need_now)}kg に対して、'
+                          f'<span style="color:#F5A9A9"><b>{_n(-diff)}kg 足りません</b></span>（追加の仕入・早めの収穫入荷が要ります）')
+        if gap >= 0:
+            ship_line = (f'毎月の出荷は <b>{_n(ship_cap)}kg まで</b>（想定の {_n(P)}kg より {_n(gap)}kg 多く出せます'
+                         f'＝新規契約の余白 約{_n(gap)}kg/月）')
+        else:
+            ship_line = (f'毎月の出荷は <b>{_n(max(ship_cap, 0))}kg 以内</b>に抑えます'
+                         f'（想定の {_n(P)}kg より <span style="color:#F5A9A9">{_n(-gap)}kg 少なく</span>）')
+        col.markdown(
+            f'<div class="stk-card"><div class="nm">{sc["label"].split("（")[0]}</div>'
+            f'<div class="sub" style="margin-top:6px">毎月の消費 {_n(P)}kg ／ 残す余力 {buf_m:g}か月分＝{_n(B)}kg</div>'
+            f'<div class="sub" style="margin-top:8px">🌾 <b>在庫でコントロール</b><br>{stock_line}</div>'
+            f'<div class="sub" style="margin-top:8px">📦 <b>出荷でコントロール</b><br>{ship_line}</div></div>',
+            unsafe_allow_html=True)
+    st.caption(f"計算：いまの在庫 {_n(S)}kg − 新米前に残す余力 − 今月の残りの消費 を、来月から新米の月までの{n_m}か月で割ると、"
+               "毎月出荷できる上限になります（白米換算）。")
+
     # 新規契約の試算
     base = h["scen"][0]
     default_try = max(int(base["room"] // 5 * 5), 0)
