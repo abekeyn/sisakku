@@ -314,13 +314,31 @@ def _run_b2_pickup() -> None:
             date_label=p.get("date", ""), time_label=p.get("time", ""),
             count=int(p.get("count", 1)), note=p.get("note", ""),
             dry_run=bool(p.get("dry_run")),
-            explore=bool(p.get("explore")), progress=prog,
+            explore=bool(p.get("explore")), options_only=bool(p.get("options_only")), progress=prog,
         )
+        if p.get("options_only"):
+            # 依頼ではないので、前回の集荷依頼の結果は上書きせず、選べる時間帯だけ残す
+            db.set_setting("b2_pickup_options", {
+                "at": started, "ok": bool(r.get("ok")), "today": r.get("today", []),
+                "dates": r.get("dates", []), "all": r.get("all", [])})
+            db.set_setting("b2_pickup_result", {
+                "ok": True, "at": started,
+                "summary": "確認のみ（依頼はしていません）。" + r.get("message", "")})
+            prog(100, "完了")
+            print("集荷の選べる時間帯:", r.get("message", ""), flush=True)
+            return
         result = {"ok": bool(r.get("ok")), "at": started, "summary": r.get("message", "")}
         prog(100, "完了")
         print("集荷依頼:", result["summary"], flush=True)
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "at": started, "summary": f"失敗: {e}"}
+        if p.get("options_only"):
+            db.set_setting("b2_pickup_options", {"at": started, "ok": False, "error": str(e)})
+            db.set_setting("b2_pickup_result", {"ok": False, "at": started,
+                                                "summary": f"選べる時間帯の確認に失敗: {e}"})
+            prog(100, "失敗")
+            print("集荷の選べる時間帯 取得失敗:", e, flush=True)
+            return
         prog(100, "失敗")
         print("集荷依頼 失敗:", e, flush=True)
         traceback.print_exc()

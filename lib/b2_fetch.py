@@ -900,7 +900,7 @@ def _dump_page(page, name: str) -> str:
 
 def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                    note: str = "", headful: bool = False, dry_run: bool = False,
-                   explore: bool = False, progress=None) -> dict:
+                   explore: bool = False, options_only: bool = False, progress=None) -> dict:
     """ヤマトビジネスメンバーズの集荷依頼を自動で行う。
 
     - count : 集荷してもらう荷物の個数（今日の発行件数を想定）
@@ -908,6 +908,7 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
     - time_label : 集荷希望時間帯（例 "午前中"）。空なら画面の既定
     returns {"ok": bool, "message": str}
     explore=True : 集荷依頼ページの構造を b2_debug にダンプして停止（本番前の調査）
+    options_only=True : 選べる日付・時間帯だけ読んで返す（依頼は送らない）
     dry_run=True : 入力まで行い、最終確定（依頼送信）はしない
     """
     import re as _re
@@ -963,6 +964,14 @@ def request_pickup(date_label: str = "", time_label: str = "", count: int = 1,
                 page.wait_for_load_state("domcontentloaded")
                 _wait_for(page, lambda: page.locator("select[name=shukaYmd]").count() > 0, 4000)
                 page.wait_for_timeout(400)
+
+            if options_only:
+                # 依頼は送らず、いま選べる日付・時間帯だけを読む（当日は受付締切で時間帯が減る）
+                def _real(nm):
+                    return [o for o in _select_options(page, nm) if "選択し" not in o and o.strip()]
+                return {"ok": True, "dates": _real("shukaYmd"),
+                        "today": _real("shukaTimeToday"), "all": _real("shukaTimeAll"),
+                        "message": "選べる時間帯：" + "、".join(_real("shukaTimeToday") or ["なし"])}
 
             # ====== ステップ1: 集荷の日時・個数を入力 ======
             # 探索モードは妥当な既定値（最初の候補日・指定なし・1個）で埋めてから進める

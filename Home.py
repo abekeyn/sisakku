@@ -932,13 +932,33 @@ def view_home():
     # 当日も選べる。実際に当日が可能かは時間帯の締切しだい（ヤマト側で判定）
     pdate = p1.date_input("集荷希望日", value=today(), min_value=today(),
                           max_value=today() + timedelta(days=7), key="pickup_date")
-    ptime = p2.selectbox("集荷時間帯", list(PICKUP_TIMES), key="pickup_time")
+    # 当日は受付締切で時間帯が減る（例：昼すぎには「13時まで」が消える）。ヤマトの画面で
+    # 実際に選べた時間帯を確認済みなら、当日はそれだけを選択肢にする。
+    _opts = db.get_setting("b2_pickup_options") or {}
+    _opts_at = _opts.get("at", "")
+    _opts_fresh = bool(_opts.get("ok") and _opts.get("today") and _opts_at[:10] == today().isoformat())
+    _times = list(PICKUP_TIMES)
+    if pdate == today() and _opts_fresh:
+        _times = list(_opts["today"])
+    ptime = p2.selectbox("集荷時間帯", _times, key="pickup_time")
     default_cnt = int(db.get_setting("last_shipped_count") or 1)
     pcnt = p3.number_input("個数", min_value=1, value=max(1, default_cnt), step=1,
                            key="pickup_count")
     if pdate == today():
-        st.caption("※当日の集荷は地域ごとの受付締切時刻まで。締切を過ぎていると当日は選べず、"
-                   "その場合は『翌日以降を選んでください』と表示されます（ヤマトの締切に従います）。")
+        if _opts_fresh:
+            st.caption(f'ヤマトの画面で確認済み（{_opts_at[11:16]}時点）：本日いま選べる時間帯は '
+                       f'{"、".join(t for t in _opts["today"] if t != "指定なし") or "なし"}。'
+                       "時刻が進むと減るので、迷ったら下で確認し直してください。")
+        elif _opts.get("ok") is False and _opts_at[:10] == today().isoformat():
+            st.caption(f'⚠ 選べる時間帯を確認できませんでした：{_opts.get("error", "")}')
+        else:
+            st.caption("※当日の集荷は地域ごとの受付締切時刻まで。締切を過ぎた時間帯は選べません。"
+                       "いま選べる時間帯は「いま選べる時間帯を確認」で調べられます。")
+        if st.button("🔎 いま選べる時間帯を確認（依頼は送りません）", key="pickup_check",
+                     help="PCの常駐プログラムがヤマトにログインし、本日いま選べる時間帯だけを読み取ります"):
+            _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
+                         "集荷の時間帯確認", payload_key="b2_pickup_payload",
+                         payload={"options_only": True})
     pnote = st.text_input("集荷依頼に関するご要望（任意）", key="pickup_note",
                           placeholder="例：インターホンで2階を呼んでください",
                           help="ヤマトの集荷依頼フォームの『ご要望』欄にそのまま入力されます")
