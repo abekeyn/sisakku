@@ -151,84 +151,88 @@ def _dashboard(m: dict) -> None:
     known = m["has_base"]
     cur_ym = m["cur_ym"]
 
-    _plan_panel(m)
-    st.write("")
-    _client_usage_panel(m)
-    st.write("")
-    _headroom_panel(m)
-    st.write("")
-    _plan_history_panel(m)
-    st.write("")
+    t_now, t_cli, t_hist = st.tabs(["いまの状況", "卸先と新規契約の余白", "推移・実績"])
+    with t_now:
+        _plan_panel(m)
+        st.write("")
 
-    def stock_val(v: float) -> str:
-        return f'{_n(v)}<span style="font-size:1rem;font-weight:600"> kg</span>' if known else "—"
+        def stock_val(v: float) -> str:
+            return f'{_n(v)}<span style="font-size:1rem;font-weight:600"> kg</span>' if known else "—"
 
-    risk_html = "—"
-    risk_sub = "棚卸を登録すると表示されます" if not known else "出庫のペースから判定"
-    if m["risk"]:
-        risk_html = f'<span class="stk-risk-{m["risk"]}">{m["risk"]}</span>'
-        risk_sub = m["forecast_text"] and (
-            (f'{stock._period_text(m["run_out"])}ごろに在庫がなくなる見込み' if m["risk"] != "低" else "当面は問題ありません")
-            if m["run_out"] else "")
+        risk_html = "—"
+        risk_sub = "棚卸を登録すると表示されます" if not known else "出庫のペースから判定"
+        if m["risk"]:
+            risk_html = f'<span class="stk-risk-{m["risk"]}">{m["risk"]}</span>'
+            risk_sub = m["forecast_text"] and (
+                (f'{stock._period_text(m["run_out"])}ごろに在庫がなくなる見込み' if m["risk"] != "低" else "当面は問題ありません")
+                if m["run_out"] else "")
 
-    k = st.columns(3)
-    k[0].markdown(ui.kpi("総在庫量", stock_val(m["total"]),
-                         (f'{_pct(m["total_pct"])}<br>玄米 {_n(m["by_form"]["玄米"])}kg ／ 精米 {_n(m["by_form"]["精米"])}kg'
-                          if known else "棚卸を登録すると表示されます")),
-                  unsafe_allow_html=True)
-    k[1].markdown(ui.kpi("利用可能在庫", stock_val(m["available"]),
-                         "総在庫から確保分を引いた量" if known else "棚卸を登録すると表示されます"),
-                  unsafe_allow_html=True)
-    k[2].markdown(ui.kpi("確保在庫（未出荷の注文）",
-                         f'{_n(m["reserved_kg"])}<span style="font-size:1rem;font-weight:600"> kg</span>',
-                         f'未出荷の注文 {m["reserved_n"]}件分'),
-                  unsafe_allow_html=True)
-    st.write("")
-    k = st.columns(3)
-    mom = m["mom_pct"]
-    mom_sub = ("前月の同じ時期のデータなし" if mom is None else
-               f'前月同時期比 <span class="{"up" if mom >= 0 else "down"}">{"▲" if mom >= 0 else "▼"} {abs(mom):.1f}%</span>')
-    k[0].markdown(ui.kpi("今月の出庫量", f'{_n(m["mtd"])}<span style="font-size:1rem;font-weight:600"> kg</span>', mom_sub),
-                  unsafe_allow_html=True)
-    ml = m["months_left"]
-    k[1].markdown(ui.kpi("在庫継続見込み",
-                         (f'{ml:.1f}<span style="font-size:1rem;font-weight:600"> か月</span>' if ml is not None and known else "—"),
-                         f'直近3か月の平均 {_n(m["monthly_avg"])}kg／月'), unsafe_allow_html=True)
-    k[2].markdown(ui.kpi("欠品リスク", risk_html, risk_sub), unsafe_allow_html=True)
+        k = st.columns(3)
+        k[0].markdown(ui.kpi("総在庫量", stock_val(m["total"]),
+                             (f'{_pct(m["total_pct"])}<br>玄米 {_n(m["by_form"]["玄米"])}kg ／ 精米 {_n(m["by_form"]["精米"])}kg'
+                              if known else "棚卸を登録すると表示されます")),
+                      unsafe_allow_html=True)
+        k[1].markdown(ui.kpi("利用可能在庫", stock_val(m["available"]),
+                             "総在庫から確保分を引いた量" if known else "棚卸を登録すると表示されます"),
+                      unsafe_allow_html=True)
+        k[2].markdown(ui.kpi("確保在庫（未出荷の注文）",
+                             f'{_n(m["reserved_kg"])}<span style="font-size:1rem;font-weight:600"> kg</span>',
+                             f'未出荷の注文 {m["reserved_n"]}件分'),
+                      unsafe_allow_html=True)
+        st.write("")
+        k = st.columns(3)
+        mom = m["mom_pct"]
+        mom_sub = ("前月の同じ時期のデータなし" if mom is None else
+                   f'前月同時期比 <span class="{"up" if mom >= 0 else "down"}">{"▲" if mom >= 0 else "▼"} {abs(mom):.1f}%</span>')
+        k[0].markdown(ui.kpi("今月の出庫量", f'{_n(m["mtd"])}<span style="font-size:1rem;font-weight:600"> kg</span>', mom_sub),
+                      unsafe_allow_html=True)
+        ml = m["months_left"]
+        k[1].markdown(ui.kpi("在庫継続見込み",
+                             (f'{ml:.1f}<span style="font-size:1rem;font-weight:600"> か月</span>' if ml is not None and known else "—"),
+                             f'直近3か月の平均 {_n(m["monthly_avg"])}kg／月'), unsafe_allow_html=True)
+        k[2].markdown(ui.kpi("欠品リスク", risk_html, risk_sub), unsafe_allow_html=True)
 
-    # ---- 推移と予測 ----
-    ui.section("出庫量の推移と予測", "棒＝月ごとの出庫量（薄い棒は予測）／線＝在庫残量")
-    st.altair_chart(_trend_chart(m), use_container_width=True)
+        # ---- アラート ＋ 予測 ＋ 構成 ----
+        a, b, c = st.columns([1.35, 1.0, 0.95])
+        with a:
+            ui.section("アラート・お知らせ")
+            _alerts(m)
+        with b:
+            ui.section("在庫予測")
+            _forecast(m)
+        with c:
+            ui.section("在庫の構成")
+            _composition(m)
 
-    # ---- アラート ＋ 予測 ＋ 構成 ----
-    a, b, c = st.columns([1.35, 1.0, 0.95])
-    with a:
-        ui.section("アラート・お知らせ")
-        _alerts(m)
-    with b:
-        ui.section("在庫予測")
-        _forecast(m)
-    with c:
-        ui.section("在庫の構成")
-        _composition(m)
+    with t_cli:
+        _client_usage_panel(m)
+        st.write("")
+        _headroom_panel(m)
+        st.write("")
+        _plan_history_panel(m)
 
-    # ---- 取引先別 月次表 ----
-    ui.section("取引先別 月次出庫実績", "単位：kg／将来の月は直近3か月の平均からの予測")
-    _customer_table(m)
+    with t_hist:
+        # ---- 推移と予測 ----
+        ui.section("出庫量の推移と予測", "棒＝月ごとの出庫量（薄い棒は予測）／線＝在庫残量")
+        st.altair_chart(_trend_chart(m), use_container_width=True)
 
-    # ---- 保管場所別・出庫先の流れ（普段は閉じておく） ----
-    with st.expander("保管場所別の在庫・在庫の流れ"):
-        c1, c2 = st.columns([1, 1.25])
-        with c1:
-            ui.section("保管場所別の在庫")
-            _locations(m)
-        with c2:
-            ui.section("在庫の流れ（保管場所 → 出庫先）", f'{m["label"]}の出庫量')
-            svg = _sankey_svg(m)
-            if svg:
-                st.markdown(svg, unsafe_allow_html=True)
-            else:
-                st.caption("この期間の出庫がまだありません。")
+        # ---- 取引先別 月次表 ----
+        ui.section("取引先別 月次出庫実績", "単位：kg／将来の月は直近3か月の平均からの予測")
+        _customer_table(m)
+
+        # ---- 保管場所別・出庫先の流れ（普段は閉じておく） ----
+        with st.expander("保管場所別の在庫・在庫の流れ"):
+            c1, c2 = st.columns([1, 1.25])
+            with c1:
+                ui.section("保管場所別の在庫")
+                _locations(m)
+            with c2:
+                ui.section("在庫の流れ（保管場所 → 出庫先）", f'{m["label"]}の出庫量')
+                svg = _sankey_svg(m)
+                if svg:
+                    st.markdown(svg, unsafe_allow_html=True)
+                else:
+                    st.caption("この期間の出庫がまだありません。")
 
 
 def _kg(v: float) -> str:

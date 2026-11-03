@@ -191,7 +191,9 @@ def month_summary(ym: str) -> list[dict]:
         warning, from_invoices = sm["warning"], False
         # 出荷（注文）が記録されていない請求先は、納品のたびに手入力した確定済みの請求書が、
         # 納品の記録になっている。その件数・数量を出荷として数える（表で合計を確認できるように）。
-        sent_inv = [p for p in existing.get(c["id"], []) if p.get("status") == "sent"]
+        # （月の一括作成で作った請求書そのものは含めない。含めると、作成済みの月の分が二重に見える）
+        sent_inv = [p for p in existing.get(c["id"], [])
+                    if p.get("status") == "sent" and not p.get("monthly")]
         if count == 0 and sent_inv:
             count = len(sent_inv)
             total_kg = sum(float(p.get("total_kg") or 0) for p in sent_inv)

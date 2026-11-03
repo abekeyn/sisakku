@@ -647,36 +647,68 @@ def view_home():
     m1.metric("精米", f"{summary['total_kg']:g} kg")
     m2.metric("玄米", f"{genmai_kg:g} kg", help="精米不要。そのまま用意してください")
     m3.metric("発送待ち", f"{len(unshipped)} 件")
+    # ---- ステップバー：いまのステップだけを大きく表示する ----
+    n_mill = sum(1 for o in pending if o["needs_milling"] or o["category"] == "複合")
+    n_ship = len(unshipped)
+    HOME_STEPS = {1: "注文を集める", 2: "精米", 3: "送り状", 4: "出荷確定", 5: "集荷"}
+    _step_cnt = {2: n_mill, 3: n_ship, 4: n_ship}
+    if "home_step" not in st.session_state:
+        st.session_state["home_step"] = 2 if n_mill else (3 if n_ship else 1)
 
-    # ======= STEP 1｜注文を集める =======
-    ui.step(1, "注文を集める",
-            "BASE・Shopifyはボタン1つで自動取込。LINE・コメフルの注文は手で追加します", first=True)
-    a1, a2, a3, a4 = st.columns(4)
-    if a1.button("⟳ BASE取込", use_container_width=True):
-        cfg = db.get_setting("base_config") or {}
-        if not cfg.get("refresh_token"):
-            st.warning("設定タブでBASE連携を登録してください。")
-        else:
-            def _imp_base():
-                r = base_api.fetch_orders_via_api()
-                if r.get("error"):
-                    return False, r["error"]
-                return True, f"未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込みました"
-            _run_bg("BASEの注文取込", _imp_base, lock_name="orders")
-    if a2.button("⟳ Shopify取込", use_container_width=True):
-        if not shopify_api.is_configured():
-            st.warning("設定タブでShopify連携を登録してください。")
-        else:
-            def _imp_shop():
-                r = shopify_api.fetch_orders_via_api()
-                if r.get("error"):
-                    return False, r["error"]
-                return True, f"{r.get('read', 0)}件を読み込み、新規 {r['added']} 件を取込みました"
-            _run_bg("Shopifyの注文取込", _imp_shop, lock_name="orders")
-    if a3.button("＋ 注文追加", use_container_width=True):
-        dlg_add_order()
-    if a4.button("CSV取込", use_container_width=True):
-        dlg_csv_import()
+    def _step_label(i: int) -> str:
+        c = _step_cnt.get(i, 0)
+        return f"{i} {HOME_STEPS[i]}" + (f"（{c}）" if c else "")
+
+    with st.container(key="stepbar"):
+        _picked = st.segmented_control("ステップ", list(HOME_STEPS), format_func=_step_label,
+                                       key="home_step", label_visibility="collapsed")
+    # 同じボタンをもう一度押して選択が外れても、表示中のステップは変えない
+    if _picked:
+        st.session_state["home_step_last"] = _picked
+    cur_step = _picked or st.session_state.get("home_step_last", 1)
+    _hint = None
+    if n_mill and cur_step != 2:
+        _hint = (2, f"精米が必要な注文が {n_mill} 件あります")
+    elif n_ship and cur_step not in (3, 4):
+        _hint = (3, f"発送待ちの注文が {n_ship} 件あります。送り状を作りましょう")
+    if _hint:
+        h1, h2 = st.columns([4, 1.2])
+        h1.info(f"👉 次にやること：{_hint[1]}")
+        h2.button(f"{HOME_STEPS[_hint[0]]}へ", key="home_next", use_container_width=True,
+                  on_click=lambda s=_hint[0]: st.session_state.update(home_step=s))
+    st.markdown("<style>" + "".join(f".st-key-hstep{i}{{display:none !important}}"
+                                    for i in HOME_STEPS if i != cur_step) + "</style>",
+                unsafe_allow_html=True)
+
+    with st.container(key="hstep1"):
+        ui.step(1, "注文を集める",
+                "BASE・Shopifyはボタン1つで自動取込。LINE・コメフルの注文は手で追加します", first=True)
+        a1, a2, a3, a4 = st.columns(4)
+        if a1.button("⟳ BASE取込", use_container_width=True):
+            cfg = db.get_setting("base_config") or {}
+            if not cfg.get("refresh_token"):
+                st.warning("設定タブでBASE連携を登録してください。")
+            else:
+                def _imp_base():
+                    r = base_api.fetch_orders_via_api()
+                    if r.get("error"):
+                        return False, r["error"]
+                    return True, f"未発送{r.get('target', 0)}件中、新規 {r['added']} 件を取込みました"
+                _run_bg("BASEの注文取込", _imp_base, lock_name="orders")
+        if a2.button("⟳ Shopify取込", use_container_width=True):
+            if not shopify_api.is_configured():
+                st.warning("設定タブでShopify連携を登録してください。")
+            else:
+                def _imp_shop():
+                    r = shopify_api.fetch_orders_via_api()
+                    if r.get("error"):
+                        return False, r["error"]
+                    return True, f"{r.get('read', 0)}件を読み込み、新規 {r['added']} 件を取込みました"
+                _run_bg("Shopifyの注文取込", _imp_shop, lock_name="orders")
+        if a3.button("＋ 注文追加", use_container_width=True):
+            dlg_add_order()
+        if a4.button("CSV取込", use_container_width=True):
+            dlg_csv_import()
 
     # ======= STEP 2｜精米する =======
     groups: dict[str, dict] = {}
@@ -707,280 +739,281 @@ def view_home():
 
     checks = [o for o in pending
               if o["category"] == "複合" and not o["milling_kg_override"]]
-    ui.step(2, "精米する",
-            "精米が終わったら「精米完了」→ 発送待ちに移ります。玄米・やさいは精米不要なので、そのまま用意してください",
-            done=bool(unshipped) and not groups and not checks)
+    with st.container(key="hstep2"):
+        ui.step(2, "精米する",
+                "精米が終わったら「精米完了」→ 発送待ちに移ります。玄米・やさいは精米不要なので、そのまま用意してください",
+                done=bool(unshipped) and not groups and not checks)
 
-    if not groups and not prep_groups and not checks:
-        if unshipped:
-            st.success("精米・用意は完了しています。次は ❸ 送り状づくりへ")
-        else:
-            st.caption("注文を取り込むと、ここに精米する量が表示されます。")
-    for key, g in sorted(groups.items(), key=lambda x: -x[1]["kg"]):
-        c1, c2 = st.columns([3, 1])
-        c1.markdown(
-            f'<div class="mill-row"><span class="mill-big">{key}</span>'
-            f'<span><b>{g["kg"]:g}kg</b>（×{g["qty"]}）</span></div>',
-            unsafe_allow_html=True,
-        )
-        if c2.button("精米完了", key=f'mill{key}', use_container_width=True):
-            db.update_order_status(g["ids"], "milled")
-            st.toast(f"{key} を精米済みにしました", icon="✅")
-            st.rerun(scope="fragment")
-    for key, g in sorted(prep_groups.items(), key=lambda x: -x[1]["kg"]):
-        kg_txt = f'<b>{g["kg"]:g}kg</b>（×{g["qty"]}）' if g["kg"] else f'×{g["qty"]}'
-        st.markdown(
-            f'<div class="mill-row"><span class="mill-big">{key}</span>'
-            f'<span>{kg_txt}　'
-            f'<span class="chip" style="color:#475569;background:#E2E8F0">精米不要</span></span></div>',
-            unsafe_allow_html=True,
-        )
+        if not groups and not prep_groups and not checks:
+            if unshipped:
+                st.success("精米・用意は完了しています。次は ❸ 送り状づくりへ")
+            else:
+                st.caption("注文を取り込むと、ここに精米する量が表示されます。")
+        for key, g in sorted(groups.items(), key=lambda x: -x[1]["kg"]):
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(
+                f'<div class="mill-row"><span class="mill-big">{key}</span>'
+                f'<span><b>{g["kg"]:g}kg</b>（×{g["qty"]}）</span></div>',
+                unsafe_allow_html=True,
+            )
+            if c2.button("精米完了", key=f'mill{key}', use_container_width=True):
+                db.update_order_status(g["ids"], "milled")
+                st.toast(f"{key} を精米済みにしました", icon="✅")
+                st.rerun(scope="fragment")
+        for key, g in sorted(prep_groups.items(), key=lambda x: -x[1]["kg"]):
+            kg_txt = f'<b>{g["kg"]:g}kg</b>（×{g["qty"]}）' if g["kg"] else f'×{g["qty"]}'
+            st.markdown(
+                f'<div class="mill-row"><span class="mill-big">{key}</span>'
+                f'<span>{kg_txt}　'
+                f'<span class="chip" style="color:#475569;background:#E2E8F0">精米不要</span></span></div>',
+                unsafe_allow_html=True,
+            )
 
-    # 複合で精米量未入力のもの
-    for o in checks:
-        c1, c2 = st.columns([3, 1])
-        c1.warning(f'⚠️ {o["customer_name"]}様の「{o["product_name"]}」は精米kgが未入力です')
-        if c2.button("入力する", key=f'fix{o["id"]}', use_container_width=True):
-            dlg_edit_order(o)
+        # 複合で精米量未入力のもの
+        for o in checks:
+            c1, c2 = st.columns([3, 1])
+            c1.warning(f'⚠️ {o["customer_name"]}様の「{o["product_name"]}」は精米kgが未入力です')
+            if c2.button("入力する", key=f'fix{o["id"]}', use_container_width=True):
+                dlg_edit_order(o)
 
     # ======= STEP 3｜送り状を作る =======
-    ui.step(3, "送り状を作る（ヤマト）",
-            "出荷する注文を選んで「ヤマトCSV作成」→ B2クラウドに取り込んで印刷します")
+    with st.container(key="hstep3"):
+        ui.step(3, "送り状を作る（ヤマト）",
+                "出荷する注文を選んで「ヤマトCSV作成」→ B2クラウドに取り込んで印刷します")
 
-    sel_ids = []
-    if not unshipped:
-        st.caption("発送待ちの注文はありません。")
-    else:
-        ship_orders = [o for o in unshipped if not o.get("handover")]
-        hand_orders = [o for o in unshipped if o.get("handover")]
-
-        if ship_orders:
-            st.caption("出荷する注文（チェックを外すと今回の送り状から除外されます）")
+        sel_ids = []
+        if not unshipped:
+            st.caption("発送待ちの注文はありません。")
         else:
-            st.caption("送り状が必要な注文はありません（手渡しのみ）。")
-        for o in ship_orders:
-            c1, c2, c3 = st.columns([0.5, 4.7, 1.1])
-            checked = c1.checkbox(" ", value=True, key=f'sel{o["id"]}',
-                                  label_visibility="collapsed")
-            if checked:
-                sel_ids.append(o["id"])
-            c2.markdown(ui.order_card(o), unsafe_allow_html=True)
-            with c3.popover("操作", use_container_width=True):
-                if st.button("✎ 編集", key=f'e{o["id"]}', use_container_width=True):
-                    dlg_edit_order(o)
-                if o["status"] == "milled":
-                    if st.button("↩ 精米待ちに戻す", key=f'um{o["id"]}', use_container_width=True):
-                        db.update_order_status([o["id"]], "pending")
-                        st.rerun(scope="fragment")
+            ship_orders = [o for o in unshipped if not o.get("handover")]
+            hand_orders = [o for o in unshipped if o.get("handover")]
 
-        sender = db.get_setting("sender") or {}
-        if not sender.get("name"):
-            st.warning("送り主が未設定です（設定タブで登録してください）")
-        st.caption("お届け日・時間帯は各注文の「操作 → ✎編集」でお客様ごとに指定できます"
-                   "（BASEの注文は自動で反映）。指定があれば送り状に印字されます。出荷予定日は自動で今日。")
-
-        # 選択中の注文を発送方法で分ける（宅急便とネコポスは別々に発行・印刷する）
-        _kind_of = {o["id"]: yamato.ship_type_of(o) for o in ship_orders}
-        n_taku = sum(1 for i in sel_ids if _kind_of.get(i) != "nekopos")
-        n_neko = sum(1 for i in sel_ids if _kind_of.get(i) == "nekopos")
-
-        def _build_csv_for_selected(kind: str | None = None):
-            """kind: "takkyubin"=宅急便のみ / "nekopos"=ネコポスのみ / None=選択すべて"""
-            def _want(o):
-                if o["id"] not in set(sel_ids):
-                    return False
-                if kind is None:
-                    return True
-                return (yamato.ship_type_of(o) == "nekopos") == (kind == "nekopos")
-            for o in [o for o in unshipped if _want(o)]:
-                # 出荷予定日は今日。お届け日/時間帯は各注文の設定をそのまま使う
-                db.update_order(o["id"], {"ship_date": today().strftime("%Y/%m/%d")})
-            targets = [o for o in _unshipped(db.list_orders()) if _want(o)]
-            return yamato.export_csv(targets, sender)
-
-        # B2で発行して自動印刷（PCの常駐エージェントが実行）
-        # 宅急便とネコポスは送り状の様式・用紙が違うので、ボタンを分けて別々に発行・印刷する
-        _b1, _b2 = st.columns(2)
-        _help = ("PCの常駐プログラムがB2クラウドに送り状を発行し、PDFを既定プリンタへ自動印刷します"
-                 "（PCとプリンタが起動している必要があります）")
-        _run_kind = None
-        if _b1.button(f"📦 宅急便を発行して自動印刷（{n_taku}件）", type="primary",
-                      use_container_width=True, disabled=not n_taku, help=_help):
-            _run_kind = "takkyubin"
-        if _b2.button(f"✉ ネコポスを発行して自動印刷（{n_neko}件）", type="primary",
-                      use_container_width=True, disabled=not n_neko, help=_help):
-            _run_kind = "nekopos"
-        if _run_kind:
-            import base64
-
-            def _payload(kind=_run_kind):
-                return {"csv_b64": base64.b64encode(_build_csv_for_selected(kind)).decode()}
-            _queue_agent_job("b2_print", _payload,
-                             "ネコポスの発行・自動印刷" if _run_kind == "nekopos" else "宅急便の発行・自動印刷")
-
-        pr = db.get_setting("b2_print_result")
-        if pr and not pr.get("pending"):
-            st.caption(("✓ " if pr.get("ok") else "⚠ ") + f'前回の発行・印刷（{pr.get("at","")}）：{pr.get("summary","")}')
-
-        # ☁ クラウドで発行して印刷（PC不要）：メール印刷の設定が済んでいる時だけ表示
-        from lib import mailer as _mailer
-        if _mailer.is_configured()[0]:
-            _c1, _c2 = st.columns(2)
-            _chelp = "このアプリ（クラウド）がB2で送り状を発行し、PDFをプリンタへメール送信して印刷します。PCは不要。"
-            if _c1.button(f"☁ 宅急便をクラウドで印刷（{n_taku}件）",
-                          use_container_width=True, disabled=not n_taku, help=_chelp):
-                _cloud_issue_and_print(lambda: _build_csv_for_selected("takkyubin"), "宅急便")
-            if _c2.button(f"☁ ネコポスをクラウドで印刷（{n_neko}件）",
-                          use_container_width=True, disabled=not n_neko, help=_chelp):
-                _cloud_issue_and_print(lambda: _build_csv_for_selected("nekopos"), "ネコポス")
-
-        with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
-            if st.button(f"ヤマトCSVを作成（{len(sel_ids)}件）", use_container_width=True,
-                         disabled=not sel_ids):
-                csv_bytes = _build_csv_for_selected()
-                st.session_state["csv_data"] = csv_bytes
-                res = exporter.save_or_reserve(csv_bytes)
-                if res["mode"] == "saved":
-                    st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n{res['path']}")
-                else:
-                    st.success("CSVを作成しました。下のボタンで保存できます。")
-            if st.session_state.get("csv_data"):
-                st.download_button(
-                    "↓ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
-                    file_name=exporter.make_filename(), mime="text/csv",
-                    use_container_width=True,
-                )
-
-        # ===== 手渡しの注文（送り状なし）=====
-        if hand_orders:
-            ui.section("手渡しの注文（送り状なし）",
-                       "直接お渡しする注文です。送り状の作成・印刷・配送はありません")
-            for o in hand_orders:
-                h1, h2 = st.columns([6, 1.1])
-                h1.markdown(ui.order_card(o), unsafe_allow_html=True)
-                with h2.popover("操作", use_container_width=True):
-                    if st.button("✎ 編集", key=f'he{o["id"]}', use_container_width=True):
+            if ship_orders:
+                st.caption("出荷する注文（チェックを外すと今回の送り状から除外されます）")
+            else:
+                st.caption("送り状が必要な注文はありません（手渡しのみ）。")
+            for o in ship_orders:
+                c1, c2, c3 = st.columns([0.5, 4.7, 1.1])
+                checked = c1.checkbox(" ", value=True, key=f'sel{o["id"]}',
+                                      label_visibility="collapsed")
+                if checked:
+                    sel_ids.append(o["id"])
+                c2.markdown(ui.order_card(o), unsafe_allow_html=True)
+                with c3.popover("操作", use_container_width=True):
+                    if st.button("✎ 編集", key=f'e{o["id"]}', use_container_width=True):
                         dlg_edit_order(o)
                     if o["status"] == "milled":
-                        if st.button("↩ 精米待ちに戻す", key=f'hum{o["id"]}',
-                                     use_container_width=True):
+                        if st.button("↩ 精米待ちに戻す", key=f'um{o["id"]}', use_container_width=True):
                             db.update_order_status([o["id"]], "pending")
                             st.rerun(scope="fragment")
-            if st.button(f"🤝 手渡しで完了にする（{len(hand_orders)}件）",
-                         use_container_width=True,
-                         help="送り状なしで出荷済みにします。BASEの注文は発送完了も送ります。"):
-                def _hand_done(orders=[dict(o) for o in hand_orders]):
-                    msgs, komeful_flag = [], False
-                    for o in orders:
-                        res = shipping.dispatch_to_channel(o)
-                        if res is not None:
-                            ok, msg = res
-                            msgs.append(("✓ " if ok else "⚠ ") + f'{o["customer_name"]}様：{msg}')
-                        elif o["channel"] == "komeful":
-                            komeful_flag = True
-                    db.update_order_status([o["id"] for o in orders], "shipped")
-                    text = f"{len(orders)} 件を手渡し完了（出荷済み）にしました。" + " ".join(msgs)
-                    if komeful_flag:
-                        text += "（コメフルの注文は、コメフル側で出荷処理をしてください）"
-                    return True, text
-                _run_bg(f"手渡し{len(hand_orders)}件を完了", _hand_done, lock_name="orders")
+
+            sender = db.get_setting("sender") or {}
+            if not sender.get("name"):
+                st.warning("送り主が未設定です（設定タブで登録してください）")
+            st.caption("お届け日・時間帯は各注文の「操作 → ✎編集」でお客様ごとに指定できます"
+                       "（BASEの注文は自動で反映）。指定があれば送り状に印字されます。出荷予定日は自動で今日。")
+
+            # 選択中の注文を発送方法で分ける（宅急便とネコポスは別々に発行・印刷する）
+            _kind_of = {o["id"]: yamato.ship_type_of(o) for o in ship_orders}
+            n_taku = sum(1 for i in sel_ids if _kind_of.get(i) != "nekopos")
+            n_neko = sum(1 for i in sel_ids if _kind_of.get(i) == "nekopos")
+
+            def _build_csv_for_selected(kind: str | None = None):
+                """kind: "takkyubin"=宅急便のみ / "nekopos"=ネコポスのみ / None=選択すべて"""
+                def _want(o):
+                    if o["id"] not in set(sel_ids):
+                        return False
+                    if kind is None:
+                        return True
+                    return (yamato.ship_type_of(o) == "nekopos") == (kind == "nekopos")
+                for o in [o for o in unshipped if _want(o)]:
+                    # 出荷予定日は今日。お届け日/時間帯は各注文の設定をそのまま使う
+                    db.update_order(o["id"], {"ship_date": today().strftime("%Y/%m/%d")})
+                targets = [o for o in _unshipped(db.list_orders()) if _want(o)]
+                return yamato.export_csv(targets, sender)
+
+            # B2で発行して自動印刷（PCの常駐エージェントが実行）
+            # 宅急便とネコポスは送り状の様式・用紙が違うので、ボタンを分けて別々に発行・印刷する
+            _b1, _b2 = st.columns(2)
+            _help = ("PCの常駐プログラムがB2クラウドに送り状を発行し、PDFを既定プリンタへ自動印刷します"
+                     "（PCとプリンタが起動している必要があります）")
+            _run_kind = None
+            if _b1.button(f"📦 宅急便を発行して自動印刷（{n_taku}件）", type="primary",
+                          use_container_width=True, disabled=not n_taku, help=_help):
+                _run_kind = "takkyubin"
+            if _b2.button(f"✉ ネコポスを発行して自動印刷（{n_neko}件）", type="primary",
+                          use_container_width=True, disabled=not n_neko, help=_help):
+                _run_kind = "nekopos"
+            if _run_kind:
+                import base64
+
+                def _payload(kind=_run_kind):
+                    return {"csv_b64": base64.b64encode(_build_csv_for_selected(kind)).decode()}
+                _queue_agent_job("b2_print", _payload,
+                                 "ネコポスの発行・自動印刷" if _run_kind == "nekopos" else "宅急便の発行・自動印刷")
+
+            pr = db.get_setting("b2_print_result")
+            if pr and not pr.get("pending"):
+                st.caption(("✓ " if pr.get("ok") else "⚠ ") + f'前回の発行・印刷（{pr.get("at","")}）：{pr.get("summary","")}')
+
+            # ☁ クラウドで発行して印刷（PC不要）：メール印刷の設定が済んでいる時だけ表示
+            from lib import mailer as _mailer
+            if _mailer.is_configured()[0]:
+                _c1, _c2 = st.columns(2)
+                _chelp = "このアプリ（クラウド）がB2で送り状を発行し、PDFをプリンタへメール送信して印刷します。PCは不要。"
+                if _c1.button(f"☁ 宅急便をクラウドで印刷（{n_taku}件）",
+                              use_container_width=True, disabled=not n_taku, help=_chelp):
+                    _cloud_issue_and_print(lambda: _build_csv_for_selected("takkyubin"), "宅急便")
+                if _c2.button(f"☁ ネコポスをクラウドで印刷（{n_neko}件）",
+                              use_container_width=True, disabled=not n_neko, help=_chelp):
+                    _cloud_issue_and_print(lambda: _build_csv_for_selected("nekopos"), "ネコポス")
+
+            with st.expander("CSVだけ作る（手動でB2に取り込む／控え）"):
+                if st.button(f"ヤマトCSVを作成（{len(sel_ids)}件）", use_container_width=True,
+                             disabled=not sel_ids):
+                    csv_bytes = _build_csv_for_selected()
+                    st.session_state["csv_data"] = csv_bytes
+                    res = exporter.save_or_reserve(csv_bytes)
+                    if res["mode"] == "saved":
+                        st.success(f"デスクトップの『ヤマト出荷CSV』に保存しました\n\n{res['path']}")
+                    else:
+                        st.success("CSVを作成しました。下のボタンで保存できます。")
+                if st.session_state.get("csv_data"):
+                    st.download_button(
+                        "↓ 送り状CSVをダウンロード", data=st.session_state["csv_data"],
+                        file_name=exporter.make_filename(), mime="text/csv",
+                        use_container_width=True,
+                    )
+
+            # ===== 手渡しの注文（送り状なし）=====
+            if hand_orders:
+                ui.section("手渡しの注文（送り状なし）",
+                           "直接お渡しする注文です。送り状の作成・印刷・配送はありません")
+                for o in hand_orders:
+                    h1, h2 = st.columns([6, 1.1])
+                    h1.markdown(ui.order_card(o), unsafe_allow_html=True)
+                    with h2.popover("操作", use_container_width=True):
+                        if st.button("✎ 編集", key=f'he{o["id"]}', use_container_width=True):
+                            dlg_edit_order(o)
+                        if o["status"] == "milled":
+                            if st.button("↩ 精米待ちに戻す", key=f'hum{o["id"]}',
+                                         use_container_width=True):
+                                db.update_order_status([o["id"]], "pending")
+                                st.rerun(scope="fragment")
+                if st.button(f"🤝 手渡しで完了にする（{len(hand_orders)}件）",
+                             use_container_width=True,
+                             help="送り状なしで出荷済みにします。BASEの注文は発送完了も送ります。"):
+                    def _hand_done(orders=[dict(o) for o in hand_orders]):
+                        msgs, komeful_flag = [], False
+                        for o in orders:
+                            res = shipping.dispatch_to_channel(o)
+                            if res is not None:
+                                ok, msg = res
+                                msgs.append(("✓ " if ok else "⚠ ") + f'{o["customer_name"]}様：{msg}')
+                            elif o["channel"] == "komeful":
+                                komeful_flag = True
+                        db.update_order_status([o["id"] for o in orders], "shipped")
+                        text = f"{len(orders)} 件を手渡し完了（出荷済み）にしました。" + " ".join(msgs)
+                        if komeful_flag:
+                            text += "（コメフルの注文は、コメフル側で出荷処理をしてください）"
+                        return True, text
+                    _run_bg(f"手渡し{len(hand_orders)}件を完了", _hand_done, lock_name="orders")
 
     # ======= STEP 4｜出荷を確定する =======
-    ui.step(4, "出荷を確定する",
-            "B2クラウドで印刷できたら押すだけ。伝票番号を取り込んで出荷完了にし、BASEにも自動反映します")
+    with st.container(key="hstep4"):
+        ui.step(4, "出荷を確定する",
+                "B2クラウドで印刷できたら押すだけ。伝票番号を取り込んで出荷完了にし、BASEにも自動反映します")
 
-    if st.button("B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
-                 help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
-        _start_agent("b2_fetch_request", "b2_fetch_progress", "b2_fetch_result",
-                     "伝票番号の取得・出荷確定")
+        if st.button("B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
+                     help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
+            _start_agent("b2_fetch_request", "b2_fetch_progress", "b2_fetch_result",
+                         "伝票番号の取得・出荷確定")
 
-    b2res = db.get_setting("b2_fetch_result")
-    if b2res and not b2res.get("pending"):
-        icon = "✓" if b2res.get("ok") else "⚠"
-        st.caption(f'{icon} 前回の自動取得（{b2res.get("at","")}）：{b2res.get("summary","")}')
-        for m in b2res.get("messages", []):
-            st.caption(m)
+        b2res = db.get_setting("b2_fetch_result")
+        if b2res and not b2res.get("pending"):
+            icon = "✓" if b2res.get("ok") else "⚠"
+            st.caption(f'{icon} 前回の自動取得（{b2res.get("at","")}）：{b2res.get("summary","")}')
+            for m in b2res.get("messages", []):
+                st.caption(m)
 
-    with st.expander("その他の確定方法（自動取得が使えないとき）"):
-        if st.button("発行済データCSVを手動で取り込む", use_container_width=True):
-            dlg_confirm_shipment()
-        if st.button(f"✓ 選択中の{len(sel_ids)}件を伝票番号なしで出荷完了",
-                     use_container_width=True, disabled=not sel_ids,
-                     help="伝票番号は記録されませんが、出荷済みにしてBASEへ発送完了を送ります"):
-            targets = [o for o in unshipped if o["id"] in set(sel_ids)]
-            msgs, komeful_flag = [], False
-            for o in targets:
-                res = shipping.dispatch_to_channel(o)
-                if res is not None:
-                    ok, msg = res
-                    msgs.append(("✓ " if ok else "⚠ ") + f' {o["customer_name"]}様：{msg}')
-                elif o["channel"] == "komeful":
-                    komeful_flag = True
-            db.update_order_status(sel_ids, "shipped")
-            st.success(f"{len(sel_ids)} 件を出荷済みにしました。")
-            for m in msgs:
-                st.write(m)
-            if komeful_flag:
-                st.link_button("コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
-            st.rerun(scope="fragment")
+        with st.expander("その他の確定方法（自動取得が使えないとき）"):
+            if st.button("発行済データCSVを手動で取り込む", use_container_width=True):
+                dlg_confirm_shipment()
+            if st.button(f"✓ 選択中の{len(sel_ids)}件を伝票番号なしで出荷完了",
+                         use_container_width=True, disabled=not sel_ids,
+                         help="伝票番号は記録されませんが、出荷済みにしてBASEへ発送完了を送ります"):
+                targets = [o for o in unshipped if o["id"] in set(sel_ids)]
+                msgs, komeful_flag = [], False
+                for o in targets:
+                    res = shipping.dispatch_to_channel(o)
+                    if res is not None:
+                        ok, msg = res
+                        msgs.append(("✓ " if ok else "⚠ ") + f' {o["customer_name"]}様：{msg}')
+                    elif o["channel"] == "komeful":
+                        komeful_flag = True
+                db.update_order_status(sel_ids, "shipped")
+                st.success(f"{len(sel_ids)} 件を出荷済みにしました。")
+                for m in msgs:
+                    st.write(m)
+                if komeful_flag:
+                    st.link_button("コメフルの出荷処理を開く", komeful.SELLER_URL, use_container_width=True)
+                st.rerun(scope="fragment")
+
+        _recent_shipments(orders_all)
 
     # ---- ステップ5：集荷を依頼する ----
-    ui.step(5, "集荷を依頼する",
-            "送り状を貼ったら、ヤマトに集荷を依頼します。日時を選ぶだけ。個数は自動で入ります")
+    with st.container(key="hstep5"):
+        ui.step(5, "集荷を依頼する",
+                "送り状を貼ったら、ヤマトに集荷を依頼します。日時を選ぶだけ。個数は自動で入ります")
 
-    p1, p2, p3 = st.columns([2, 2, 1])
-    # 当日も選べる。実際に当日が可能かは時間帯の締切しだい（ヤマト側で判定）
-    pdate = p1.date_input("集荷希望日", value=today(), min_value=today(),
-                          max_value=today() + timedelta(days=7), key="pickup_date")
-    # 当日は受付締切で時間帯が減る（例：昼すぎには「13時まで」が消える）。ヤマトの画面で
-    # 実際に選べた時間帯を確認済みなら、当日はそれだけを選択肢にする。
-    _opts = db.get_setting("b2_pickup_options") or {}
-    _opts_at = _opts.get("at", "")
-    _opts_fresh = bool(_opts.get("ok") and _opts.get("today") and _opts_at[:10] == today().isoformat())
-    _times = list(PICKUP_TIMES)
-    if pdate == today() and _opts_fresh:
-        _times = list(_opts["today"])
-    ptime = p2.selectbox("集荷時間帯", _times, key="pickup_time")
-    default_cnt = int(db.get_setting("last_shipped_count") or 1)
-    pcnt = p3.number_input("個数", min_value=1, value=max(1, default_cnt), step=1,
-                           key="pickup_count")
-    if pdate == today():
-        if _opts_fresh:
-            st.caption(f'ヤマトの画面で確認済み（{_opts_at[11:16]}時点）：本日いま選べる時間帯は '
-                       f'{"、".join(t for t in _opts["today"] if t != "指定なし") or "なし"}。'
-                       "時刻が進むと減るので、迷ったら下で確認し直してください。")
-        elif _opts.get("ok") is False and _opts_at[:10] == today().isoformat():
-            st.caption(f'⚠ 選べる時間帯を確認できませんでした：{_opts.get("error", "")}')
-        else:
-            st.caption("※当日の集荷は地域ごとの受付締切時刻まで。締切を過ぎた時間帯は選べません。"
-                       "いま選べる時間帯は「いま選べる時間帯を確認」で調べられます。")
-        if st.button("🔎 いま選べる時間帯を確認（依頼は送りません）", key="pickup_check",
-                     help="PCの常駐プログラムがヤマトにログインし、本日いま選べる時間帯だけを読み取ります"):
+        p1, p2, p3 = st.columns([2, 2, 1])
+        # 当日も選べる。実際に当日が可能かは時間帯の締切しだい（ヤマト側で判定）
+        pdate = p1.date_input("集荷希望日", value=today(), min_value=today(),
+                              max_value=today() + timedelta(days=7), key="pickup_date")
+        # 当日は受付締切で時間帯が減る（例：昼すぎには「13時まで」が消える）。ヤマトの画面で
+        # 実際に選べた時間帯を確認済みなら、当日はそれだけを選択肢にする。
+        _opts = db.get_setting("b2_pickup_options") or {}
+        _opts_at = _opts.get("at", "")
+        _opts_fresh = bool(_opts.get("ok") and _opts.get("today") and _opts_at[:10] == today().isoformat())
+        _times = list(PICKUP_TIMES)
+        if pdate == today() and _opts_fresh:
+            _times = list(_opts["today"])
+        ptime = p2.selectbox("集荷時間帯", _times, key="pickup_time")
+        default_cnt = int(db.get_setting("last_shipped_count") or 1)
+        pcnt = p3.number_input("個数", min_value=1, value=max(1, default_cnt), step=1,
+                               key="pickup_count")
+        if pdate == today():
+            if _opts_fresh:
+                st.caption(f'ヤマトの画面で確認済み（{_opts_at[11:16]}時点）：本日いま選べる時間帯は '
+                           f'{"、".join(t for t in _opts["today"] if t != "指定なし") or "なし"}。'
+                           "時刻が進むと減るので、迷ったら下で確認し直してください。")
+            elif _opts.get("ok") is False and _opts_at[:10] == today().isoformat():
+                st.caption(f'⚠ 選べる時間帯を確認できませんでした：{_opts.get("error", "")}')
+            else:
+                st.caption("※当日の集荷は地域ごとの受付締切時刻まで。締切を過ぎた時間帯は選べません。"
+                           "いま選べる時間帯は「いま選べる時間帯を確認」で調べられます。")
+            if st.button("🔎 いま選べる時間帯を確認（依頼は送りません）", key="pickup_check",
+                         help="PCの常駐プログラムがヤマトにログインし、本日いま選べる時間帯だけを読み取ります"):
+                _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
+                             "集荷の時間帯確認", payload_key="b2_pickup_payload",
+                             payload={"options_only": True})
+        pnote = st.text_input("集荷依頼に関するご要望（任意）", key="pickup_note",
+                              placeholder="例：インターホンで2階を呼んでください",
+                              help="ヤマトの集荷依頼フォームの『ご要望』欄にそのまま入力されます")
+
+        if st.button("集荷を依頼する", type="primary", use_container_width=True,
+                     help="PCの常駐プログラムがヤマトに自動ログインして集荷依頼を送ります（PCが起動している必要があります）"):
             _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
-                         "集荷の時間帯確認", payload_key="b2_pickup_payload",
-                         payload={"options_only": True})
-    pnote = st.text_input("集荷依頼に関するご要望（任意）", key="pickup_note",
-                          placeholder="例：インターホンで2階を呼んでください",
-                          help="ヤマトの集荷依頼フォームの『ご要望』欄にそのまま入力されます")
+                         "集荷依頼", payload_key="b2_pickup_payload", payload={
+                             "date": pdate.strftime("%Y/%m/%d"), "time": ptime,
+                             "count": int(pcnt), "note": pnote.strip(),
+                             "dry_run": False, "explore": False,
+                         })
 
-    if st.button("集荷を依頼する", type="primary", use_container_width=True,
-                 help="PCの常駐プログラムがヤマトに自動ログインして集荷依頼を送ります（PCが起動している必要があります）"):
-        _start_agent("b2_pickup_request", "b2_pickup_progress", "b2_pickup_result",
-                     "集荷依頼", payload_key="b2_pickup_payload", payload={
-                         "date": pdate.strftime("%Y/%m/%d"), "time": ptime,
-                         "count": int(pcnt), "note": pnote.strip(),
-                         "dry_run": False, "explore": False,
-                     })
-
-    pres = db.get_setting("b2_pickup_result")
-    if pres and not pres.get("pending"):
-        icon = "✓" if pres.get("ok") else "⚠"
-        st.caption(f'{icon} 前回の集荷依頼（{pres.get("at","")}）：{pres.get("summary","")}')
-
-    # ======= 最近の発送（お客様へ伝票番号を送る）=======
-    # PCで出荷確定すると伝票番号がクラウドに残るので、スマホ単体でも
-    # ここから番号と「貼るだけ」の文面をコピーできる。
-    _recent_shipments(orders_all)
+        pres = db.get_setting("b2_pickup_result")
+        if pres and not pres.get("pending"):
+            icon = "✓" if pres.get("ok") else "⚠"
+            st.caption(f'{icon} 前回の集荷依頼（{pres.get("at","")}）：{pres.get("summary","")}')
 
 
 def _recent_shipments(orders_all) -> None:

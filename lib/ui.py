@@ -27,8 +27,8 @@ GOLD = "#C9A24B"        # 琥珀ゴールド
 GOLD_DARK = "#A9842F"
 GOLD_LIGHT = "#E9D18C"
 TXT = "#F2EDE0"         # 生成り（本文）
-TXT_SOFT = "rgba(242,237,224,.62)"
-GLASS = "rgba(255,255,255,.05)"
+TXT_SOFT = "rgba(242,237,224,.80)"
+GLASS = "rgba(255,255,255,.07)"
 LINE = "rgba(201,162,75,.32)"
 
 # チャネル表示
@@ -114,18 +114,23 @@ def inject_css() -> None:
         }}
 
         h1, h2, h3, h4 {{
-            font-family: 'Shippori Mincho', 'Yu Mincho', serif !important;
+            font-family: 'Noto Sans JP', sans-serif !important;
+            font-weight: 700 !important;
             color: var(--txt) !important;
-            letter-spacing: .02em;
+            letter-spacing: .01em;
         }}
         p, li, label, .stMarkdown {{ color: var(--txt); }}
         [data-testid="stCaptionContainer"], .stCaption, small {{
             color: {TXT_SOFT} !important;
         }}
+        [data-testid="stCaptionContainer"] p, .stCaption p {{ font-size: .9rem !important; line-height: 1.55; }}
+        /* 入力欄の見出し（ラベル）をはっきり */
+        [data-testid="stWidgetLabel"] p, label p {{ font-size: .95rem !important; font-weight: 600; }}
 
         /* 漂う金の光（控えめ） */
         .app-motes {{
             position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+            display: none;
         }}
         .app-motes .mote {{
             position: absolute; border-radius: 50%;
@@ -177,6 +182,22 @@ def inject_css() -> None:
             box-shadow: 0 4px 16px rgba(201,162,75,.3);
         }}
 
+        /* ===== ステップバー（ホーム） ===== */
+        .st-key-stepbar [data-testid="stElementContainer"],
+        .st-key-stepbar [data-testid="stButtonGroup"],
+        .st-key-stepbar [data-testid="stButtonGroup"] > div {{ width: 100% !important; }}
+        .st-key-stepbar [data-testid="stButtonGroup"] {{ justify-content: stretch; gap: 8px; }}
+        .st-key-stepbar [data-testid="stButtonGroup"] > div {{ display: flex; gap: 8px; max-width: 100% !important; }}
+        .st-key-stepbar [data-testid="stButtonGroup"] button {{
+            flex: 1 1 0; border-radius: 12px !important; min-height: 3.1rem;
+            font-size: 1.02rem; letter-spacing: .02em; padding: .5rem .4rem;
+            white-space: nowrap; overflow: visible; text-overflow: clip;
+        }}
+        .st-key-stepbar [data-testid="stButtonGroup"] button p {{ white-space: nowrap; overflow: visible; }}
+        @media (max-width: 640px) {{
+            .st-key-stepbar [data-testid="stButtonGroup"] button {{ font-size: .8rem; padding: .4rem .1rem; }}
+        }}
+
         /* ===== ボタン ===== */
         .stButton > button, .stDownloadButton > button, .stLinkButton > a {{
             border-radius: 12px;
@@ -184,6 +205,7 @@ def inject_css() -> None:
             background: rgba(255,255,255,.04);
             color: var(--txt);
             font-weight: 700; padding: .55rem 1rem; transition: all .15s ease;
+            min-height: 2.8rem; font-size: 1rem;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {{
             background: rgba(201,162,75,.18); border-color: var(--gold-l); color:#fff;
@@ -209,9 +231,9 @@ def inject_css() -> None:
         }}
         [data-testid="stMetricValue"] {{
             color:#F8F3E6 !important; font-weight:700;
-            font-family:'Shippori Mincho',serif;
+            font-family:'Noto Sans JP',sans-serif; font-size:1.9rem !important;
         }}
-        [data-testid="stMetricLabel"] p {{ color: {TXT_SOFT} !important; }}
+        [data-testid="stMetricLabel"] p {{ color: {TXT_SOFT} !important; font-size:.95rem !important; }}
 
         /* ===== ステップ見出し ===== */
         .step-head {{ display:flex; align-items:center; gap:.65rem; margin: 1.0rem 0 .1rem; }}
@@ -220,7 +242,7 @@ def inject_css() -> None:
             border:1px solid var(--gold); color: var(--gold-l);
             background: rgba(201,162,75,.1);
             display:flex; align-items:center; justify-content:center;
-            font-weight:700; font-family:'Shippori Mincho',serif; font-size:1rem;
+            font-weight:700; font-family:'Noto Sans JP',sans-serif; font-size:1.05rem;
         }}
         .step-done .step-no {{
             background: linear-gradient(180deg, var(--gold), var(--gold-d));
@@ -228,11 +250,11 @@ def inject_css() -> None:
             box-shadow: 0 2px 10px rgba(201,162,75,.35);
         }}
         .step-title {{
-            font-family:'Shippori Mincho',serif; font-weight:700;
-            color:var(--txt); font-size:1.18rem; word-break:keep-all;
-            letter-spacing:.04em;
+            font-family:'Noto Sans JP',sans-serif; font-weight:700;
+            color:var(--txt); font-size:1.3rem; word-break:keep-all;
+            letter-spacing:.02em;
         }}
-        .step-sub {{ color:{TXT_SOFT}; font-size:.8rem; margin:.05rem 0 .55rem 2.5rem; }}
+        .step-sub {{ color:{TXT_SOFT}; font-size:.92rem; margin:.1rem 0 .7rem 2.5rem; }}
         hr.step-rule {{
             border:0; border-top:1px dashed rgba(201,162,75,.28); margin:1.3rem 0 .1rem;
         }}
@@ -240,8 +262,8 @@ def inject_css() -> None:
         /* ===== セクション見出し（金のひし形） ===== */
         .sec-title {{
             display:flex; align-items:center; gap:.55rem;
-            font-family:'Shippori Mincho',serif; font-weight:700;
-            color:var(--txt); font-size:1.14rem; margin:.5rem 0 .15rem;
+            font-family:'Noto Sans JP',sans-serif; font-weight:700;
+            color:var(--txt); font-size:1.25rem; margin:.7rem 0 .2rem;
             word-break:keep-all; line-height:1.3;
         }}
         .sec-title::before {{
@@ -250,7 +272,7 @@ def inject_css() -> None:
             transform:rotate(45deg); border-radius:2px;
             box-shadow: 0 0 8px rgba(201,162,75,.4);
         }}
-        .sec-sub {{ color:{TXT_SOFT}; font-size:.8rem; margin:-.05rem 0 .45rem 1.55rem; }}
+        .sec-sub {{ color:{TXT_SOFT}; font-size:.92rem; margin:-.05rem 0 .6rem 1.55rem; }}
 
         /* ===== カード ===== */
         .o-card {{
@@ -259,14 +281,14 @@ def inject_css() -> None:
             border-radius: 14px; padding: 10px 14px; margin-bottom: 8px;
             box-shadow: 0 2px 10px rgba(0,0,0,.22);
         }}
-        .o-name {{ font-weight:700; color:#F8F3E6; font-size:1.02rem; }}
-        .o-line {{ color: var(--txt); font-size:.92rem; margin-top:1px; }}
-        .o-meta {{ color: {TXT_SOFT}; font-size:.8rem; margin-top:1px; }}
+        .o-name {{ font-weight:700; color:#F8F3E6; font-size:1.12rem; }}
+        .o-line {{ color: var(--txt); font-size:1rem; margin-top:2px; }}
+        .o-meta {{ color: {TXT_SOFT}; font-size:.9rem; margin-top:2px; }}
         .o-when {{
             display:inline-block; margin-top:4px;
             color:#1B1D3E; background: var(--gold);
-            font-weight:700; font-size:.8rem;
-            padding:1px 9px; border-radius:8px;
+            font-weight:700; font-size:.88rem;
+            padding:2px 10px; border-radius:8px;
         }}
 
         /* ===== KPIカード（ダッシュボード） ===== */
@@ -276,7 +298,7 @@ def inject_css() -> None:
             border-radius: 16px; padding: 14px 18px; height: 100%;
             box-shadow: 0 4px 18px rgba(0,0,0,.25);
         }}
-        .kpi-lbl {{ color: {TXT_SOFT}; font-size:.78rem; letter-spacing:.04em; }}
+        .kpi-lbl {{ color: {TXT_SOFT}; font-size:.9rem; letter-spacing:.02em; }}
         .kpi-val {{
             color:#F8F3E6; font-weight:800; font-size:1.7rem;
             line-height:1.2; margin-top:4px;
@@ -284,7 +306,7 @@ def inject_css() -> None:
         }}
         .kpi-val .yen {{ color: var(--gold); font-size:1.05rem; font-weight:700;
                          margin-right:2px; }}
-        .kpi-sub {{ color: {TXT_SOFT}; font-size:.76rem; margin-top:4px; }}
+        .kpi-sub {{ color: {TXT_SOFT}; font-size:.86rem; margin-top:4px; }}
         .kpi-sub .up {{ color:#5BC08A; font-weight:700; }}
         .kpi-sub .down {{ color:#E07A7A; font-weight:700; }}
         .prog-title {{ color:#F8F3E6; font-weight:700; font-size:.96rem;
@@ -292,13 +314,13 @@ def inject_css() -> None:
 
         /* ===== チップ・バッジ ===== */
         .chip {{
-            display:inline-block; font-size:.7rem; font-weight:700;
-            padding:2px 9px; border-radius:999px; vertical-align:middle;
+            display:inline-block; font-size:.8rem; font-weight:700;
+            padding:2px 10px; border-radius:999px; vertical-align:middle;
             white-space:nowrap;
         }}
         .ch-badge {{
-            display:inline-block; color:#fff; font-size:.68rem; font-weight:700;
-            padding:2px 8px; border-radius:999px; vertical-align:middle;
+            display:inline-block; color:#fff; font-size:.78rem; font-weight:700;
+            padding:2px 9px; border-radius:999px; vertical-align:middle;
             opacity:.92;
         }}
 
@@ -311,8 +333,8 @@ def inject_css() -> None:
             color: var(--txt);
         }}
         .mill-big {{
-            font-family:'Shippori Mincho',serif; font-weight:700;
-            color:#F8F3E6; font-size:1.02rem;
+            font-family:'Noto Sans JP',sans-serif; font-weight:700;
+            color:#F8F3E6; font-size:1.12rem;
         }}
 
         hr.brand-rule {{
@@ -756,8 +778,7 @@ def section(title: str, sub: str = "") -> None:
 
 def step(n: int, title: str, sub: str = "", done: bool = False, first: bool = False) -> None:
     """作業手順のステップ見出し（番号丸＋タイトル＋説明）。"""
-    if not first:
-        st.markdown('<hr class="step-rule"/>', unsafe_allow_html=True)
+    # ステップは上のステップバーで1つずつ表示するので、区切り線は出さない
     cls = "step-head step-done" if done else "step-head"
     no = "✓" if done else str(n)
     st.markdown(
