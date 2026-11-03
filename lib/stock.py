@@ -128,6 +128,22 @@ def _receipt_invoice(v: dict, pendings: dict) -> dict | None:
     return min(cands, key=lambda q: abs(_f(q.get("amount")) - amt))
 
 
+def _invoice_kg(p: dict, pendings: dict) -> float:
+    """請求書の数量（在庫から出る量）。月の一括請求書は、同じ月に確定済みの個別の請求書と重ねない。
+
+    月末の一括作成で作った請求書（monthly）は、その月の納品全部の合計。納品のたびに手入力して
+    確定した請求書が同じ月にあれば、その分は個別の請求書で数えているので、一括のほうは差額だけ数える。
+    """
+    kg = _f(p.get("total_kg"))
+    if not p.get("monthly"):
+        return kg
+    done = sum(_f(q.get("total_kg")) for q in pendings.values()
+               if q is not p and q.get("client_id") == p.get("client_id")
+               and q.get("target_ym") == p.get("target_ym")
+               and q.get("status") == "sent" and not q.get("monthly"))
+    return max(kg - done, 0.0)
+
+
 def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
     """出庫行（在庫から出たもの）と確保行（未出荷の注文）を作る。
 
@@ -219,7 +235,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         item = c.get("item_desc") or ""
         note = "発行済みの領収書"
         if inv and _f(inv.get("total_kg")) > 0:
-            kg = _f(inv.get("total_kg"))
+            kg = _invoice_kg(inv, pendings)
             inv_amt, r_amt = _f(inv.get("amount")), _f(v.get("amount"))
             if inv_amt > 0 and r_amt > 0 and abs(r_amt - inv_amt) / inv_amt > 0.1:
                 kg = kg * r_amt / inv_amt       # 一部だけの領収書は、金額の割合で数量を按分
@@ -252,7 +268,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
             c = cl_by_id.get(p.get("client_id")) or {"id": p.get("client_id") or "", "name": p.get("client_name") or "",
                                                      "item_desc": "", "customer_id": 0}
             d = ledger.parse_date(p.get("issue_date"))
-            kg = _f(p.get("total_kg"))
+            kg = _invoice_kg(p, pendings)
             if d is None or kg <= 0:
                 continue
             item = c.get("item_desc") or ""
