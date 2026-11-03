@@ -29,7 +29,7 @@ def now_iso() -> str:
 
 from lib import (analytics, base_api, billing, bg, bootstrap, costing, db,
                  exporter, komeful, ledger, logic, payslip, paysheet, postal,
-                 quote, receipt, seed, shipping, shopify_api, square_pay,
+                 quick_quote, quote, receipt, seed, shipping, shopify_api, square_pay,
                  stock_ui, ui, yamato)
 
 ui.setup_page()
@@ -2879,9 +2879,16 @@ def _quote_issue() -> None:
              "数量": 1.0, "単位": "個",
              "単価": int(cli.get("price_per_5kg") or quote.DEFAULT_ITEM["price"]),
              "税率": _QUOTE_RATES[0]}]
+    pre = st.session_state.get("q_prefill")      # 「かんたん見積」から取り込んだ明細
+    if pre:
+        init = [{"内容": it["name"], "適用条件": "", "数量": it["qty"], "単位": it["unit"],
+                 "単価": it["price"], "税率": _QUOTE_RATES[0 if it["rate"] == 8 else 1]}
+                for it in pre["items"]]
+        st.info("「かんたん見積」の内容を明細に入れました（単価は税込）。"
+                "上の「単価の入力・表示」は税込のまま、宛名を入れて発行してください。")
     edited = st.data_editor(
         pd.DataFrame(init), num_rows="dynamic", use_container_width=True,
-        hide_index=True, key=f"q_items_{cid}",
+        hide_index=True, key=f"q_items_{cid}_{pre['ver'] if pre else 0}",
         column_config={
             "内容": st.column_config.TextColumn(width="large"),
             "適用条件": st.column_config.TextColumn(
@@ -3009,10 +3016,65 @@ def _quote_mail_master() -> None:
             st.success("保存しました。次に発行する見積書からこの文面になります。")
 
 
+def _quote_simple() -> None:
+    """精米・玄米の数量と届け先の都道府県から、米代＋送料の総額をその場で出す。"""
+    st.caption("数量と届け先を入れると、米代と送料（ヤマト契約運賃・福島発）を足した総額が出ます。"
+               "精米と玄米は同じ箱に入れて、送料がいちばん安くなる箱の分け方で計算します。")
+    pr = quick_quote.get_prices()
+
+    def _save_prices() -> None:
+        quick_quote.save_prices(st.session_state["qs_p_seimai"], st.session_state["qs_p_genmai"])
+
+    c1, c2, c3 = st.columns([1, 1, 1.3])
+    seimai = c1.number_input("精米（kg）", min_value=0.0, step=5.0, value=0.0, key="qs_seimai")
+    genmai = c2.number_input("玄米（kg）", min_value=0.0, step=5.0, value=0.0, key="qs_genmai")
+    pref = c3.selectbox("届け先の都道府県", quick_quote.PREFECTURES,
+                        index=quick_quote.PREFECTURES.index("東京都"), key="qs_pref")
+    with st.expander("米の単価（税込・送料別）を変える"):
+        p1, p2 = st.columns(2)
+        p1.number_input("精米 5kgあたり（円）", min_value=0, step=100, value=int(pr["seimai"]),
+                        key="qs_p_seimai", on_change=_save_prices)
+        p2.number_input("玄米 5kgあたり（円）", min_value=0, step=100, value=int(pr["genmai"]),
+                        key="qs_p_genmai", on_change=_save_prices)
+        st.caption("変えた単価は次回以降も使います。")
+    pr = {"seimai": float(st.session_state.get("qs_p_seimai", pr["seimai"])),
+          "genmai": float(st.session_state.get("qs_p_genmai", pr["genmai"]))}
+
+    if seimai + genmai <= 0:
+        st.info("精米か玄米の数量を入れてください。")
+        return
+    e = quick_quote.estimate(seimai, genmai, pref, pr)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("米代（税込）", f"¥{e['rice']:,}")
+    m2.metric("送料（税込）", f"¥{e['ship']:,}", help=f"運賃 ¥{e['ship_excl']:,}（税抜）＋消費税10%")
+    m3.metric("総額（税込）", f"¥{e['total']:,}")
+    kg = seimai + genmai
+    st.caption(f"{pref}（{e['area']}）／ 合計 {kg:g}kg ／ 1kgあたり ¥{e['total'] / kg:,.0f}（送料込み）")
+    st.markdown("**箱の分け方**")
+    st.dataframe([{"箱": f"{i}箱目", "重さ": f"{b['kg']}kg", "サイズ": f"{b['size']}",
+                   "運賃（税抜）": f"¥{b['fare']:,}"} for i, b in enumerate(e["boxes"], 1)],
+                 hide_index=True, use_container_width=True)
+
+    with st.expander("都道府県（エリア）ごとの総額をくらべる"):
+        rows = []
+        for area in quick_quote.AREAS:
+            rep = next(p for p, a in quick_quote.PREF_AREA.items() if a == area)
+            x = quick_quote.estimate(seimai, genmai, rep, pr)
+            rows.append({"エリア": area, "送料（税込）": f"¥{x['ship']:,}", "総額（税込）": f"¥{x['total']:,}"})
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+
+    if st.button("この内容で見積書を作る", key="qs_to_issue", use_container_width=True):
+        ver = int(st.session_state.get("q_prefill", {}).get("ver", 0)) + 1
+        st.session_state["q_prefill"] = {"ver": ver, "items": quick_quote.to_quote_items(e, seimai, genmai, pr)}
+        st.success("明細を取り込みました。「見積書の作成・送信」タブを開いて、宛名を入れて発行してください。")
+
+
 def view_quote() -> None:
     st.subheader("🧾 見積")
-    tab_issue, tab_hist, tab_mail = st.tabs(
-        ["見積書の作成・送信", "発行履歴", "メール文面"])
+    tab_simple, tab_issue, tab_hist, tab_mail = st.tabs(
+        ["かんたん見積", "見積書の作成・送信", "発行履歴", "メール文面"])
+    with tab_simple:
+        _quote_simple()
     with tab_issue:
         _quote_issue()
     with tab_hist:
