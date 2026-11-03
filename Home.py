@@ -3069,8 +3069,24 @@ def _quote_simple() -> None:
         st.success("明細を取り込みました。「見積書の作成・送信」タブを開いて、宛名を入れて発行してください。")
 
 
+def _bank_box() -> None:
+    """振込先（請求書と同じ情報）。見積をLINEやメールで送るときに、ワンクリックでコピーできる。"""
+    from lib import pdf_common
+    parts = pdf_common.BANK_INFO.split("　")
+    full = f"{pdf_common.BANK_INFO}\n口座名義　{pdf_common.BANK_HOLDER}"
+    with st.container(border=True):
+        st.markdown("**阿部農園の振込先**　<span style='opacity:.7;font-size:.85rem'>"
+                    "右上のコピーボタンでコピーできます</span>", unsafe_allow_html=True)
+        c1, c2 = st.columns([2.2, 1])
+        c1.code(full, language=None)
+        if len(parts) >= 3:
+            c2.code(parts[-1], language=None)      # 口座番号だけ
+            c2.caption("↑ 口座番号だけ")
+
+
 def view_quote() -> None:
     st.subheader("🧾 見積")
+    _bank_box()
     tab_simple, tab_issue, tab_hist, tab_mail = st.tabs(
         ["かんたん見積", "見積書の作成・送信", "発行履歴", "メール文面"])
     with tab_simple:
