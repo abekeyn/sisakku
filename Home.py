@@ -633,6 +633,37 @@ def _agent_progress():
             st.rerun(scope="fragment")
 
 
+def _month_end_banner() -> None:
+    """月末（25日〜）と月初（〜5日）に、請求書をまとめて作る画面への近道を出す。
+
+    作成そのものは請求タブの「月の請求書をまとめて作成」で行う（確認表で数量・金額を直せる）。
+    ここでは、その月に出荷があって、まだ請求書を作っていない請求先の数だけを知らせる。
+    """
+    t = today()
+    if t.day >= 25:
+        ym = f"{t.year}-{t.month:02d}"
+    elif t.day <= 5:
+        y, m = (t.year, t.month - 1) if t.month > 1 else (t.year - 1, 12)
+        ym = f"{y}-{m:02d}"
+    else:
+        return
+    try:
+        rows = billing.month_summary(ym)
+    except Exception:
+        return
+    todo = [r for r in rows if r["count"] and r["total_kg"] > 0
+            and not r["existing"] and not r["shared_customer"]]
+    if not todo:
+        return
+    b1, b2 = st.columns([4, 1.6])
+    b1.info(f"🧾 {int(ym[5:])}月分の請求書がまだ作られていない請求先が {len(todo)} 件あります"
+            "（1か月分をまとめて作れます）")
+    if b2.button("請求書を作る", key="home_to_billing", type="primary", use_container_width=True):
+        # ナビは画面全体の部品なので、次の実行の冒頭で切り替える（fragmentの中からは直接変えられない）
+        st.session_state["nav_goto"] = "請求"
+        st.rerun(scope="app")
+
+
 @st.fragment
 def view_home():
     orders_all = db.list_orders()
@@ -647,8 +678,9 @@ def view_home():
     m1.metric("精米", f"{summary['total_kg']:g} kg")
     m2.metric("玄米", f"{genmai_kg:g} kg", help="精米不要。そのまま用意してください")
     m3.metric("発送待ち", f"{len(unshipped)} 件")
+    _month_end_banner()
     # ---- ステップバー：いまのステップだけを大きく表示する ----
-    n_mill = sum(1 for o in pending if o["needs_milling"] or o["category"] == "複合")
+    n_mill =sum(1 for o in pending if o["needs_milling"] or o["category"] == "複合")
     n_ship = len(unshipped)
     HOME_STEPS = {1: "注文を集める", 2: "精米", 3: "送り状", 4: "出荷確定", 5: "集荷"}
     _step_cnt = {2: n_mill, 3: n_ship, 4: n_ship}
@@ -3697,6 +3729,8 @@ def view_costing() -> None:
 if "nav" not in st.session_state and st.query_params.get("tab") == "billing":
     st.session_state["nav"] = "請求"
 
+if "nav_goto" in st.session_state:
+    st.session_state["nav"] = st.session_state.pop("nav_goto")
 view = ui.render_nav()
 _auto_sync_history()
 _agent_progress()
