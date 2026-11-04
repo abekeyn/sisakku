@@ -188,6 +188,7 @@ def _launch_chromium(pl, headful: bool):
         subprocess.run(
             [_sys.executable, "-m", "playwright", "install", "chromium", "chromium-headless-shell"],
             timeout=600, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return pl.chromium.launch(headless=not headful)
 

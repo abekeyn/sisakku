@@ -18,6 +18,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# 外部コマンドは必ず「ウィンドウを作らない」で起動する。PC常駐のエージェントは画面の無い
+# pythonw で動いているため、指定しないと powershell.exe などのたびに黒い窓が開き、
+# 入力中のキーボード操作を奪ってしまう。
+NO_WINDOW = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
 
 def _find_sumatra() -> str | None:
     for p in [
@@ -36,7 +41,7 @@ def _ps(cmd: str) -> str:
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=20, **NO_WINDOW,
         )
         return (r.stdout or "").strip()
     except Exception:  # noqa: BLE001
@@ -239,7 +244,7 @@ def _print_pdf_unlocked(pdf_bytes: bytes, printer: str | None = None) -> tuple[b
             try:
                 subprocess.run(
                     [sumatra, "-print-to", safe_name, *mono, "-silent", str(tmp)],
-                    timeout=60, check=False,
+                    timeout=60, check=False, **NO_WINDOW,
                 )
             except Exception:  # noqa: BLE001
                 pass

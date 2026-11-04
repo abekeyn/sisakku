@@ -143,7 +143,8 @@ def xlsx_to_pdf(xlsx_path: str | Path, out_dir: str | Path,
         [soffice, "--headless", "--calc", "--convert-to", "pdf",
          "--outdir", str(out_dir), str(xlsx_path)],
         check=True, timeout=120,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     pdf = out_dir / (xlsx_path.stem + ".pdf")
     if not pdf.exists():
         raise RuntimeError(f"PDF生成に失敗: {pdf}")

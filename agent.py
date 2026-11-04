@@ -57,7 +57,8 @@ def _kill_tree(pid: int) -> None:
     """子プロセスと、その配下で起動されたブラウザ等をまとめて強制終了する。"""
     try:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       capture_output=True, timeout=15)
+                       capture_output=True, timeout=15,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception:  # noqa: BLE001
         pass
 
