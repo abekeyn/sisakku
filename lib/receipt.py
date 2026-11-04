@@ -25,7 +25,8 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
                       issue_date: date | None = None, doc_no: str = "",
                       payment_method: str = "bank", payment_note: str = "",
                       qty: float = 1, total_kg: float | None = None,
-                      honorific: str = "御中") -> bytes:
+                      honorific: str = "御中",
+                      tax_rows: list[tuple[int, int, int]] | None = None) -> bytes:
     """領収書PDF(bytes)を作る（A5サイズ）。amountは税込金額。
 
     item_descは「精米5kg」のような1個あたりの品名。qtyが1件でない場合、
@@ -34,6 +35,7 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     payment_method: "bank"(振込・既定) / "cash"(現金) / "other"(自由記述)。
     "other" のときは payment_note の内容をそのまま注記として使う。
     honorific: 宛名の敬称（"御中"＝既定・会社宛　／　"様"＝個人宛）。
+    tax_rows: 税率が混ざる請求（複数商品）の内訳 [(税率, 税抜金額, 消費税)]。無ければ8%で計算する。
 
     支払い用のQRはここには刷らない（領収書は入金済みの証明なので、支払いを
     促すQRが同居すると書類として矛盾する）。未入金の相手に渡す紙は
@@ -43,8 +45,12 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
 
     pc.ensure_font()
     issue_date = issue_date or date.today()
-    tax_excl = round(amount / (1 + pc.TAX_RATE))
-    tax = amount - tax_excl
+    if tax_rows:
+        tax_excl = sum(r[1] for r in tax_rows)
+        tax = sum(r[2] for r in tax_rows)
+    else:
+        tax_excl = round(amount / (1 + pc.TAX_RATE))
+        tax = amount - tax_excl
 
     desc = item_desc
     if qty and qty != 1:
@@ -95,11 +101,22 @@ def build_receipt_pdf(invoice_to: str, amount: int, item_desc: str,
     iy = box_y - 78
     text(m, iy, "【内訳】", size=8.5)
     text(m + 14, iy - 15, f"税抜金額　¥{tax_excl:,}", size=8.5)
-    text(m + 14, iy - 29, f"消費税等（8%）　¥{tax:,}", size=8.5)
+    if tax_rows and len(tax_rows) > 1:
+        extra = 0
+        for rate, excl, tx in tax_rows:
+            text(m + 14, iy - 29 - extra, f"消費税等（{rate}%）　対象 ¥{excl:,}　税額 ¥{tx:,}", size=8.5)
+            extra += 14
+        extra -= 14
+    elif tax_rows:
+        text(m + 14, iy - 29, f"消費税等（{tax_rows[0][0]}%）　¥{tax:,}", size=8.5)
+        extra = 0
+    else:
+        text(m + 14, iy - 29, f"消費税等（8%）　¥{tax:,}", size=8.5)
+        extra = 0
     if note:
-        text(m, iy - 47, f"※{note}", size=7)
+        text(m, iy - 47 - extra, f"※{note}", size=7)
     if needs_stamp:
-        text(m, iy - 59, "※現金でのご入金・税抜5万円以上のため、収入印紙を貼付しております。",
+        text(m, iy - 59 - extra, "※現金でのご入金・税抜5万円以上のため、収入印紙を貼付しております。",
             size=7)
 
     pc.draw_issuer_block(c, w, 60)

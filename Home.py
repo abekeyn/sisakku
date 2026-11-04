@@ -28,7 +28,7 @@ def now_iso() -> str:
     return datetime.now(JST).isoformat()
 
 from lib import (analytics, base_api, billing, bg, bootstrap, costing, db,
-                 exporter, komeful, ledger, logic, payslip, paysheet, postal,
+                 exporter, invoice_pdf, komeful, ledger, logic, payslip, paysheet, postal,
                  quick_quote, quote, receipt, seed, shipping, shopify_api, square_pay,
                  stock_ui, ui, yamato)
 
@@ -1716,7 +1716,9 @@ def _delivery_note_button(key: str, p: dict) -> None:
     nd = c1.date_input("納品日", value=date.fromisoformat(p["issue_date"]), key=f"dnd_{key}")
     hon = c2.selectbox("敬称", ["御中", "様"], key=f"dnh_{key}")
     pdf, fname = billing.build_delivery_note(p, nd, hon)
-    st.caption(f"請求書と同じ書類番号 {p['doc_number']} で作ります。金額は載せず、品名と数量(kg)だけ記載します。")
+    st.caption(f"請求書と同じ書類番号 {p['doc_number']} で作ります。金額は載せず、"
+               + ("品名と数量だけ記載します（複数の品目はすべて載ります）。" if p.get("items")
+                  else "品名と数量(kg)だけ記載します。"))
     st.download_button("↓ 納品書PDFをダウンロード / 印刷", pdf, file_name=fname,
                        mime="application/pdf", key=f"dndl_{key}", use_container_width=True)
     _print_pdf_button(pdf, f"dn_{key}")
@@ -1783,14 +1785,20 @@ def _receipt_button(key: str, p: dict) -> None:
             issue_d = date.fromisoformat(p["issue_date"])
             # 書類番号は請求書とは別の領収書専用の通し番号。同じ請求書の再発行なら前回と同じ番号。
             receipt_no = billing.receipt_doc_no(p["client_id"], issue_d, key)
+            multi = bool(p.get("items"))
             pdf = receipt.build_receipt_pdf(
                 invoice_to=client.get("invoice_to", p["client_name"]),
                 amount=r_amount,
-                item_desc=client.get("item_desc", ""),
+                item_desc=invoice_pdf.items_summary(p["items"]) if multi else client.get("item_desc", ""),
                 issue_date=issue_d,
                 doc_no=str(receipt_no),
                 payment_method=payment_method, payment_note=payment_note,
-                qty=p.get("qty", 1), total_kg=p.get("total_kg"), honorific=honorific,
+                qty=1 if multi else p.get("qty", 1),
+                total_kg=None if multi else p.get("total_kg"), honorific=honorific,
+                # 複数商品で、請求額どおりの領収なら、税率ごとの内訳を載せる
+                tax_rows=([(rate, g["excl"], g["tax"])
+                           for rate, g in invoice_pdf.item_calc(p["items"])["by_rate"].items()]
+                          if multi and r_amount == int(p["amount"]) else None),
             )
             # 発行した時点で記録＋フォルダ保存まで済ませる（ダウンロードし忘れても控えが残る）。
             fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
@@ -1803,9 +1811,93 @@ def _receipt_button(key: str, p: dict) -> None:
                 lock_name="billing")
 
 
+def _invoice_items_editor(key: str, init: list[dict]) -> list[dict]:
+    """請求書・納品書の複数商品の明細表。入力した行を明細リストにして返し、合計も見せる。
+
+    単価は税込。税率は8%（お米）／10%（送料・資材など）を行ごとに選べる。
+    「1単位のkg」は在庫の出庫量と納品書の合計kgに使う（単位がkgの行は空欄でよい）。
+    """
+    df = pd.DataFrame([{
+        "内容": i.get("name", ""), "数量": i.get("qty"), "単位": i.get("unit", ""),
+        "単価（税込）": int(i.get("price") or 0),
+        "税率": _QUOTE_RATES[0 if int(i.get("rate") or 8) == 8 else 1],
+        "1単位のkg": (i.get("kg") or None),
+    } for i in init])
+    ed = st.data_editor(
+        df, num_rows="dynamic", use_container_width=True, hide_index=True, key=f"inv_items_{key}",
+        column_config={
+            "内容": st.column_config.TextColumn(width="large"),
+            "数量": st.column_config.NumberColumn(step=1.0, min_value=0.0),
+            "単位": st.column_config.TextColumn(width="small", help="例：kg／個／袋／式"),
+            "単価（税込）": st.column_config.NumberColumn(format="%d", step=100, min_value=0),
+            "税率": st.column_config.SelectboxColumn(options=_QUOTE_RATES, width="medium"),
+            "1単位のkg": st.column_config.NumberColumn(
+                step=1.0, min_value=0.0, help="例：5kg袋なら5。単位がkgの行は空欄でOK"),
+        })
+    items = []
+    for _, r in ed.iterrows():
+        name = "" if pd.isna(r["内容"]) else str(r["内容"]).strip()
+        if not name:
+            continue
+        items.append({
+            "name": name,
+            "qty": 0.0 if pd.isna(r["数量"]) else float(r["数量"]),
+            "unit": "" if pd.isna(r["単位"]) else str(r["単位"]).strip(),
+            "price": 0.0 if pd.isna(r["単価（税込）"]) else float(r["単価（税込）"]),
+            "rate": 8 if pd.isna(r["税率"]) else int(str(r["税率"]).split("%")[0]),
+            "kg": 0.0 if pd.isna(r["1単位のkg"]) else float(r["1単位のkg"]),
+        })
+    calc = invoice_pdf.item_calc(items)
+    if calc["rows"]:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("品目", f"{len(calc['rows'])} 行")
+        k2.metric("税抜合計", f"¥{calc['excl']:,}")
+        k3.metric("消費税等", f"¥{calc['tax']:,}")
+        k4.metric("ご請求額（税込）", f"¥{calc['total']:,}")
+        if calc["kg"] > 0:
+            st.caption(f"お米の合計 {calc['kg']:g}kg（在庫の出庫量と納品書の合計に使います）。")
+    else:
+        st.caption("品目を入力してください（内容と、0より大きい数量が必要です）。")
+    return items
+
+
 def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
-    """発行日・数量・単価を直して作り直す（allow_sent=確定済みの再発行）。"""
+    """発行日・数量・単価を直して作り直す（allow_sent=確定済みの再発行）。
+
+    複数商品の請求書は明細表で直す。1行の請求書も、スイッチで複数品目に切り替えられる。
+    """
     edate = st.date_input("発行日", value=date.fromisoformat(p["issue_date"]), key=f"edate_{key}")
+    multi = st.toggle("複数の品目（精米・玄米・送料など）で作り直す", value=bool(p.get("items")),
+                      key=f"emulti_{key}")
+    if multi:
+        if p.get("items"):
+            init = p["items"]
+        else:     # 1行の請求書から切り替えたとき：いまの内容を1行目にして、続きを足せるようにする
+            client = billing.get_client(p["client_id"]) or {}
+            ukg = float(p.get("unit_kg") or billing.UNIT_KG)
+            init = [{"name": client.get("item_desc", ""), "qty": float(p.get("qty") or 0), "unit": "個",
+                     "price": float(p.get("unit_price") or 0), "rate": 8, "kg": ukg}]
+        items = _invoice_items_editor(f"regen_{key}", init)
+        if allow_sent:
+            st.caption("書類番号はそのまま。システム上の記録もPCのファイルも同じものを更新します"
+                       "（すでにお客様へお渡し・送付済みの場合は、直したものをお渡しし直してください）。")
+        ok_items = bool(invoice_pdf.clean_items(items))
+        if st.button("この内容で再発行する" if allow_sent else "この内容で作り直す",
+                     key=f"regenm_{key}", use_container_width=True, disabled=not ok_items):
+            def _regen_m(key=key, p=dict(p), items=items, edate=edate, allow_sent=allow_sent):
+                r = billing.regenerate_pending(key, 0, 0, issue_date=edate, allow_sent=allow_sent,
+                                               items=items)
+                if not r.get("ok"):
+                    return False, r.get("msg", "作り直せませんでした。")
+                client = billing.get_client(p["client_id"]) or {}
+                msg = f"{'再発行' if allow_sent else '作り直'}しました（¥{r['amount']:,}）。"
+                if allow_sent:
+                    saved = billing.sync_invoices()
+                    msg += _saved_note(client, next((x["path"] for x in saved if x.get("key") == key), ""))
+                return True, msg
+            _run_bg(f"{p['client_name']}の請求書を{'再発行' if allow_sent else '作り直し'}", _regen_m,
+                    lock_name="billing")
+        return
     e0, e1, e2 = st.columns(3)
     e_unit_kg = e0.number_input("単位（kg）", min_value=0.1, step=1.0,
                                 value=float(p.get("unit_kg") or billing.UNIT_KG),
@@ -1860,7 +1952,10 @@ def _render_pending_card(key: str, p: dict) -> None:
         st.markdown(f"### {p['client_name']}　{issue_d.month}月{issue_d.day}日発行分")
         c1, c2, c3 = st.columns(3)
         c1.metric("ご請求額（税込）", f"¥{p['amount']:,}")
-        c2.metric("数量", f"{p['qty']:g} 個")
+        if p.get("items"):
+            c2.metric("品目", f"{len(p['items'])} 行")
+        else:
+            c2.metric("数量", f"{p['qty']:g} 個")
         c3.metric("対象出荷", f"{len(p['rows'])}件 / {p['total_kg']:g}kg")
         st.caption(f"宛先 {p['email']} ／ 発行日 {p['issue_date']} ／ "
                    f"書類番号 {p['doc_number']}")
@@ -2082,34 +2177,55 @@ def _billing_issue() -> None:
                                 key="man_cid")
             mcli = billing.get_client(mcid) or {}
             mdate = m2.date_input("発行日", value=today(), key="man_date")
-            m3, m4, m5 = st.columns(3)
-            man_unit_kg = m3.number_input("単位（kg）", min_value=0.1, step=1.0,
-                                          value=float(mcli.get("unit_kg", billing.UNIT_KG)),
-                                          key="man_unit_kg",
-                                          help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
-            mkg = m4.number_input("数量（kg）", min_value=0.0, step=man_unit_kg, value=0.0,
-                                  key="man_kg", help="上の単位あたりの単価で請求額を計算します")
-            mprice = m5.number_input(f"単価（{man_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
-                                     value=int(mcli.get("price_per_5kg", 4000)),
-                                     step=100, key="man_price")
-            man_calc = round(mkg / man_unit_kg * mprice) if mkg > 0 else 0
-            man_amount = st.number_input(
-                "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
-                value=man_calc, step=1, key="man_amount",
-                help="通常は数量×単価の自動計算のままで構いません。")
-            if mkg > 0 and man_amount != man_calc:
-                st.caption(f"自動計算では ¥{man_calc:,} ですが、¥{man_amount:,} で作成します。")
-            if st.button("作成する", type="primary", use_container_width=True,
-                        disabled=mkg <= 0, key="man_create"):
-                def _create(mcid=mcid, mdate=mdate, qty=mkg / man_unit_kg, price=mprice,
-                            unit_kg=man_unit_kg, amount=man_amount):
-                    r = billing.prepare_manual(mcid, mdate, qty, price, unit_kg=unit_kg,
-                                               amount_override=amount)
-                    if not r.get("ok"):
-                        return False, r.get("msg", "作成できませんでした。")
-                    return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"
-                st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
-                _run_bg("請求書の作成", _create, lock_name="billing")
+            man_mode = st.radio("品目", ["1品目（kg単位で計算）", "複数の品目（精米・玄米・送料など）"],
+                                horizontal=True, key="man_mode")
+            if man_mode.startswith("複数"):
+                ukg0 = float(mcli.get("unit_kg", billing.UNIT_KG))
+                init = [{"name": mcli.get("item_desc", ""), "qty": None, "unit": "個",
+                         "price": int(mcli.get("price_per_5kg", 4000)), "rate": 8, "kg": ukg0},
+                        {"name": "", "qty": None, "unit": "", "price": 0, "rate": 8, "kg": None}]
+                man_items = _invoice_items_editor(f"man_{mcid}", init)
+                st.caption("数量を入れた行だけが請求書に載ります。行は下の「＋」で足せます。"
+                           "送料などは税率を10%にしてください。")
+                if st.button("作成する", type="primary", use_container_width=True,
+                             disabled=not invoice_pdf.clean_items(man_items), key="man_create_m"):
+                    def _create_m(mcid=mcid, mdate=mdate, items=man_items):
+                        r = billing.prepare_manual(mcid, mdate, 0, 0, items=items)
+                        if not r.get("ok"):
+                            return False, r.get("msg", "作成できませんでした。")
+                        return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"
+                    st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
+                    _run_bg("請求書の作成", _create_m, lock_name="billing")
+            else:
+                m3, m4, m5 = st.columns(3)
+                man_unit_kg = m3.number_input("単位（kg）", min_value=0.1, step=1.0,
+                                              value=float(mcli.get("unit_kg", billing.UNIT_KG)),
+                                              key="man_unit_kg",
+                                              help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
+                mkg = m4.number_input("数量（kg）", min_value=0.0, step=man_unit_kg, value=0.0,
+                                      key="man_kg", help="上の単位あたりの単価で請求額を計算します")
+                mprice = m5.number_input(f"単価（{man_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
+                                         value=int(mcli.get("price_per_5kg", 4000)),
+                                         step=100, key="man_price")
+                man_calc = round(mkg / man_unit_kg * mprice) if mkg > 0 else 0
+                man_amount = st.number_input(
+                    "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
+                    value=man_calc, step=1, key="man_amount",
+                    help="通常は数量×単価の自動計算のままで構いません。")
+                if mkg > 0 and man_amount != man_calc:
+                    st.caption(f"自動計算では ¥{man_calc:,} ですが、¥{man_amount:,} で作成します。")
+                if st.button("作成する", type="primary", use_container_width=True,
+                            disabled=mkg <= 0, key="man_create"):
+                    def _create(mcid=mcid, mdate=mdate, qty=mkg / man_unit_kg, price=mprice,
+                                unit_kg=man_unit_kg, amount=man_amount):
+                        r = billing.prepare_manual(mcid, mdate, qty, price, unit_kg=unit_kg,
+                                                   amount_override=amount)
+                        if not r.get("ok"):
+                            return False, r.get("msg", "作成できませんでした。")
+                        return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"
+                    st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
+                    _run_bg("請求書の作成", _create, lock_name="billing")
+
 
     _billing_browser()
 

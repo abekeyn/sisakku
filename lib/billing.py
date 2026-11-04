@@ -337,8 +337,11 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
 @_locked
 def regenerate_pending(pending_key: str, qty: float, unit_price: float,
                        issue_date: date | None = None, unit_kg: float | None = None,
-                       amount_override: int | None = None, allow_sent: bool = False) -> dict:
+                       amount_override: int | None = None, allow_sent: bool = False,
+                       items: list[dict] | None = None) -> dict:
     """承認待ちの数量・単価（・発行日）を修正し、PDFをその場で作り直す（書類番号は変えない）。
+
+    items（複数商品の明細行）を渡すと、その明細で作り直す（数量・単価・金額の引数は使わない）。
 
     LibreOffice/GitHub Actionsを使わず、アプリ内でreportlabにより即時生成する
     （lib/invoice_pdf.py）。手入力・修正はどのみち元のExcelテンプレートとの
@@ -365,13 +368,24 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
 
     issue_date = issue_date or date.fromisoformat(p["issue_date"])
     unit_kg = unit_kg or p.get("unit_kg") or UNIT_KG
-    amount = amount_override if amount_override is not None else int(round(qty * unit_price))
-    pdf = invoice_pdf.build_invoice_pdf(
-        invoice_to=client["invoice_to"], item_desc=item_with_unit(client.get("item_desc", ""), unit_kg),
-        qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=p["doc_number"],
-        amount=amount)
+    items = invoice_pdf.clean_items(items)
+    if items:                       # 複数商品：明細の合計が請求額
+        calc = invoice_pdf.item_calc(items)
+        amount, qty, unit_price, total_kg = calc["total"], sum(i["qty"] for i in items), 0, calc["kg"]
+        pdf = invoice_pdf.build_invoice_pdf(
+            invoice_to=client["invoice_to"], item_desc="", qty=qty, unit_price=0,
+            issue_date=issue_date, doc_no=p["doc_number"], items=items)
+        p["items"] = items
+    else:
+        amount = amount_override if amount_override is not None else int(round(qty * unit_price))
+        total_kg = qty * unit_kg
+        pdf = invoice_pdf.build_invoice_pdf(
+            invoice_to=client["invoice_to"], item_desc=item_with_unit(client.get("item_desc", ""), unit_kg),
+            qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=p["doc_number"],
+            amount=amount)
+        p.pop("items", None)
     p.update({
-        "qty": qty, "total_kg": qty * unit_kg, "unit_kg": unit_kg, "unit_price": unit_price,
+        "qty": qty, "total_kg": total_kg, "unit_kg": unit_kg, "unit_price": unit_price,
         "amount": amount, "issue_date": issue_date.isoformat(),
         "pdf_b64": base64.b64encode(pdf).decode("ascii"),
         "pdf_name": invoice_pdf.invoice_filename(issue_date, p["client_name"]),
@@ -407,6 +421,12 @@ def build_delivery_note(p: dict, issue_date: date | None = None,
 
     client = get_client(p["client_id"]) or {}
     d = issue_date or date.fromisoformat(p["issue_date"])
+    if p.get("items"):              # 複数商品：請求書と同じ明細を、金額なしで載せる
+        pdf = invoice_pdf.build_invoice_pdf(
+            invoice_to=client.get("invoice_to") or p["client_name"], item_desc="",
+            qty=p.get("qty") or 0, unit_price=0, issue_date=d, doc_no=p["doc_number"],
+            doc_type="納品書", honorific=honorific, items=p["items"])
+        return pdf, invoice_pdf.delivery_note_filename(d, p["client_name"])
     # 品名の末尾に1個あたりの重さ（「…(精米) 5㎏」）が付いていると、合計kgの欄と
     # 並んで数量が食い違って見えるため、納品書では外す。
     desc = re.sub(r"[\s　]*[\d.]+[\s　]*(?:㎏|kg|KG|Kg|キロ)[\s　]*$", "", client.get("item_desc", "") or "")
@@ -421,7 +441,8 @@ def build_delivery_note(p: dict, issue_date: date | None = None,
 
 @_locked
 def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: float,
-                   unit_kg: float | None = None, amount_override: int | None = None) -> dict:
+                   unit_kg: float | None = None, amount_override: int | None = None,
+                   items: list[dict] | None = None) -> dict:
     """自動集計を使わず、発行日・数量・単価を手入力して請求書をその場で新規作成する。
 
     LibreOffice/GitHub Actionsを使わず、アプリ内でreportlabにより即時生成する。
@@ -429,12 +450,15 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
     unit_kg: 1個あたりの重量（kg）。省略時は請求先マスタのunit_kg、それも無ければ
     UNIT_KG(5kg)。大口向けに30kg・60kgなど任意の単位で計算できるようにするため。
     amount_override: 端数調整のため計算結果と異なる金額で確定したい場合に指定する。
+    items: 複数商品の明細行（name・qty・unit・price〔税込〕・rate・kg）。渡すと、数量・単価・
+    amount_override は使わず、明細の合計を請求額にする（税率は8%・10%を混ぜられる）。
     """
     from . import invoice_pdf
 
     client = get_client(client_id)
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
+    items = invoice_pdf.clean_items(items)
     target_ym = issue_date.strftime("%Y-%m")
     doc_no = int(client.get("last_doc_no", 0)) + 1
     # 番号は作成した時点で予約する（送信時まで待つと、送信前の下書きが複数
@@ -443,17 +467,26 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
     client["last_doc_no"] = doc_no
     upsert_client(client)
     unit_kg = unit_kg or client.get("unit_kg") or UNIT_KG
-    amount = amount_override if amount_override is not None else int(round(qty * unit_price))
-    pdf = invoice_pdf.build_invoice_pdf(
-        invoice_to=client["invoice_to"], item_desc=item_with_unit(client.get("item_desc", ""), unit_kg),
-        qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=doc_no,
-        amount=amount)
+    if items:
+        calc = invoice_pdf.item_calc(items)
+        amount, qty, unit_price, total_kg = calc["total"], sum(i["qty"] for i in items), 0, calc["kg"]
+        pdf = invoice_pdf.build_invoice_pdf(
+            invoice_to=client["invoice_to"], item_desc="", qty=qty, unit_price=0,
+            issue_date=issue_date, doc_no=doc_no, items=items)
+    else:
+        amount = amount_override if amount_override is not None else int(round(qty * unit_price))
+        total_kg = qty * unit_kg
+        pdf = invoice_pdf.build_invoice_pdf(
+            invoice_to=client["invoice_to"], item_desc=item_with_unit(client.get("item_desc", ""), unit_kg),
+            qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=doc_no,
+            amount=amount)
     pending = {
         "client_id": client["id"], "client_name": client["name"],
         "email": client["email"], "target_ym": target_ym, "month": issue_date.month,
         "issue_date": issue_date.isoformat(), "doc_number": doc_no,
-        "qty": qty, "total_kg": qty * unit_kg, "unit_kg": unit_kg, "unit_price": unit_price,
+        "qty": qty, "total_kg": total_kg, "unit_kg": unit_kg, "unit_price": unit_price,
         "amount": amount, "rows": [], "source": "manual", "warning": "",
+        **({"items": items} if items else {}),
         "pdf_b64": base64.b64encode(pdf).decode("ascii"),
         "pdf_name": invoice_pdf.invoice_filename(issue_date, client["name"]),
         "status": "pending", "prepared_at": datetime.now().isoformat(timespec="seconds"),
