@@ -146,14 +146,32 @@ def _pdf_preview(b64: str, height: int = 480) -> None:
     ブラウザのPDFビューアに頼らず、Python側でページを画像化して st.image()
     で表示すれば、この手の環境差の影響を受けずに確実に表示できる。
     """
+    pages = _pdf_pages_png_b64(b64)
+    # 画像はページに直接埋め込む（st.image だと、Streamlitのメディア配信が途切れたときに
+    # 「壊れた画像」になることがあった）。
+    st.html("".join(
+        f'<img src="data:image/png;base64,{p}" alt="PDFプレビュー {i}ページ目" '
+        'style="width:100%;height:auto;display:block;margin:6px 0;border-radius:6px"/>'
+        for i, p in enumerate(pages, 1)))
+
+
+@st.cache_data(show_spinner=False, max_entries=48)
+def _pdf_pages_png_b64(b64: str) -> list[str]:
+    """PDF(base64)の各ページをPNG(base64)にする。同じPDFは使い回す
+    （画面を操作するたびに作り直すと、再描画が遅くなるため）。"""
     import base64 as _b64
+    import io
 
     import pypdfium2 as pdfium
 
     pdf = pdfium.PdfDocument(_b64.b64decode(b64))
+    out = []
     for i in range(len(pdf)):
-        img = pdf[i].render(scale=2.0).to_pil()
-        st.image(img, use_container_width=True)
+        img = pdf[i].render(scale=1.8).to_pil().convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        out.append(_b64.b64encode(buf.getvalue()).decode("ascii"))
+    return out
 
 
 # ===========================================================================

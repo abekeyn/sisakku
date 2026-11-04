@@ -20,6 +20,39 @@ from . import config
 
 ROOT = Path(__file__).resolve().parent.parent
 
+
+def _fit_tables() -> None:
+    """表（st.dataframe / st.data_editor）を、内側でスクロールさせず内容の高さに広げる。
+
+    表は既定で10行ほどの高さになり、中が自分でスクロールする。マウスが表の上にあると、
+    ホイールが表に取られて、ページが下へ進まなくなる（表の端まで回して、やっとページに
+    引き継がれる）。スマホでは、画面いっぱいの表の上でページをドラッグしても表が動き、
+    「下までスクロールできない」状態になる。高さを内容に合わせれば、表の中に隠れる行も
+    なく、スクロールは必ずページに届く。高さを指定している呼び出しも、行数が少なければ
+    （80行まで）同じように広げる。
+    """
+    for name in ("dataframe", "data_editor"):
+        orig = getattr(st, name)
+        if getattr(orig, "_abe_fit", False):
+            continue
+
+        def wrapper(*args, __orig=orig, **kw):
+            h = kw.get("height")
+            data = args[0] if args else kw.get("data")
+            try:
+                n = len(data)
+            except Exception:  # noqa: BLE001  Styler など、行数が取れないものは小さいとみなす
+                n = 0
+            if h is None or (isinstance(h, (int, float)) and n <= 80):
+                kw["height"] = "content"
+            return __orig(*args, **kw)
+
+        wrapper._abe_fit = True
+        setattr(st, name, wrapper)
+
+
+_fit_tables()
+
 # ブランドカラー
 NAVY = "#1B1D3E"        # 夜の濃紺（背景）
 NAVY_DEEP = "#14162E"
