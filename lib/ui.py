@@ -973,6 +973,101 @@ def loading_gate() -> None:
     _boot_overlay(fade=True)
 
 
+_SCROLL_DIAG_JS = r"""
+<script>
+(function () {
+  // この小さなiframeは画面の再描画で作り直され、中の処理が止まる。診断は親の文書に
+  // <script> として置き、iframeが消えても動き続けるようにする。
+  try {
+    var PD = window.parent.document;
+    if (PD.getElementById('abe-diag-js')) return;
+    var s = PD.createElement('script');
+    s.id = 'abe-diag-js';
+    s.textContent = '(' + DIAG.toString() + ')();';
+    PD.head.appendChild(s);
+  } catch (err) { /* 失敗しても本体には影響させない */ }
+})();
+function DIAG() {
+  try {
+    var P = window, D = document;
+    if (D.getElementById('abe-diag')) return;
+    var box = D.createElement('div');
+    box.id = 'abe-diag';
+    box.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:2147483647;max-width:760px;' +
+      'background:rgba(0,0,0,.88);color:#9fe;font:13px/1.5 monospace;padding:6px 8px;' +
+      'border-radius:6px;pointer-events:none;white-space:pre-wrap;';
+    D.body.appendChild(box);
+    var last = {wheel: '(まだ回していません)', scrolls: [], top: null};
+    function main() { return D.querySelector('[data-testid="stMain"]'); }
+    function ov(e) { return e ? getComputedStyle(e).overflowY : '-'; }
+    function chain(el) {
+      var out = [], n = 0;
+      while (el && n < 6) {
+        var t = el.tagName ? el.tagName.toLowerCase() : '?';
+        var id = el.getAttribute && el.getAttribute('data-testid');
+        out.push(t + (id ? '[' + id + ']' : '') + (el.id ? '#' + el.id : ''));
+        el = el.parentElement; n++;
+      }
+      return out.join(' < ');
+    }
+    function draw() {
+      var m = main(), top = '?', fh = '?';
+      try { top = P.top.innerHeight; } catch (e) {}
+      try { fh = Math.round(P.frameElement.getBoundingClientRect().height); } catch (e) {}
+      var view = D.querySelector('[data-testid="stAppViewContainer"]');
+      if (last.top === null && m) last.top = m.scrollTop;   // ホイール前の位置を覚えておく
+      box.textContent =
+        '[診断] 窓=' + P.innerWidth + 'x' + P.innerHeight + ' 最上位窓高=' + top + ' iframe高=' + fh +
+        ' zoom=' + (P.devicePixelRatio || '?') + '\n' +
+        'stMain: client=' + (m ? m.clientHeight : '-') + ' scrollH=' + (m ? m.scrollHeight : '-') +
+        ' scrollTop=' + (m ? Math.round(m.scrollTop) : '-') + ' overflowY=' + ov(m) +
+        ' / view=' + ov(view) + ' / app=' + ov(D.querySelector('.stApp')) +
+        ' / html=' + ov(D.documentElement) + ' body=' + ov(D.body) + '\n' +
+        '直近のホイール: ' + last.wheel + '\n' +
+        '直近のスクロール位置: ' + last.scrolls.join(' → ');
+    }
+    D.addEventListener('wheel', function (e) {
+      // ホイールの処理が走る時点で、スクロールは始まっていることがある。直前に記録した位置と比べる。
+      var m = main(), before = (last.top !== null ? last.top : (m ? m.scrollTop : null)),
+          x = e.clientX, y = e.clientY;
+      var under = D.elementFromPoint(x, y);
+      setTimeout(function () {
+        var after = m ? m.scrollTop : null;
+        last.top = after;
+        last.wheel = 'dy=' + Math.round(e.deltaY) + ' 止められた=' + e.defaultPrevented +
+          ' ページ位置 ' + Math.round(before) + '→' + Math.round(after) + (before === after ? '（動かず）' : '（動いた）') +
+          '\n    マウス下: ' + chain(under) + ' 座標(' + Math.round(x) + ',' + Math.round(y) + ')';
+        draw();
+      }, 250);
+    }, {capture: true, passive: true});
+    D.addEventListener('scroll', function (e) {
+      var m = main();
+      if (m && (e.target === m)) {
+        last.top = m.scrollTop;
+        last.scrolls.push(Math.round(m.scrollTop));
+        if (last.scrolls.length > 8) last.scrolls.shift();
+      }
+    }, true);
+    P.addEventListener('resize', draw);
+    setInterval(draw, 1500);
+    draw();
+  } catch (err) { /* 診断が失敗しても本体には影響させない */ }
+}
+</script>
+"""
+
+
+def _scroll_diag() -> None:
+    """URLに ?diag=1 を付けて開いたときだけ、画面左下にスクロールの診断パネルを出す。
+
+    「ページが下へ進まない」原因を、利用者の実際の画面で測るためのもの。ホイールを回すたびに、
+    マウス下の要素・ホイールが止められたか・ページ位置が動いたかを表示する（読み取り専用）。
+    """
+    if not st.query_params.get("diag"):
+        return
+    components.html(_SCROLL_DIAG_JS, height=0, width=0)
+
+
 def setup_page() -> None:
     st.set_page_config(
         page_title="阿部農園基幹システム",
@@ -984,3 +1079,4 @@ def setup_page() -> None:
     loading_gate()
     require_login()
     render_header()
+    _scroll_diag()
