@@ -1817,6 +1817,11 @@ def _receipt_button(key: str, p: dict) -> None:
                 tax_rows=([(rate, g["excl"], g["tax"])
                            for rate, g in invoice_pdf.item_calc(p["items"])["by_rate"].items()]
                           if multi and r_amount == int(p["amount"]) else None),
+                # 同じ条件のときは、品目を1行ずつ載せる
+                item_rows=([{"name": r["name"], "qty": invoice_pdf._qty_text(r), "rate": r["rate"],
+                             "amount": r["line_incl"]}
+                            for r in invoice_pdf.item_calc(p["items"])["rows"]]
+                           if multi and r_amount == int(p["amount"]) else None),
             )
             # 発行した時点で記録＋フォルダ保存まで済ませる（ダウンロードし忘れても控えが残る）。
             fname = receipt.receipt_filename(p["issue_date"], p["client_name"])
