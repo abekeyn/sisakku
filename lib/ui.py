@@ -1023,6 +1023,9 @@ function DIAG() {
         ' scrollTop=' + (m ? Math.round(m.scrollTop) : '-') + ' overflowY=' + ov(m) +
         ' / view=' + ov(view) + ' / app=' + ov(D.querySelector('.stApp')) +
         ' / html=' + ov(D.documentElement) + ' body=' + ov(D.body) + '\n' +
+        '実行中=' + !!D.querySelector('[data-testid="stStatusWidget"]') +
+        ' stale要素=' + D.querySelectorAll('[data-stale="true"]').length +
+        ' 画面中央の最前面=' + chain(D.elementFromPoint(P.innerWidth / 2, P.innerHeight / 2)) + '\n' +
         '直近のホイール: ' + last.wheel + '\n' +
         '直近のスクロール位置: ' + last.scrolls.join(' → ');
     }
@@ -1058,12 +1061,12 @@ function DIAG() {
 
 
 def _scroll_diag() -> None:
-    """URLに ?diag=1 を付けて開いたときだけ、画面左下にスクロールの診断パネルを出す。
+    """画面左下にスクロールの診断パネルを出す（URLに ?diag=0 を付けると出さない）。
 
     「ページが下へ進まない」原因を、利用者の実際の画面で測るためのもの。ホイールを回すたびに、
     マウス下の要素・ホイールが止められたか・ページ位置が動いたかを表示する（読み取り専用）。
     """
-    if not st.query_params.get("diag"):
+    if st.query_params.get("diag") == "0":
         return
     components.html(_SCROLL_DIAG_JS, height=0, width=0)
 
