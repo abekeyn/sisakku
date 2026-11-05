@@ -998,6 +998,7 @@ function DIAG() {
       'border-radius:6px;pointer-events:none;white-space:pre-wrap;';
     D.body.appendChild(box);
     var last = {wheel: '(まだ回していません)', scrolls: [], top: null};
+    var events = [];
     function main() { return D.querySelector('[data-testid="stMain"]'); }
     function ov(e) { return e ? getComputedStyle(e).overflowY : '-'; }
     function chain(el) {
@@ -1027,7 +1028,8 @@ function DIAG() {
         ' stale要素=' + D.querySelectorAll('[data-stale="true"]').length +
         ' 画面中央の最前面=' + chain(D.elementFromPoint(P.innerWidth / 2, P.innerHeight / 2)) + '\n' +
         '直近のホイール: ' + last.wheel + '\n' +
-        '直近のスクロール位置: ' + last.scrolls.join(' → ');
+        '直近のスクロール位置: ' + last.scrolls.join(' → ') + '\n' +
+        '高さが変わった原因: ' + (events.length ? '\n  ' + events.join('\n  ') : '（変化なし）');
     }
     D.addEventListener('wheel', function (e) {
       // ホイールの処理が走る時点で、スクロールは始まっていることがある。直前に記録した位置と比べる。
@@ -1051,6 +1053,38 @@ function DIAG() {
         if (last.scrolls.length > 8) last.scrolls.shift();
       }
     }, true);
+    function label(e) {
+      var t = (e.innerText || '').replace(/\s+/g, ' ').slice(0, 28);
+      var k = (e.className && String(e.className).match(/st-key-[\w-]+/) || [''])[0];
+      return (e.getAttribute('data-testid') || e.tagName) + (k ? '.' + k : '') + ' "' + t + '"';
+    }
+    function snapshot() {
+      var mp = new Map();
+      D.querySelectorAll('[data-testid="stMain"] [data-testid="stElementContainer"],' +
+        '[data-testid="stMain"] [data-testid="stExpander"],[data-testid="stMain"] [data-testid="stAlert"]')
+        .forEach(function (e) { mp.set(e, e.getBoundingClientRect().height); });
+      return mp;
+    }
+    var snap = null, prevSH = null;
+    setInterval(function () {
+      var m = main();
+      if (!m) return;
+      var sh = m.scrollHeight, cur = snapshot();
+      if (prevSH !== null && sh !== prevSH && snap) {
+        var diffs = [];
+        cur.forEach(function (h, e) {
+          var ph = snap.get(e);
+          if (ph === undefined) diffs.push({d: h, e: e, n: '新規'});
+          else if (Math.abs(h - ph) > 1) diffs.push({d: h - ph, e: e, n: ''});
+        });
+        snap.forEach(function (h, e) { if (!cur.has(e)) diffs.push({d: -h, e: e, n: '消えた'}); });
+        diffs.sort(function (a, b) { return Math.abs(b.d) - Math.abs(a.d); });
+        events.push(new Date().toLocaleTimeString() + ' 高さ ' + prevSH + '→' + sh + ' : ' +
+          diffs.slice(0, 2).map(function (x) { return x.n + Math.round(x.d) + 'px ' + label(x.e); }).join(' / '));
+        if (events.length > 3) events.shift();
+      }
+      prevSH = sh; snap = cur;
+    }, 400);
     P.addEventListener('resize', draw);
     setInterval(draw, 1500);
     draw();
