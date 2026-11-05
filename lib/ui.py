@@ -1095,12 +1095,11 @@ function DIAG() {
 
 
 def _scroll_diag() -> None:
-    """画面左下にスクロールの診断パネルを出す（URLに ?diag=0 を付けると出さない）。
+    """スクロールの診断パネル。通常は出さない（URLに ?diag=1 を付けたときだけ画面左下に出す）。
 
-    「ページが下へ進まない」原因を、利用者の実際の画面で測るためのもの。ホイールを回すたびに、
-    マウス下の要素・ホイールが止められたか・ページ位置が動いたかを表示する（読み取り専用）。
+    「ページが下へ進まない」原因を、開発者が実際の画面で測るためのもの（読み取り専用）。
     """
-    if st.query_params.get("diag") == "0":
+    if st.query_params.get("diag") != "1":
         return
     components.html(_SCROLL_DIAG_JS, height=0, width=0)
 
