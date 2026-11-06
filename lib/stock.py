@@ -78,6 +78,13 @@ def detect_variety(text: str, cfg: dict) -> str:
     return cfg["default_variety"]
 
 
+def client_variety(c: dict | None, text: str, cfg: dict) -> str:
+    """請求先の出庫の品種。請求先に「在庫の品種」を固定してあればそれ（品名に品種が無くても、
+    コシヒカリ在庫から引かない）。無ければ品名から判断する。"""
+    pin = ((c or {}).get("stock_variety") or "").strip()
+    return pin if pin else detect_variety(text, cfg)
+
+
 def _f(v) -> float:
     try:
         return float(v or 0)
@@ -193,7 +200,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
             k = (cid, trk)
             dup = k in seen_tracking
             seen_tracking.add(k)
-        variety = detect_variety(o.get("product_name") or "", cfg)
+        variety = client_variety(b2b_ids.get(cid), o.get("product_name") or "", cfg)
         cname = _clean_name(o.get("customer_name") or "")
         b2b = cid in b2b_ids
         covered = b2b
@@ -219,7 +226,8 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         if o.get("status") == "shipped":
             continue
         parts, _ = ledger.split_order(o, flags)
-        variety = detect_variety(o.get("product_name") or "", cfg)
+        variety = client_variety(b2b_ids.get(int(o.get("customer_id") or 0)),
+                                 o.get("product_name") or "", cfg)
         for (rt, fm), kg in parts.items():
             reserved.append({"id": f'o{int(o["id"])}:{fm}', "form": fm, "kg": float(kg),
                              "variety": variety, "location": _default_loc(fm, cfg, variety),
@@ -247,7 +255,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         cname = _clean_name(c.get("name") or "").rstrip("様").strip()
         cid = int(c.get("customer_id") or 0)
         form = "玄米" if ("玄米" in item and "精米" not in item) else "精米"
-        variety = detect_variety(item, cfg)
+        variety = client_variety(c, item, cfg)
         out.append({
             "id": f"r{rid}", "date": d, "customer_key": f"b:{c['id']}",
             "customer": cname, "customer_id": cid, "source": "領収書",
@@ -273,7 +281,7 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
                 continue
             item = c.get("item_desc") or ""
             form = "玄米" if ("玄米" in item and "精米" not in item) else "精米"
-            variety = detect_variety(item, cfg)
+            variety = client_variety(c, item, cfg)
             cname = _clean_name(c.get("name") or "").rstrip("様").strip()
             cid = int(c.get("customer_id") or 0)
             out.append({

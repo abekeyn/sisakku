@@ -30,7 +30,7 @@ def now_iso() -> str:
 from lib import (analytics, base_api, billing, bg, bootstrap, costing, db,
                  exporter, invoice_pdf, komeful, ledger, logic, payslip, paysheet, postal,
                  quick_quote, quote, receipt, seed, shipping, shopify_api, square_pay,
-                 stock_ui, ui, yamato)
+                 stock as stock_mod, stock_ui, ui, yamato)
 
 ui.setup_page()
 bootstrap.ensure_initialized()
@@ -2457,6 +2457,15 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
                                    c.get("local_xlsx", ""), key=f"lx_{fid}",
                                    help="請求書をExcel台帳へ追記している請求先だけ設定します。"
                                         "通常は空欄で構いません。")
+        _sv_opts = ["（品名から判断）"] + list(stock_mod.load_config().get("varieties") or [])
+        _sv_cur = c.get("stock_variety") or "（品名から判断）"
+        if _sv_cur not in _sv_opts:
+            _sv_opts.append(_sv_cur)
+        sv = st.selectbox(
+            "在庫の品種（固定）", _sv_opts, index=_sv_opts.index(_sv_cur), key=f"sv_{fid}",
+            help="この請求先の出荷・請求書・領収書を、在庫のどの品種から引くかを固定します。"
+                 "品名に品種名が入っていなくても、コシヒカリ在庫から引かれません"
+                 "（例：天のつぶ専用の取引先は「天のつぶ」）。")
         active = st.checkbox("有効（月末に自動作成する）", value=c.get("active", True),
                              key=f"ac_{fid}")
         if st.form_submit_button("保存", type="primary"):
@@ -2470,7 +2479,8 @@ def _client_form(c: dict, cust_opts: dict, is_new: bool) -> None:
                 "unit_kg": float(unit_kg),
                 "item_desc": item, "subject_tmpl": subject, "body_tmpl": body,
                 "last_doc_no": int(doc_no), "folder": folder.strip(),
-                "local_xlsx": local_xlsx.strip(), "active": bool(active)})
+                "local_xlsx": local_xlsx.strip(), "active": bool(active),
+                "stock_variety": "" if sv.startswith("（") else sv})
             # 設定したフォルダはこの場で作る（PCで操作しているとき）
             made = billing.receipts_folder(billing.get_client(cid.strip()) or {})
             st.success(f"保存しました。保存先：{made}" if made else "保存しました。")
