@@ -38,6 +38,7 @@ _DEFAULT_CFG = {
     "count_sent_invoices": True,          # 領収書のない請求先は、確定済みの請求書で数える
     "plan_start_ym": "",                  # 卸先の月の使用量（想定）を使い始めた月 'YYYY-MM'。空なら今期の初め
     "client_monthly_kg": {},              # 卸先ごとの月の使用量（kg・白米換算）{請求先ID: kg}
+    "genmai_varieties": [],               # 玄米で持ち、精米は売るたびに玄米から作る品種（精米の出庫を玄米から歩留まりで引く）
     "milling_yield": 0.9,                 # 玄米→白米（精米）の歩留まり（玄米1kgで白米0.9kg）
     "harvest_month": 9,                   # 次の新米が入る月。ここまでの月数で「月の使える量」を割る
     "risk_high_months": 1.5,              # これ未満で欠品リスク「高」
@@ -102,6 +103,15 @@ def _clean_name(s: str) -> str:
 def _order_date(o: dict) -> date | None:
     return ledger.parse_date(o.get("ship_date")) or ledger.parse_date(o.get("order_date")) \
         or ledger.parse_date(o.get("created_at"))
+
+
+def draw_from(form: str, kg: float, variety: str, cfg: dict) -> tuple[str, float, str]:
+    """在庫から実際に引く（形態, kg, 保管場所）。玄米で持つ品種の精米の出庫は、玄米から歩留まりで割り戻して引く
+    （精米1kg＝玄米 1÷歩留まり kg）。それ以外はそのまま。"""
+    if form == "精米" and variety in (cfg.get("genmai_varieties") or []):
+        y = float(cfg.get("milling_yield") or 0.9) or 0.9
+        return "玄米", kg / y, _default_loc("玄米", cfg, variety)
+    return form, kg, _default_loc(form, cfg, variety)
 
 
 def _default_loc(form: str, cfg: dict, variety: str | None = None) -> str:
@@ -229,8 +239,9 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
         variety = client_variety(b2b_ids.get(int(o.get("customer_id") or 0)),
                                  o.get("product_name") or "", cfg)
         for (rt, fm), kg in parts.items():
-            reserved.append({"id": f'o{int(o["id"])}:{fm}', "form": fm, "kg": float(kg),
-                             "variety": variety, "location": _default_loc(fm, cfg, variety),
+            dfm, dkg, dloc = draw_from(fm, float(kg), variety, cfg)
+            reserved.append({"id": f'o{int(o["id"])}:{fm}', "form": dfm, "kg": dkg,
+                             "variety": variety, "location": dloc,
                              "customer": _clean_name(o.get("customer_name") or "")})
 
     # 請求先：発行済みの領収書（数量は紐づく請求書の数量）
@@ -356,7 +367,10 @@ def compute_stock(entries, out_rows, cfg, as_of: date) -> dict[tuple, float]:
             events.append((d, ("玄米", k[1], k[2]), -_f(e.get("qty_kg"))))
             events.append((d, ("精米", k[1], _default_loc("精米", cfg, k[1])), _f(e.get("qty_out_kg"))))
     for r in counted(out_rows):
-        events.append((r["date"], (r["form"], r["variety"], r["location"]), -r["kg"]))
+        fm, kg, loc = draw_from(r["form"], r["kg"], r["variety"], cfg)
+        if fm == r["form"]:
+            loc = r["location"]
+        events.append((r["date"], (fm, r["variety"], loc), -kg))
 
     by_key: dict[tuple, list[tuple[date, float]]] = defaultdict(list)
     for d, k, delta in events:

@@ -1167,6 +1167,12 @@ def _settings(cfg: dict) -> None:
                         index=(vlist.index(cfg["default_variety"]) if cfg["default_variety"] in vlist else 0),
                         key="stk_set_dvar")
 
+    gen_sel = st.multiselect(
+        "玄米で持っていて、精米は売るたびに作る品種", vlist,
+        default=[v for v in (cfg.get("genmai_varieties") or []) if v in vlist], key="stk_set_genmai",
+        help="ここに入れた品種は、精米の納品・注文を、玄米の在庫から歩留まりで割り戻して自動で引きます"
+             "（精米1kg＝玄米 約1.11kg）。精米の在庫をマイナスにせず、とう精の記録も要りません。")
+
     ui.section("計算・お知らせのしきい値")
     t1, t2, t3 = st.columns(3)
     hi = t1.number_input("欠品リスク「高」（か月未満）", min_value=0.1, value=float(cfg["risk_high_months"]), step=0.5)
@@ -1197,7 +1203,8 @@ def _settings(cfg: dict) -> None:
                 "default_location": dloc, "varieties": vlist, "default_variety": dvar,
                 "risk_high_months": hi, "risk_mid_months": max(mid, hi), "stale_count_days": int(stale),
                 "milling_yield": float(myield), "harvest_month": int(hmonth),
-                "count_sent_invoices": bool(inv), "count_uninvoiced_orders": bool(uninv)})
+                "count_sent_invoices": bool(inv), "count_uninvoiced_orders": bool(uninv),
+                "genmai_varieties": [v for v in gen_sel if v in vlist]})
             new_vl = {}
             for _, r in vloc_ed.iterrows():
                 d = {f: r[f + "の出庫元"] for f in ("玄米", "精米") if r[f + "の出庫元"] in names}
