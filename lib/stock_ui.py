@@ -115,7 +115,8 @@ def render() -> None:
         period_kw = {"fy": period}
     with c_flt.expander("絞り込み（品種・保管場所・形態）"):
         f2, f3, f4 = st.columns(3)
-        varieties = ["すべて"] + sorted({*cfg["varieties"], cfg["default_variety"]})
+        varieties = ["すべて"] + sorted(v for v in {*cfg["varieties"], cfg["default_variety"]}
+                                       if stock.visible_variety(v, cfg))
         variety = f2.selectbox("品種", varieties, key="stk_var")
         locs = ["すべて"] + stock.location_names(cfg) + [stock.UNSET_LOC]
         location = f3.selectbox("保管場所", locs, key="stk_loc")
@@ -902,7 +903,8 @@ def _sankey_svg(m: dict) -> str:
 def _editor(m: dict, cfg: dict) -> None:
     ver = st.session_state.setdefault("stk_ver", 0)
     locs = stock.location_names(cfg)
-    varieties = sorted({*cfg["varieties"], cfg["default_variety"]})
+    varieties = sorted(v for v in {*cfg["varieties"], cfg["default_variety"]}
+                       if stock.visible_variety(v, cfg))
 
     _month_end_editor(cfg, locs, varieties)
     if st.session_state.get("stk_flash"):
@@ -940,7 +942,8 @@ def _month_end_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
     pick = st.selectbox("いつの在庫", labels, index=default, key=f"stk_me_pick_{ver}")
     as_of = dict(opts)[pick]
 
-    book = stock.compute_stock(db.list_ledger_entries(), stock.load_out_rows(), cfg, as_of)
+    book = stock.compute_stock(stock.visible_entries(db.list_ledger_entries(), cfg),
+                               stock.load_out_rows(), cfg, as_of)
     rows = [{"保管場所": k[2], "品種": k[1], "形態": k[0], "帳簿の在庫kg": round(v, 1), "実数kg": round(v, 1)}
             for k, v in sorted(book.items(), key=lambda kv: (kv[0][2], kv[0][1], kv[0][0]))]
     if not rows:
@@ -1027,7 +1030,7 @@ def _entry_form(cfg: dict, locs: list[str], varieties: list[str]) -> None:
 
 
 def _history_editor(cfg: dict, locs: list[str], varieties: list[str]) -> None:
-    entries = list(reversed(db.list_ledger_entries()))[:80]
+    entries = list(reversed(stock.visible_entries(db.list_ledger_entries(), cfg)))[:80]
     if not entries:
         st.caption("まだ記録がありません。")
         return
@@ -1173,6 +1176,12 @@ def _settings(cfg: dict) -> None:
         help="ここに入れた品種は、精米の納品・注文を、玄米の在庫から歩留まりで割り戻して自動で引きます"
              "（精米1kg＝玄米 約1.11kg）。精米の在庫をマイナスにせず、とう精の記録も要りません。")
 
+    hid_sel = st.multiselect(
+        "在庫タブに出さない品種（別管理）", vlist,
+        default=[v for v in (cfg.get("hidden_varieties") or []) if v in vlist], key="stk_set_hidden",
+        help="ここに入れた品種は、在庫・出庫・予測・記録の一覧など在庫タブのすべてから外します"
+             "（食糧法の帳簿は別なので、そちらには残ります）。別管理の取引先専用の品種に使います。")
+
     ui.section("計算・お知らせのしきい値")
     t1, t2, t3 = st.columns(3)
     hi = t1.number_input("欠品リスク「高」（か月未満）", min_value=0.1, value=float(cfg["risk_high_months"]), step=0.5)
@@ -1204,7 +1213,8 @@ def _settings(cfg: dict) -> None:
                 "risk_high_months": hi, "risk_mid_months": max(mid, hi), "stale_count_days": int(stale),
                 "milling_yield": float(myield), "harvest_month": int(hmonth),
                 "count_sent_invoices": bool(inv), "count_uninvoiced_orders": bool(uninv),
-                "genmai_varieties": [v for v in gen_sel if v in vlist]})
+                "genmai_varieties": [v for v in gen_sel if v in vlist],
+                "hidden_varieties": [v for v in hid_sel if v in vlist]})
             new_vl = {}
             for _, r in vloc_ed.iterrows():
                 d = {f: r[f + "の出庫元"] for f in ("玄米", "精米") if r[f + "の出庫元"] in names}

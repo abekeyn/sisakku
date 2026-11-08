@@ -38,6 +38,7 @@ _DEFAULT_CFG = {
     "count_sent_invoices": True,          # 領収書のない請求先は、確定済みの請求書で数える
     "plan_start_ym": "",                  # 卸先の月の使用量（想定）を使い始めた月 'YYYY-MM'。空なら今期の初め
     "client_monthly_kg": {},              # 卸先ごとの月の使用量（kg・白米換算）{請求先ID: kg}
+    "hidden_varieties": [],               # 在庫タブに出さない（別管理の）品種。出庫・入庫・棚卸とも在庫の計算から外す
     "genmai_varieties": [],               # 玄米で持ち、精米は売るたびに玄米から作る品種（精米の出庫を玄米から歩留まりで引く）
     "milling_yield": 0.9,                 # 玄米→白米（精米）の歩留まり（玄米1kgで白米0.9kg）
     "harvest_month": 9,                   # 次の新米が入る月。ここまでの月数で「月の使える量」を割る
@@ -103,6 +104,15 @@ def _clean_name(s: str) -> str:
 def _order_date(o: dict) -> date | None:
     return ledger.parse_date(o.get("ship_date")) or ledger.parse_date(o.get("order_date")) \
         or ledger.parse_date(o.get("created_at"))
+
+
+def visible_variety(v: str | None, cfg: dict) -> bool:
+    """在庫タブに出す品種か（別管理にした品種は False）。"""
+    return (v or cfg["default_variety"]) not in (cfg.get("hidden_varieties") or [])
+
+
+def visible_entries(entries, cfg: dict) -> list[dict]:
+    return [e for e in entries if visible_variety(e.get("variety"), cfg)]
 
 
 def draw_from(form: str, kg: float, variety: str, cfg: dict) -> tuple[str, float, str]:
@@ -310,10 +320,11 @@ def build_movements(orders, pendings, clients, cfg, flags, receipts=None):
 def load_out_rows() -> list[dict]:
     """今のデータから全出庫行を作る（画面から月末在庫などを計算するための補助）。"""
     from . import billing
+    cfg = load_config()
     out, _ = build_movements(db.list_orders(), billing.get_pendings(), billing.get_clients(),
-                             load_config(), ledger.load_flags(),
+                             cfg, ledger.load_flags(),
                              db.get_setting(billing.RECEIPTS_KEY) or {})
-    return out
+    return [r for r in out if visible_variety(r["variety"], cfg)]
 
 
 def counted(rows):
@@ -474,6 +485,10 @@ def build(fy: int | None = None, *, start: date | None = None, end: date | None 
         receipts = db.get_setting(billing.RECEIPTS_KEY) or {}
 
     all_out, reserved = build_movements(orders, pendings, clients, cfg, flags, receipts)
+    # 別管理にした品種（例：天のつぶ）は、在庫タブの数字（在庫・出庫・予測）に入れない
+    all_out = [r for r in all_out if visible_variety(r["variety"], cfg)]
+    reserved = [r for r in reserved if visible_variety(r["variety"], cfg)]
+    entries = visible_entries(entries, cfg)
 
     def keep(r):
         return ((variety in (None, "すべて") or r["variety"] == variety)
