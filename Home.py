@@ -530,12 +530,18 @@ def _auto_sync_history():
     st.toast("発送履歴をヤマトから自動取得します（PC起動時・数分で顧客に反映）", icon="📥")
 
 
-@st.fragment(run_every=2)
-def _agent_progress():
-    """裏で動いている処理（アプリ内のタスク・PCへの依頼）の進み具合と結果を、画面上部に出す。
+def _agent_progress_body():
+    """裏で動いている処理（アプリ内のタスク・PCへの依頼）の進み具合と結果を出す（本体）。
 
-    どの画面にいても出て、完了すると画面全体を最新にする（2秒ごとに自動更新）。
+    画面の左下に固定して出す（ページの流れの外）。出たり消えたり伸び縮みしても、ページ全体の
+    高さが変わらないので、スクロール位置がずれない（以前は画面上部に挟まっていて、通知が
+    出入りするたびに下のページ全体が上下に動き、スクロールが止まったように感じられた）。
     """
+    with st.container(key="agent_prog"):
+        _agent_progress_inner()
+
+
+def _agent_progress_inner():
     finished = False
     watches: dict = st.session_state.get("agent_watches") or {}
     last: dict = st.session_state.setdefault("agent_last", {})
@@ -649,6 +655,30 @@ def _agent_progress():
             if not e["ok"]:
                 bg.acknowledge(e["id"])
             st.rerun(scope="fragment")
+
+
+@st.fragment(run_every=2)
+def _agent_progress_live():
+    _agent_progress_body()
+
+
+@st.fragment
+def _agent_progress_idle():
+    _agent_progress_body()
+
+
+def _agent_progress_active() -> bool:
+    """進捗・通知の欄を2秒ごとに更新する必要があるか。何も動いていないときは更新しない
+    （更新は全部の画面に走るので、要らないときに回し続けない）。"""
+    if st.session_state.get("agent_watches"):
+        return True
+    if any(t["status"] in ("queued", "running") or not t["seen"] for t in bg.snapshot()):
+        return True
+    return any(e["ok"] for e in st.session_state.get("bg_log") or [])   # 成功のお知らせは1分で消す
+
+
+def _agent_progress() -> None:
+    (_agent_progress_live if _agent_progress_active() else _agent_progress_idle)()
 
 
 def _month_end_banner() -> None:

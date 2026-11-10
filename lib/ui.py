@@ -344,6 +344,18 @@ def inject_css() -> None:
         .kpi-sub .down {{ color:#E07A7A; font-weight:700; }}
         .prog-title {{ color:#F8F3E6; font-weight:700; font-size:.96rem;
                        margin:2px 0 4px; letter-spacing:.02em; }}
+        /* 進捗・通知の欄：画面の左下に固定（ページの流れの外）。出入りしても本文の高さが変わらない。
+           keyを付けたコンテナ自身（stVerticalBlock）に .st-key-agent_prog が付く */
+        .st-key-agent_prog {{
+            position:fixed !important; left:16px; bottom:16px; z-index:1000;
+            width:min(440px, calc(100vw - 32px)) !important; max-height:42vh; overflow-y:auto;
+            background:rgba(27,29,62,.96); border:1px solid rgba(201,162,75,.45);
+            border-radius:12px; padding:10px 12px; box-shadow:0 8px 28px rgba(0,0,0,.45);
+            gap:.5rem;
+        }}
+        .st-key-agent_prog:not(:has([data-testid="stElementContainer"])) {{
+            display:none !important;
+        }}
 
         /* ===== チップ・バッジ ===== */
         .chip {{
