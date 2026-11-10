@@ -557,6 +557,14 @@ def _agent_progress_inner():
             watches.pop(rk, None)      # 指示の送信に失敗（理由は下の結果欄に出る）
             continue
         res = db.get_setting_live(w["res"])
+        if res is None and tid and mine is None:
+            # 指示を送る処理が、アプリの入れ替え（更新の反映）や再起動で途中で消えた。
+            # 記録（PCへの依頼）がまだ無いので、PCには届いていない。気づけるように知らせる。
+            watches.pop(rk, None)
+            last[rk] = {"title": w["title"], "res": {
+                "ok": False, "summary": "指示がPCに届きませんでした（アプリの更新・再起動で途中で消えました）。"
+                                        "お手数ですが、もう一度押してください。"}}
+            continue
         if res and not res.get("pending"):
             last[rk] = {"title": w["title"], "res": res}
             watches.pop(rk, None)
