@@ -149,14 +149,17 @@ def _pdf_preview(b64: str, height: int = 480) -> None:
     pages = _pdf_pages_png_b64(b64)
     # 画像はページに直接埋め込む（st.image だと、Streamlitのメディア配信が途切れたときに
     # 「壊れた画像」になることがあった）。
+    # 縦横比を先に指定する（aspect-ratio＋width/height属性）。指定が無いと、画像を読み込むまで
+    # 高さ0で、あとから伸びる。そのとき画面の外枠の高さが追いつかず、スクロールバーは下まで
+    # 行っているのに、プレビューの途中までしか見えない（下に進めない）状態になった。
     st.html("".join(
-        f'<img src="data:image/png;base64,{p}" alt="PDFプレビュー {i}ページ目" '
-        'style="width:100%;height:auto;display:block;margin:6px 0;border-radius:6px"/>'
-        for i, p in enumerate(pages, 1)))
+        f'<img src="data:image/png;base64,{p}" width="{w}" height="{h}" alt="PDFプレビュー {i}ページ目" '
+        f'style="width:100%;height:auto;aspect-ratio:{w}/{h};display:block;margin:6px 0;border-radius:6px"/>'
+        for i, (p, w, h) in enumerate(pages, 1)))
 
 
 @st.cache_data(show_spinner=False, max_entries=48)
-def _pdf_pages_png_b64(b64: str) -> list[str]:
+def _pdf_pages_png_b64(b64: str) -> list[tuple[str, int, int]]:
     """PDF(base64)の各ページをPNG(base64)にする。同じPDFは使い回す
     （画面を操作するたびに作り直すと、再描画が遅くなるため）。"""
     import base64 as _b64
@@ -170,7 +173,7 @@ def _pdf_pages_png_b64(b64: str) -> list[str]:
         img = pdf[i].render(scale=1.8).to_pil().convert("RGB")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        out.append(_b64.b64encode(buf.getvalue()).decode("ascii"))
+        out.append((_b64.b64encode(buf.getvalue()).decode("ascii"), img.width, img.height))
     return out
 
 
