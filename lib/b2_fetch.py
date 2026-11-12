@@ -894,10 +894,11 @@ def _download_issued(days: int = 7, headful: bool = False, progress=None) -> byt
 
 
 def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = False,
-                      progress=None) -> dict:
+                      progress=None, order_ids=None) -> dict:
     """B2クラウドから発行済データを取得し、出荷確定まで実行する。
 
     dry_run=True なら照合結果の確認だけ行い、出荷確定・BASE反映はしない。
+    order_ids を渡すと、その注文だけを出荷確定する（None なら未出荷すべて）。
     returns {"rows", "shipped", "unmatched", "messages"}
     """
     raw = _download_issued(days=days, headful=headful, progress=progress)
@@ -907,7 +908,7 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
     if dry_run:
         from . import db, yamato
         rows = yamato.parse_issued_for_tracking(raw)
-        unshipped = [o for o in db.list_orders() if o["status"] in ("pending", "milled")]
+        unshipped = shipping.unshipped_orders(order_ids)
         matches, unmatched = shipping.match_tracking(rows, unshipped)
         return {
             "rows": len(rows), "shipped": 0, "unmatched": len(unmatched),
@@ -915,7 +916,7 @@ def fetch_and_process(days: int = 7, headful: bool = False, dry_run: bool = Fals
                          for r, o in matches],
         }
     _emit(progress, 85, "伝票番号を照合して出荷確定中")
-    return shipping.process_issued_csv(raw)
+    return shipping.process_issued_csv(raw, order_ids=order_ids)
 
 
 def fetch_history(days: int = 370, headful: bool = False, progress=None) -> dict:

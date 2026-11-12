@@ -1015,10 +1015,18 @@ def view_home():
         ui.step(4, "出荷を確定する",
                 "B2クラウドで印刷できたら押すだけ。伝票番号を取り込んで出荷完了にし、BASEにも自動反映します")
 
-        if st.button("B2から伝票番号を取得して出荷完了", type="primary", use_container_width=True,
-                     help="PCの常駐プログラムがB2クラウドに自動ログインして発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します（PCが起動している必要があります）"):
+        # 出荷確定するのは、STEP 3 でチェックが入っている注文だけ（外した人・精米前の人は確定しない）
+        _sel_set = set(sel_ids)
+        _n_wait = sum(1 for o in unshipped if o["id"] in _sel_set and o["status"] == "pending")
+        if _n_wait:
+            st.warning(f"精米待ちのままの注文が{_n_wait}件、選択に入っています。"
+                       "精米がまだの人は、STEP 3 のチェックを外してください（外した人は出荷確定しません）。")
+        if st.button(f"B2から伝票番号を取得して出荷完了（選んだ{len(sel_ids)}件だけ）", type="primary",
+                     use_container_width=True, disabled=not sel_ids,
+                     help="STEP 3 でチェックを入れた注文だけを対象に、PCの常駐プログラムがB2クラウドから発行済データを取得し、照合→伝票番号記録→出荷完了→BASE反映まで自動処理します。チェックを外した人は出荷確定されません（PCが起動している必要があります）"):
             _start_agent("b2_fetch_request", "b2_fetch_progress", "b2_fetch_result",
-                         "伝票番号の取得・出荷確定")
+                         "伝票番号の取得・出荷確定",
+                         payload_key="b2_fetch_payload", payload={"order_ids": list(sel_ids)})
 
         b2res = db.get_setting("b2_fetch_result")
         if b2res and not b2res.get("pending"):

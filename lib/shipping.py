@@ -104,13 +104,24 @@ def confirm_shipments(matches) -> dict:
     return {"shipped": len(matches), "messages": msgs, "komeful": komeful_flag}
 
 
-def process_issued_csv(raw: bytes) -> dict:
+def unshipped_orders(order_ids=None) -> list[dict]:
+    """出荷確定の対象になる未出荷の注文。order_ids を渡すと、その注文だけに絞る
+    （選んでいない人を、精米前でも一緒に出荷確定してしまわないため）。None は絞らない。"""
+    out = [o for o in db.list_orders() if o["status"] in ("pending", "milled")]
+    if order_ids is not None:
+        want = {int(i) for i in order_ids}
+        out = [o for o in out if o["id"] in want]
+    return out
+
+
+def process_issued_csv(raw: bytes, order_ids=None) -> dict:
     """発行済データCSV（bytes）を取り込んで出荷確定まで一括実行する（エージェント用）。
 
+    order_ids を渡すと、その注文だけを出荷確定する（それ以外の発行済み行は未照合のまま残す）。
     returns {"rows": n, "shipped": n, "unmatched": n, "messages": [...]}
     """
     rows = yamato.parse_issued_for_tracking(raw)
-    unshipped = [o for o in db.list_orders() if o["status"] in ("pending", "milled")]
+    unshipped = unshipped_orders(order_ids)
     matches, unmatched = match_tracking(rows, unshipped)
     result = confirm_shipments(matches) if matches else {"shipped": 0, "messages": [], "komeful": False}
     return {

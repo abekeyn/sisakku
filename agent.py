@@ -124,10 +124,15 @@ def _run_b2_fetch() -> None:
     prog = _progress("b2_fetch_progress")
     prog(5, "PCで処理を開始しました")
     try:
-        r = b2_fetch.fetch_and_process(progress=prog)
+        # 画面で選んだ注文だけを出荷確定する（選んでいない人・精米前の人は確定しない）
+        payload = db.get_setting_live("b2_fetch_payload") or {}
+        order_ids = payload.get("order_ids")
+        db.set_setting("b2_fetch_payload", {})   # 次回に古い選択が残らないよう消す
+        r = b2_fetch.fetch_and_process(progress=prog, order_ids=order_ids)
         result = {
             "ok": True, "at": started,
-            "summary": f'読込{r["rows"]}行／出荷確定{r["shipped"]}件／未照合{r["unmatched"]}行',
+            "summary": f'読込{r["rows"]}行／出荷確定{r["shipped"]}件／未照合{r["unmatched"]}行'
+                       + ("（選んだ注文だけを確定）" if order_ids is not None else ""),
             "messages": r["messages"],
         }
         # 集荷依頼の個数の既定値に使う（今回出荷確定した件数）
