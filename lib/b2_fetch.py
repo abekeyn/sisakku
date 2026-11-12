@@ -114,6 +114,38 @@ def _close_edit_dialog(page) -> None:
         page.wait_for_timeout(600)
 
 
+def _continue_air_notice(page) -> None:
+    """沖縄・離島など飛行機輸送の区間を含むと、「航空危険物が含まれていないか確認してください。
+    送り状発行処理を継続されますか？」のダイアログが出て先に進めなくなる（2026-11-12）。
+    米はリチウム電池などの航空危険物ではないので、「伝票発行」（継続）を押して進める。
+    ダイアログはページ本体ではなくフレームの中に出ることがあるので、全フレームを探す。"""
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        if "印刷内容の変更" in _body(page):      # 確認画面に進めた（ダイアログは出ていない）
+            return
+        for fr in page.frames:
+            try:
+                txt = fr.evaluate("() => document.body ? document.body.innerText : ''") or ""
+            except Exception:  # noqa: BLE001
+                continue
+            if "航空危険物" not in txt:
+                continue
+            for loc in (fr.get_by_role("button", name="伝票発行"),
+                        fr.get_by_role("link", name="伝票発行"),
+                        fr.get_by_text("伝票発行", exact=True)):
+                try:
+                    if loc.count() > 0 and loc.last.is_visible():
+                        try:
+                            loc.last.click(timeout=3000)
+                        except Exception:  # noqa: BLE001
+                            loc.last.click(force=True)
+                        page.wait_for_timeout(800)
+                        return
+                except Exception:  # noqa: BLE001
+                    continue
+        page.wait_for_timeout(300)
+
+
 def _read_b2_fix_reason(page) -> str:
     """修正理由を読み、開いた編集ダイアログは必ず閉じる。"""
     try:
@@ -564,6 +596,7 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 conf.click(timeout=8000)
             except Exception:  # noqa: BLE001
                 conf.click(force=True)
+            _continue_air_notice(b2)
             _wait_for(b2, lambda: "印刷内容の変更" in _body(b2), 6000)
             b2.wait_for_timeout(500)
             _shot(b2, "confirm_screen")
