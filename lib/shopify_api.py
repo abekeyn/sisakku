@@ -171,11 +171,63 @@ def _prefecture(addr: dict) -> str:
 
 
 def _norm_phone(raw: str) -> str:
-    """+818094764670 → 08094764670、ハイフン・空白を除去。"""
+    """+818094764670 → 08094764670、ハイフン・空白を除去。
+
+    国番号の「+」だけ付いて先頭の0が無い（+8094764670）ものや、0が抜けた10桁の携帯番号も
+    国内の形（0から始まる）に直す。0が無いと送り状(B2)の取込みで「修正が必要」になる。"""
     d = re.sub(r"[^0-9+]", "", raw or "")
     if d.startswith("+81"):
         d = "0" + d[3:]
-    return d.lstrip("+")
+    d = d.lstrip("+")
+    if d.startswith("81") and len(d) in (11, 12):
+        d = "0" + d[2:]
+    elif len(d) == 10 and d[0] in "789":
+        d = "0" + d
+    return d
+
+
+def _clean_address(addr: dict, zipc: str) -> tuple[str, str]:
+    """送り状用の（住所, 建物名）を作る。
+
+    - 建物名が住所欄にも入っていて建物名欄と二重になる（三鷹の例）ものを取り除く。
+    - 町名が抜けている（「さいたま市」＋「２丁目９９-１」）ときは、郵便番号から町名を補う。
+      町名が無いと送り状(B2)の取込みで「修正が必要」になる。"""
+    import unicodedata
+    def nk(s: str) -> str:
+        return unicodedata.normalize("NFKC", s or "").lower().replace(" ", "")
+    a1 = (addr.get("address1") or "").strip()
+    a2 = (addr.get("address2") or "").strip()
+    toks = [t for t in re.split(r"[ 　]+", a1) if t]
+    seen, keep = set(), []
+    for t in toks:
+        k = nk(t)
+        if k in seen or (a2 and k == nk(a2)):
+            continue
+        seen.add(k)
+        keep.append(t)
+    a1 = " ".join(keep) if len(keep) > 1 else (keep[0] if keep else "")
+    head = f"{_prefecture(addr)}{addr.get('city') or ''}"
+    if zipc:
+        try:
+            from . import postal
+            parts = postal.lookup_parts(zipc)
+        except Exception:  # noqa: BLE001
+            parts = None
+        if parts:
+            city_part = parts[0]
+            town = re.sub(r"[（(].*$", "", parts[1])
+            if "以下に掲載がない場合" in town or "の次に" in town:
+                town = ""
+            digit_first = bool(re.match(r"[0-9]", unicodedata.normalize("NFKC", a1)))
+            if city_part.startswith(head) and city_part != head:
+                # 区が抜けている（「名古屋市」＋「川名山町3-2」）→ 郵便番号の市区郡で補う
+                if digit_first:
+                    head = city_part + town
+                elif not town or a1.startswith(town):
+                    head = city_part
+            elif head == city_part and town and digit_first:
+                head = city_part + town       # 町名が抜けている（「川口市」＋「２丁目15-1」）
+    return f"{head}{a1}", a2
 
 
 def _product_name(it: dict) -> str:
@@ -254,6 +306,13 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
         return {"added": 0, "skipped": 0, "error": f"Shopify接続エラー：{e}"}
 
     orders = data.get("orders", [])
+    result = base_api._save_orders(_normalize_orders(orders), channel="shopify")
+    result["read"] = len(orders)
+    return result
+
+
+def _normalize_orders(orders: list[dict]) -> list[dict]:
+    """Shopifyの注文を、商品(line_item)単位の取込み用の形に直す。"""
     norm = []
     for o in orders:
         oid = o.get("id")
@@ -273,8 +332,7 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
         tel = _norm_phone(addr.get("phone") or billing.get("phone") or cust.get("phone")
                           or (cust.get("default_address") or {}).get("phone") or o.get("phone") or "")
         zipc = (addr.get("zip") or "").replace("-", "").strip()
-        address = f"{_prefecture(addr)}{addr.get('city') or ''}{addr.get('address1') or ''}"
-        address2 = addr.get("address2") or ""
+        address, address2 = _clean_address(addr, zipc)
         order_date = (o.get("created_at") or "")[:10].replace("-", "/") \
             or date.today().strftime("%Y/%m/%d")
         note = o.get("note") or ""
@@ -297,9 +355,7 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
                 "dispatch_ref": json.dumps({"order_id": oid, "line_item_id": iid}),
             })
 
-    result = base_api._save_orders(norm, channel="shopify")
-    result["read"] = len(orders)
-    return result
+    return norm
 
 
 # ---------------------------------------------------------------------------

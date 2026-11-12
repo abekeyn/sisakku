@@ -95,7 +95,34 @@ def _find_error_edit_index(page) -> int:
     return idx if isinstance(idx, int) and idx >= 0 else 0
 
 
+def _close_edit_dialog(page) -> None:
+    """取込み結果の「編集」ダイアログが開いたままだと、画面全体を覆って「印刷内容の確認へ」が
+    押せなくなる（2026-11-12：19件を発行したことになったのに実際は何も発行されなかった）。
+    理由を読み終えたら必ず閉じる。"""
+    for _ in range(3):
+        btn = _first_visible(page, ['a:has-text("閉じる")', 'button:has-text("閉じる")',
+                                    'text="閉じる"'], 1200)
+        if btn is None:
+            return
+        try:
+            btn.click(timeout=3000)
+        except Exception:  # noqa: BLE001
+            try:
+                btn.click(force=True)
+            except Exception:  # noqa: BLE001
+                return
+        page.wait_for_timeout(600)
+
+
 def _read_b2_fix_reason(page) -> str:
+    """修正理由を読み、開いた編集ダイアログは必ず閉じる。"""
+    try:
+        return _read_b2_fix_reason_raw(page)
+    finally:
+        _close_edit_dialog(page)
+
+
+def _read_b2_fix_reason_raw(page) -> str:
     """『編集』を押して編集画面に入り、エラーの具体的な理由を読む。
 
     優先順位：①「○○が入力されていません」等のフィールド個別メッセージ（全文検索）
@@ -537,8 +564,13 @@ def issue_and_print(csv_bytes: bytes, pattern: str | None = None,
                 conf.click(timeout=8000)
             except Exception:  # noqa: BLE001
                 conf.click(force=True)
-            _wait_change(b2, _before, 5000, settle_ms=800)
+            _wait_for(b2, lambda: "印刷内容の変更" in _body(b2), 6000)
+            b2.wait_for_timeout(500)
             _shot(b2, "confirm_screen")
+            if "印刷内容の変更" not in _body(b2):
+                # 確認画面（手順③）に進めていない。このまま進めると「発行した」と誤って報告してしまう。
+                raise B2Error("印刷内容の確認の画面に進めませんでした（画面が覆われている等）。"
+                              "B2クラウドは発行していません: " + _shot(b2, "stuck_before_confirm"))
 
             if explore:
                 return {"issued": False, "pdf": None, "rows": rows,
