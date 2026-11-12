@@ -879,14 +879,33 @@ def view_home():
             ship_orders = [o for o in unshipped if not o.get("handover")]
             hand_orders = [o for o in unshipped if o.get("handover")]
 
+            # チェックの初期値は「精米済みだけ入れる」。精米待ちは外した状態から始まる
+            # （状態が変わったらキーも変わり、初期値に戻る）。
+            def _sel_key(o):
+                return f'sel{o["id"]}_{o["status"]}'
+
+            def _set_checks(mode: str, orders=ship_orders):
+                for o in orders:
+                    st.session_state[_sel_key(o)] = (
+                        True if mode == "all" else
+                        False if mode == "none" else o["status"] == "milled")
+
             if ship_orders:
-                st.caption("出荷する注文（チェックを外すと今回の送り状から除外されます）")
+                st.caption("出荷する注文（チェックを入れた注文だけが、送り状の発行と出荷確定の対象になります。"
+                           "精米待ちは最初は外れています）")
+                _k1, _k2, _k3 = st.columns(3)
+                _k1.button("☑ 一括チェック", key="sel_all", use_container_width=True,
+                           on_click=_set_checks, args=("all",))
+                _k2.button("☐ 一括チェック解除", key="sel_none", use_container_width=True,
+                           on_click=_set_checks, args=("none",))
+                _k3.button("精米済みだけチェック", key="sel_milled", use_container_width=True,
+                           on_click=_set_checks, args=("milled",))
             else:
                 st.caption("送り状が必要な注文はありません（手渡しのみ）。")
             for o in ship_orders:
                 c1, c2, c3 = st.columns([0.5, 4.7, 1.1])
-                checked = c1.checkbox(" ", value=True, key=f'sel{o["id"]}',
-                                      label_visibility="collapsed")
+                st.session_state.setdefault(_sel_key(o), o["status"] == "milled")
+                checked = c1.checkbox(" ", key=_sel_key(o), label_visibility="collapsed")
                 if checked:
                     sel_ids.append(o["id"])
                 c2.markdown(ui.order_card(o), unsafe_allow_html=True)
