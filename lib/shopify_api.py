@@ -187,18 +187,45 @@ def _product_name(it: dict) -> str:
     「精米5kg」「玄米5kg」等を作る。バリエーションが無い琥珀米【七日御膳】は専用名にする。
     """
     title = it.get("title") or "商品"
-    name = base_api._product_from_choice(title, [it.get("variant_title") or ""])
+    vt = it.get("variant_title") or ""
+    variety = _other_variety(title)
+    if variety:
+        # コシヒカリ以外の品種（天のつぶ等）は、品名に品種を入れる。在庫は品名から品種を判断するので、
+        # 入れないと「精米10kg」としてコシヒカリ在庫から引かれてしまう。
+        # 重さはShopifyの出荷重量から（精米は玄米を精米した後の量。10kg→約9kg）。
+        form = "玄米" if ("玄米" in vt and "精米" not in vt and "白米" not in vt) else "精米"
+        kg = round(float(it.get("grams") or 0) / 1000, 3)
+        m = re.search(r"約\s*(\d+(?:\.\d+)?)\s*kg", vt)   # 旧「精米（白米）約9kg」は重量設定が10kgのまま
+        if m and form == "精米":
+            kg = float(m.group(1))
+        if kg:
+            return f"{variety} {form}{kg:g}kg"
+    name = base_api._product_from_choice(title, [vt])
     if name == title and "七日御膳" in title:
         return "琥珀米 七日御膳"
     return name
+
+
+def _other_variety(title: str) -> str:
+    """商品名に入っている、既定（コシヒカリ）以外の品種。無ければ空。"""
+    try:
+        from . import stock
+        cfg = stock.load_config()
+        for v in cfg["varieties"]:
+            if v and v != cfg["default_variety"] and v in title:
+                return v
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def _ensure_product(name: str, grams) -> None:
     """未登録の琥珀米系の商品は、精米が必要な商品として登録しておく（琥珀米は精米して出荷する）。
 
     既にある商品は触らない（マスタで直した内容を上書きしないため）。
+    精米・玄米を含む名前は、取込時の品名解析（精米/玄米・kg）に任せる。
     """
-    if name.startswith(("精米", "玄米")):
+    if "精米" in name or "玄米" in name:
         return
     if any(logic.normalize_text(p["name"]) == logic.normalize_text(name)
            for p in db.list_products(active_only=False)):
