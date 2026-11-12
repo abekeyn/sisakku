@@ -267,8 +267,20 @@ def _get_setting_raw(key: str):
     return None if row is None else row[0]
 
 
+# 請求書・領収書・見積・給与明細のPDF入りの大きな設定（合計4MB前後）。読むたびに転送量(egress)を
+# 食うため、通常より長くキャッシュする。書いた値は同じプロセスでキャッシュに反映される。
+_BIG_SETTING_KEYS = frozenset({"billing_pending", "billing_receipts", "quotes", "payroll_slips"})
+
+
+@_cacheable(ttl=600, tag=lambda key: "setting:" + key)
+def _get_setting_raw_big(key: str):
+    with get_engine().connect() as c:
+        row = c.execute(select(settings.c.value).where(settings.c.key == key)).first()
+    return None if row is None else row[0]
+
+
 def get_setting(key: str, default=None):
-    raw = _get_setting_raw(key)
+    raw = _get_setting_raw_big(key) if key in _BIG_SETTING_KEYS else _get_setting_raw(key)
     if raw is None:
         return default
     try:
@@ -287,6 +299,19 @@ def get_setting_live(key: str, default=None):
         return json.loads(row[0])
     except (json.JSONDecodeError, TypeError):
         return row[0]
+
+
+def get_setting_digest(key: str):
+    """設定の中身の指紋（値は転送しない）。大きな設定が変わったかだけを軽く調べる用。
+    無ければ None。PostgreSQLはサーバー側でmd5を計算するので、通信は数十バイトで済む。"""
+    eng = get_engine()
+    with eng.connect() as c:
+        if eng.dialect.name == "postgresql":
+            row = c.execute(text("SELECT md5(value) FROM settings WHERE key = :k"),
+                            {"k": key}).first()
+            return None if row is None else row[0]
+        row = c.execute(select(settings.c.value).where(settings.c.key == key)).first()
+    return None if row is None else str(hash(row[0]))
 
 
 def delete_setting(key: str) -> None:
@@ -312,7 +337,10 @@ def set_setting(key: str, value) -> None:
             c.execute(update(settings).where(settings.c.key == key).values(value=payload))
         else:
             c.execute(insert(settings).values(key=key, value=payload))
-    _prime_cache("_get_setting_raw", (key,), "setting:" + key, payload, 120)
+    if key in _BIG_SETTING_KEYS:
+        _prime_cache("_get_setting_raw_big", (key,), "setting:" + key, payload, 600)
+    else:
+        _prime_cache("_get_setting_raw", (key,), "setting:" + key, payload, 120)
 
 
 # ---------------------------------------------------------------------------

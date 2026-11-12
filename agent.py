@@ -357,24 +357,56 @@ def _check_b2_pickup() -> bool:
     return False
 
 
+# 請求書・領収書・給与明細は、PDF入りの大きな設定（合計約5MB）に入っている。5分ごとに丸ごと読むと
+# Supabaseの転送量(egress)の無料枠(月5.5GB)を使い切るため、中身の指紋（数十バイト）が前回の同期後と
+# 変わったときだけ読みに行く。失敗したときは指紋を覚えず、30分後に再試行する。
+_SYNC_KEYS = ("billing_pending", "billing_receipts", "payroll_slips", "billing_clients", "payroll_folder")
+_sync_seen: dict = {}   # 同期の名前 -> 前回の同期が終わったときの指紋
+_SYNC_RETRY_SEC = 1800
+
+
+def _sync_digests() -> dict:
+    return {k: db.get_setting_digest(k) for k in _SYNC_KEYS}
+
+
+def _sync_needed(name: str) -> bool:
+    """前回の同期後から、同期の対象データが変わっていれば True（初回は True）。"""
+    try:
+        return _sync_digests() != _sync_seen.get(name)
+    except Exception:  # noqa: BLE001  指紋が取れなければ従来どおり同期する
+        return True
+
+
+def _sync_done(name: str) -> None:
+    """同期が終わった時点の指紋を覚える（同期でDBを書き換えた分も含める）。"""
+    try:
+        _sync_seen[name] = _sync_digests()
+    except Exception:  # noqa: BLE001
+        _sync_seen.pop(name, None)
+
+
 _granada_next_check = 0.0  # 次にグラナダ同期を確認するUNIX時刻（負荷軽減のため間引く）
 
 
 def _check_granada_sync() -> None:
     """クラウドで送信済みのグラナダ請求書を、ローカルExcel台帳へ追記。
-    DB側の synced_to_xlsx で冪等。5分ごとに確認（毎月の送信後に1回だけ追記される）。"""
+    DB側の synced_to_xlsx で冪等。5分ごとに指紋を確認し、変わったときだけ同期する。"""
     global _granada_next_check
     import time as _t
     if _t.time() < _granada_next_check:
         return
     _granada_next_check = _t.time() + 300
+    if not _sync_needed("xlsx"):
+        return
     try:
         from lib import billing
         synced = billing.sync_local_xlsx()
         for s in synced:
             print("請求書を台帳へ同期:", s.get("client"), s.get("sheet"), flush=True)
+        _sync_done("xlsx")
     except Exception as e:  # noqa: BLE001
-        print("請求台帳同期をスキップ（次回再試行）:", e, flush=True)
+        _granada_next_check = _t.time() + _SYNC_RETRY_SEC
+        print("請求台帳同期をスキップ（30分後に再試行）:", e, flush=True)
 
 
 _receipt_next_check = 0.0  # 次に領収書同期を確認するUNIX時刻（負荷軽減のため間引く）
@@ -384,32 +416,42 @@ def _check_receipt_sync() -> None:
     """クラウドで発行された請求書・領収書・給与明細PDFをローカルフォルダへ書き出す。
 
     請求書・領収書は各請求先の発行書類/○○様/、給与明細は発行書類/給与明細/。
-    DB側の synced_to_folder で冪等。5分ごとに確認。"""
+    DB側の synced_to_folder で冪等。5分ごとに指紋を確認し、変わったときだけ同期する。"""
     global _receipt_next_check
     import time as _t
     if _t.time() < _receipt_next_check:
         return
     _receipt_next_check = _t.time() + 300
+    if not _sync_needed("folder"):
+        return
+    failed = False
     try:
         from lib import billing
         synced = billing.sync_invoices()
         for s in synced:
             print("請求書をフォルダへ保存:", s.get("client"), s.get("path"), flush=True)
     except Exception as e:  # noqa: BLE001
-        print("請求書フォルダ同期をスキップ（次回再試行）:", e, flush=True)
+        failed = True
+        print("請求書フォルダ同期をスキップ（30分後に再試行）:", e, flush=True)
     try:
         from lib import billing
         synced = billing.sync_receipts()
         for s in synced:
             print("領収書をフォルダへ保存:", s.get("client"), s.get("path"), flush=True)
     except Exception as e:  # noqa: BLE001
-        print("領収書フォルダ同期をスキップ（次回再試行）:", e, flush=True)
+        failed = True
+        print("領収書フォルダ同期をスキップ（30分後に再試行）:", e, flush=True)
     try:
         from lib import payslip
         for s in payslip.sync_payslips():
             print("給与明細をフォルダへ保存:", s.get("employee"), s.get("path"), flush=True)
     except Exception as e:  # noqa: BLE001
-        print("給与明細フォルダ同期をスキップ（次回再試行）:", e, flush=True)
+        failed = True
+        print("給与明細フォルダ同期をスキップ（30分後に再試行）:", e, flush=True)
+    if failed:
+        _receipt_next_check = _t.time() + _SYNC_RETRY_SEC
+    else:
+        _sync_done("folder")
 
 
 def main() -> None:
