@@ -2268,13 +2268,24 @@ def _billing_issue() -> None:
                                 key="man_cid")
             mcli = billing.get_client(mcid) or {}
             mdate = m2.date_input("発行日", value=today(), key="man_date")
-            man_mode = st.radio("品目", ["1品目（kg単位で計算）", "複数の品目（精米・玄米・送料など）"],
-                                horizontal=True, key="man_mode")
+            # 前回の請求書があれば、品目・単価・数量をそのまま引き継ぐ（数量などだけ直せばよい）
+            prev = billing.last_invoice_of(mcid)
+            prev_multi = bool(prev and prev.get("items"))
+            if prev:
+                pd_ = date.fromisoformat(prev["issue_date"])
+                st.info(f"前回（{pd_.year}/{pd_.month}/{pd_.day}発行・¥{int(prev['amount']):,}）の内容を引き継いでいます。"
+                        "数量などを直して作成してください。")
+            _modes = ["1品目（kg単位で計算）", "複数の品目（精米・玄米・送料など）"]
+            man_mode = st.radio("品目", _modes, index=1 if prev_multi else 0,
+                                horizontal=True, key=f"man_mode_{mcid}")
             if man_mode.startswith("複数"):
                 ukg0 = float(mcli.get("unit_kg", billing.UNIT_KG))
-                init = [{"name": mcli.get("item_desc", ""), "qty": None, "unit": "個",
-                         "price": int(mcli.get("price_per_5kg", 4000)), "rate": 8, "kg": ukg0},
-                        {"name": "", "qty": None, "unit": "", "price": 0, "rate": 8, "kg": None}]
+                if prev_multi:
+                    init = [dict(i) for i in prev["items"]]
+                else:
+                    init = [{"name": mcli.get("item_desc", ""), "qty": None, "unit": "個",
+                             "price": int(mcli.get("price_per_5kg", 4000)), "rate": 8, "kg": ukg0},
+                            {"name": "", "qty": None, "unit": "", "price": 0, "rate": 8, "kg": None}]
                 man_items = _invoice_items_editor(f"man_{mcid}", init)
                 st.caption("数量を入れた行だけが請求書に載ります。行は下の「＋」で足せます。"
                            "送料などは税率を10%にしてください。")
@@ -2289,19 +2300,26 @@ def _billing_issue() -> None:
                     _run_bg("請求書の作成", _create_m, lock_name="billing")
             else:
                 m3, m4, m5 = st.columns(3)
+                # 前回が1品目なら、単位・数量・単価をそのまま初期値にする
+                p_single = prev if (prev and not prev_multi) else None
+                p_ukg = float(p_single.get("unit_kg") or billing.UNIT_KG) if p_single else \
+                    float(mcli.get("unit_kg", billing.UNIT_KG))
+                p_kg = round(float(p_single.get("total_kg") or 0), 2) if p_single else 0.0
+                p_price = int(p_single.get("unit_price") or 0) if p_single else \
+                    int(mcli.get("price_per_5kg", 4000))
                 man_unit_kg = m3.number_input("単位（kg）", min_value=0.1, step=1.0,
-                                              value=float(mcli.get("unit_kg", billing.UNIT_KG)),
-                                              key="man_unit_kg",
+                                              value=p_ukg,
+                                              key=f"man_unit_kg_{mcid}",
                                               help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
-                mkg = m4.number_input("数量（kg）", min_value=0.0, step=man_unit_kg, value=0.0,
-                                      key="man_kg", help="上の単位あたりの単価で請求額を計算します")
+                mkg = m4.number_input("数量（kg）", min_value=0.0, step=man_unit_kg, value=p_kg,
+                                      key=f"man_kg_{mcid}", help="上の単位あたりの単価で請求額を計算します")
                 mprice = m5.number_input(f"単価（{man_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
-                                         value=int(mcli.get("price_per_5kg", 4000)),
-                                         step=100, key="man_price")
+                                         value=p_price,
+                                         step=100, key=f"man_price_{mcid}")
                 man_calc = round(mkg / man_unit_kg * mprice) if mkg > 0 else 0
                 man_amount = st.number_input(
                     "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
-                    value=man_calc, step=1, key="man_amount",
+                    value=man_calc, step=1, key=f"man_amount_{mcid}_{man_calc}",
                     help="通常は数量×単価の自動計算のままで構いません。")
                 if mkg > 0 and man_amount != man_calc:
                     st.caption(f"自動計算では ¥{man_calc:,} ですが、¥{man_amount:,} で作成します。")

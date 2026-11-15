@@ -439,6 +439,15 @@ def build_delivery_note(p: dict, issue_date: date | None = None,
     return pdf, invoice_pdf.delivery_note_filename(d, p["client_name"])
 
 
+def last_invoice_of(client_id: str) -> dict | None:
+    """その請求先の直近の請求書（発行日が新しいもの）。手入力で作るとき、品目・単価・数量を
+    前回から引き継ぐために使う。破棄されたものは残らないので、保存されている分から選ぶ。"""
+    mine = [p for p in get_pendings().values() if p.get("client_id") == client_id]
+    if not mine:
+        return None
+    return max(mine, key=lambda p: (p.get("issue_date", ""), p.get("prepared_at", "")))
+
+
 @_locked
 def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: float,
                    unit_kg: float | None = None, amount_override: int | None = None,
