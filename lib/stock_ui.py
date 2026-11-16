@@ -232,6 +232,7 @@ def _dashboard(m: dict) -> None:
                 svg = _sankey_svg(m)
                 if svg:
                     st.markdown(svg, unsafe_allow_html=True)
+                    _sankey_others(m)
                 else:
                     st.caption("この期間の出庫がまだありません。")
 
@@ -816,10 +817,10 @@ def _customer_table(m: dict) -> None:
                        file_name=f'取引先別月次出庫_{m["label"].replace("/", "").replace("〜", "-")}.csv', mime="text/csv", key="stk_csv")
 
 
-def _sankey_svg(m: dict) -> str:
+def _sankey_top(m: dict):
+    """流れ図で個別に出す出庫先と、「その他」にまとめる出庫先を決める。
+    returns (by_c, by_l, flow, top)"""
     flow = {k: v for k, v in m["flow"].items() if v > 0}
-    if not flow:
-        return ""
     by_c = defaultdict(float)
     by_l = defaultdict(float)
     for (loc, ck), v in flow.items():
@@ -829,6 +830,28 @@ def _sankey_svg(m: dict) -> str:
     ordered = [ck for ck, _ in sorted(by_c.items(), key=lambda kv: -kv[1])]
     top = [ck for ck in ordered if ck.startswith("b:")][:8] + [ck for ck in ordered if not ck.startswith("b:")][:3]
     top = sorted(top, key=lambda ck: -by_c[ck])
+    return by_c, by_l, flow, top
+
+
+def _sankey_others(m: dict) -> None:
+    """流れ図の「その他」に入っている出庫先の一覧（誰への出庫か分かるように）。"""
+    by_c, _, flow, top = _sankey_top(m)
+    rest = [ck for ck in by_c if ck not in top]
+    if not rest:
+        return
+    rows = [{"出庫先": m["cust_name"].get(ck, "（名前なし）"),
+             "区分": "卸先（請求書・領収書）" if ck.startswith("b:") else "一般のお客様",
+             "出庫(kg)": round(by_c[ck], 1)} for ck in sorted(rest, key=lambda c: -by_c[c])]
+    with st.expander(f"図の「その他」{len(rest)}名の内訳を見る（計 {sum(r['出庫(kg)'] for r in rows):,.1f}kg）"):
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                     column_config={"出庫(kg)": st.column_config.NumberColumn(format="%.1f")})
+
+
+def _sankey_svg(m: dict) -> str:
+    flow = {k: v for k, v in m["flow"].items() if v > 0}
+    if not flow:
+        return ""
+    by_c, by_l, flow, top = _sankey_top(m)
     right = top + (["__other__"] if len(by_c) > len(top) else [])
     rname = {ck: m["cust_name"].get(ck, "") for ck in top}
     others_all_consumer = all(not ck.startswith("b:") for ck in by_c if ck not in top)
