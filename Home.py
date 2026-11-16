@@ -3110,6 +3110,8 @@ def _quote_issue() -> None:
                "“単価のご提示”になり合計に入りません。条件ごとの単価を並べたいとき"
                "（例：一部お切り替え＝月40kgまでは15,000円／全量お切り替え＝年間1t以上は"
                "14,000円）に使えます。")
+    st.caption("💡 単価は" + ("**税込**で入力してください。" if tax_included else
+               "**税別（税抜）**で入力してください。見積金額も税別で印字し、消費税は別掲します。"))
     init = [{"内容": cli.get("item_desc") or quote.DEFAULT_ITEM["name"], "適用条件": "",
              "数量": 1.0, "単位": "個",
              "単価": int(cli.get("price_per_5kg") or quote.DEFAULT_ITEM["price"]),
@@ -3139,9 +3141,14 @@ def _quote_issue() -> None:
 
     if t["has_total"]:
         m1, m2, m3 = st.columns(3)
-        m1.metric("税抜合計", f"¥{t['excl']:,}")
-        m2.metric("消費税等", f"¥{t['tax']:,}")
-        m3.metric("お見積金額（税込）", f"¥{t['total']:,}")
+        if tax_included:
+            m1.metric("税抜合計", f"¥{t['excl']:,}")
+            m2.metric("消費税等", f"¥{t['tax']:,}")
+            m3.metric("お見積金額（税込）", f"¥{t['total']:,}")
+        else:
+            m1.metric("お見積金額（税別）", f"¥{t['excl']:,}")
+            m2.metric("消費税等", f"¥{t['tax']:,}")
+            m3.metric("参考：税込合計", f"¥{t['total']:,}")
     elif items:
         st.info(f"数量のある行が無いので、合計は出さずに単価のご提示として"
                 f"「{quote.price_range(items, tax_included)}」と印字します。")

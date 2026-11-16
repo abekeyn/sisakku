@@ -182,7 +182,7 @@ def price_range(items: list[dict], tax_included: bool) -> str:
     rows = clean_items(items)
     if not rows:
         return "—"
-    basis = "税込" if tax_included else "税抜"
+    basis = "税込" if tax_included else "税別"
     prices = sorted({line_amounts(r, tax_included)[1 if tax_included else 0] for r in rows})
     units = {r["unit"] for r in rows if r["unit"]}
     per = f"・{units.pop()}あたり" if len(units) == 1 else ""
@@ -197,7 +197,8 @@ def price_summary(items: list[dict], tax_included: bool, headline: str = "") -> 
         return headline.strip()
     t = totals(items, tax_included)
     if t["has_total"]:
-        return f"¥{t['total']:,}（税込）"
+        # 税別の見積は、お客様に出す金額も税別（消費税は別途）にする
+        return f"¥{t['total']:,}（税込）" if tax_included else f"¥{t['excl']:,}（税別）"
     return price_range(items, tax_included)
 
 
@@ -409,8 +410,8 @@ def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
     pc.ensure_font()
     rows = clean_items(items)
     t = totals(rows, tax_included)
-    basis = "税込" if tax_included else "税抜"
-    has_cond = any(r["cond"] for r in rows)
+    basis = "税込" if tax_included else "税別"
+    has_cond =any(r["cond"] for r in rows)
     quoted_only = [r for r in rows if (r.get("qty") or 0) <= 0]
 
     buf = io.BytesIO()
@@ -445,10 +446,12 @@ def build_quote_pdf(to_name: str, items: list[dict], tax_included: bool,
     box_y = ly - 56
     c.rect(60, box_y - 10, w - 120, 46, stroke=1, fill=0)
     if t["has_total"] and not headline.strip():
-        text(80, box_y + 8, "お見積金額（税込）", size=12)
-        text(w - 80, box_y + 8, f"¥ {t['total']:,} －", size=20, align="right")
+        # 税別の見積は、見積金額も税別で出す（消費税は下の合計欄に別掲）
+        text(80, box_y + 8, f"お見積金額（{basis}）", size=12)
+        shown = t["total"] if tax_included else t["excl"]
+        text(w - 80, box_y + 8, f"¥ {shown:,} －", size=20, align="right")
     else:
-        label = "お見積金額（税込）" if t["has_total"] else "お見積単価"
+        label = f"お見積金額（{basis}）" if t["has_total"] else "お見積単価"
         value = price_summary(rows, tax_included, headline)
         text(80, box_y + 8, label, size=12)
         text(w - 80, box_y + 8, value,
