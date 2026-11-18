@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import urllib.parse
 import urllib.request
 from datetime import date, datetime
@@ -61,6 +62,23 @@ def _save_orders(norm_orders: list[dict], channel: str = "base") -> dict:
     return {"added": added, "skipped": skipped}
 
 
+# BASEは精米方法×内容量を1つの選択式オプション（選択肢「白米 15kg」等）で売っているため、
+# 商品名だけでは重さが分からない。選択肢から精米量の集計に乗る品名（精米15kg等）を作る。
+_MILLING_WORDS = (("白米", "精米"), ("精米", "精米"), ("玄米", "玄米"))
+
+
+def _product_from_choice(title: str, choices: list[str]) -> str:
+    for c in choices:
+        n = logic.normalize_text(c)
+        m = re.search(r"(\d+(?:\.\d+)?)kg", n)
+        if not m:
+            continue
+        for word, cat in _MILLING_WORDS:
+            if word in n:
+                return f"{cat}{m.group(1)}kg"
+    return title
+
+
 # ---------------------------------------------------------------------------
 # 1) CSV取込
 # ---------------------------------------------------------------------------
@@ -75,6 +93,8 @@ _CANDIDATES = {
     "address2": ["建物名", "建物", "マンション"],
     "tel": ["電話番号", "TEL", "tel", "phone"],
     "product": ["商品名", "品名", "item", "product"],
+    "option": ["オプション"],
+    "variation": ["バリエーション"],
     "qty": ["数量", "個数", "点数", "quantity", "qty"],
     "company": ["会社名", "法人名", "company"],
     "note": ["備考", "通信欄", "メモ"],
@@ -130,7 +150,8 @@ def import_base_csv(raw: bytes, channel: str = "base") -> dict:
             "address": cell(row, "address"),
             "address2": cell(row, "address2"),
             "tel": cell(row, "tel"),
-            "product": cell(row, "product"),
+            "product": _product_from_choice(cell(row, "product"),
+                                            [cell(row, "option"), cell(row, "variation")]),
             "qty": cell(row, "qty") or 1,
             "company": cell(row, "company"),
             "note": cell(row, "note"),
@@ -231,6 +252,8 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
             if it.get("status") and it["status"] != "ordered":
                 continue  # 商品単位でも未発送のみ
             iid = it.get("order_item_id")
+            choices = [str(op.get("option_value") or "") for op in it.get("options") or []]
+            choices.append(str(it.get("variation") or ""))
             norm.append({
                 "external_id": f"{uk}:{iid}",
                 "order_date": order_date,
@@ -240,7 +263,7 @@ def fetch_orders_via_api(limit: int = 100) -> dict:
                 "address": (recv.get("prefecture") or "") + (recv.get("address") or ""),
                 "address2": recv.get("address2") or "",
                 "tel": recv.get("tel") or "",
-                "product": it.get("title") or "商品",
+                "product": _product_from_choice(it.get("title") or "商品", choices),
                 "qty": int(it.get("amount", 1) or 1),
                 "note": d.get("remark") or "",
                 "delivery_date": ddate,
@@ -310,7 +333,11 @@ def dispatch_order(order_row, comment: str = "") -> tuple[bool, str]:
     if not item_ids:
         return False, "発送対象の商品IDが未取得（BASE取込をやり直してください）"
 
-    tracking = _re.sub(r"[^0-9A-Za-z]", "", str(order_row.get("tracking_no") or ""))
+    # 伝票が複数（30kgを3個など）のときは「,」でつないで入っている。BASEは1つしか登録できないので、
+    # 先頭を伝票番号に、全部の番号は発送メッセージに添える。
+    tracks = [_re.sub(r"[^0-9A-Za-z]", "", t) for t in str(order_row.get("tracking_no") or "").split(",")]
+    tracks = [t for t in tracks if t]
+    tracking = tracks[0] if tracks else ""
 
     # 発送通知メッセージ（設定の定型文の ○○ をお客様名に置換）。未指定なら設定から作る
     if not comment:
@@ -318,6 +345,8 @@ def dispatch_order(order_row, comment: str = "") -> tuple[bool, str]:
         if tmpl:
             name = (order_row.get("customer_name") or "").strip()
             comment = tmpl.replace("○○", name)
+    if len(tracks) > 1:
+        comment = (comment + "\n" if comment else "") + f"※{len(tracks)}個口でお送りします。伝票番号：" + "、".join(tracks)
 
     try:
         token = refresh_access_token(cfg)

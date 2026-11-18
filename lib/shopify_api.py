@@ -377,6 +377,29 @@ def _find_fulfillment_order_line_item(order_id, line_item_id):
     return None, None, None
 
 
+def _append_order_note(order_id, text: str) -> tuple[bool, str]:
+    """Shopify注文の備考欄（note）に1行追記する。書き換えには write_orders 権限が要る。
+    同じ文がすでにあれば何もしない（再実行しても重ならない）。"""
+    try:
+        cur = _get(f"orders/{order_id}.json", {"fields": "id,note"}).get("order", {}).get("note") or ""
+        if text in cur:
+            return True, ""
+        new = (cur + "\n" if cur else "") + text
+        req = urllib.request.Request(
+            _api_url(f"orders/{order_id}.json"),
+            data=json.dumps({"order": {"id": order_id, "note": new}}).encode(), method="PUT",
+            headers={"X-Shopify-Access-Token": _token(), "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+        return True, ""
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, "Shopifyの連携に write_orders 権限がありません"
+        return False, _err_detail(e)
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
 def dispatch_order(order_row) -> tuple[bool, str]:
     """Shopifyの1商品(line_item)をクロネコヤマト＋伝票番号で発送完了にする。
 
@@ -396,7 +419,11 @@ def dispatch_order(order_row) -> tuple[bool, str]:
     if not (order_id and line_item_id):
         return False, "発送対象の商品情報が未取得（Shopify取込をやり直してください）"
 
-    tracking = re.sub(r"[^0-9A-Za-z]", "", str(order_row.get("tracking_no") or ""))
+    # 伝票が複数（30kgを3個など）のときは「,」でつないで入っている。
+    # 出荷完了には先頭の1つを登録し、全部の番号は注文の備考欄に追記する。
+    tracks = [re.sub(r"[^0-9A-Za-z]", "", t) for t in str(order_row.get("tracking_no") or "").split(",")]
+    tracks = [t for t in tracks if t]
+    tracking = tracks[0] if tracks else ""
     try:
         fo_id, fol_id, qty = _find_fulfillment_order_line_item(order_id, line_item_id)
         if not fo_id:
@@ -414,6 +441,11 @@ def dispatch_order(order_row) -> tuple[bool, str]:
                 "url": f"https://member.kms.kuronekoyamato.co.jp/parcel/detail?pinCd={tracking}",
             }
         _post("fulfillments.json", {"fulfillment": fulfillment})
+        if len(tracks) > 1:
+            ok, note_msg = _append_order_note(
+                order_id, f"伝票番号（{len(tracks)}個口）：" + "　".join(tracks))
+            return True, (f"Shopify発送完了（クロネコヤマト・{len(tracks)}個口 {' / '.join(tracks)}）"
+                          + ("・備考欄に全番号を追記" if ok else f"・⚠備考欄への追記はできませんでした（{note_msg}）"))
         if tracking:
             return True, f"Shopify発送完了（クロネコヤマト・伝票番号 {tracking}）"
         return True, "Shopify発送完了"

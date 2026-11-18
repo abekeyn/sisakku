@@ -53,7 +53,8 @@ def dispatch_to_channel(o) -> tuple[bool, str] | None:
 
 def _expected_item(o) -> str:
     n, q = o["yamato_name"], o["qty"] or 1
-    return f"{n}×{q}" if q > 1 else n
+    # 1個ずつ別の伝票にする注文は、品名に「×個数」が付かない
+    return f"{n}×{q}" if q > 1 and yamato.slip_count(o) == 1 else n
 
 
 def match_tracking(rows: list[dict], unshipped: list[dict]):
@@ -62,9 +63,16 @@ def match_tracking(rows: list[dict], unshipped: list[dict]):
     rows: yamato.parse_issued_for_tracking() の結果
     returns (matches[(row, order)], unmatched_rows[])
     照合キー：電話番号（数字のみ）→ 複数候補は品名で絞る → 最後は名前で照合
+
+    30kgを3個のように伝票が複数に分かれる注文は、その枚数ぶんの行がそろったときだけ
+    照合する。伝票番号は「,」でつないだ1つの row["tracking"]（row["trackings"] に一覧）にまとめる。
+    枚数が足りない分は未照合のまま残す（一部だけ発行した状態で出荷確定しないため）。
     """
     remaining = list(unshipped)
-    matches, unmatched = [], []
+    got: dict[int, list[dict]] = {}       # 注文ID → 照合できた行
+    need: dict[int, int] = {}             # 注文ID → 必要な行数
+    order_of: dict[int, dict] = {}
+    unmatched = []
     for r in rows:
         cand = [o for o in remaining if _digits(o["tel"]) == _digits(r["tel"])]
         if len(cand) > 1:
@@ -73,12 +81,27 @@ def match_tracking(rows: list[dict], unshipped: list[dict]):
         if not cand:
             cand = [o for o in remaining
                     if logic.normalize_text(o["customer_name"]) == logic.normalize_text(r["name"])]
-        if cand:
-            o = cand[0]
-            remaining.remove(o)
-            matches.append((r, o))
-        else:
+        if not cand:
             unmatched.append(r)
+            continue
+        o = cand[0]
+        oid = o["id"]
+        order_of[oid] = o
+        # 以前の発行（1枚に「品名×個数」）の行なら、その1行で完結とみなす
+        legacy = (o["qty"] or 1) > 1 and r["item"] == f'{o["yamato_name"]}×{o["qty"]}'
+        need[oid] = 1 if legacy else yamato.slip_count(o)
+        got.setdefault(oid, []).append(r)
+        if len(got[oid]) >= need[oid]:
+            remaining.remove(o)
+    matches = []
+    for oid, lst in got.items():
+        if len(lst) < need[oid]:
+            unmatched.extend(lst)
+        elif len(lst) == 1:
+            matches.append((lst[0], order_of[oid]))
+        else:
+            nums = [x["tracking"] for x in lst]
+            matches.append((dict(lst[0], tracking=",".join(nums), trackings=nums), order_of[oid]))
     return matches, unmatched
 
 

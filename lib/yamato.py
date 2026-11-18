@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import csv
 import io
+import re
+import unicodedata
 
 from .yamato_header import YAMATO_HEADER
 
@@ -86,6 +88,25 @@ def ship_type_of(order) -> str:
     return t if t in SHIP_LABELS else "takkyubin"
 
 
+# 1個で1荷物になる大きさ（kg）。これ以上の商品を複数個頼まれたら、1個ずつ別の伝票にする
+# （30kgの袋を3つなら、30kgの伝票を3枚。1枚の伝票に「×3」とはしない）
+SPLIT_MIN_KG = 30.0
+_KG_RE = re.compile(r"(\d+(?:\.\d+)?)\s*kg", re.I)
+
+
+def slip_count(order) -> int:
+    """この注文で発行する伝票（荷物）の数。30kg以上の商品を2個以上なら個数ぶん、それ以外は1枚。"""
+    try:
+        qty = int(order.get("qty") or 1)
+    except (TypeError, ValueError):
+        qty = 1
+    if qty <= 1:
+        return 1
+    name = unicodedata.normalize("NFKC", str(order.get("yamato_name") or ""))
+    m = _KG_RE.search(name)
+    return qty if (m and float(m.group(1)) >= SPLIT_MIN_KG) else 1
+
+
 def build_row(order, sender: dict) -> list[str]:
     """注文1件(orders結合行) + 送り主情報 から、送り状CSVの1行(97列)を作る。"""
     row = [""] * len(YAMATO_HEADER)
@@ -124,7 +145,8 @@ def build_row(order, sender: dict) -> list[str]:
 
     # 品名（数量が2個以上なら個数を併記）。ヤマトの品名1は全角25文字までなので収める。
     name = order["yamato_name"] or ""
-    suffix = f'×{order["qty"]}' if (order["qty"] or 1) > 1 else ""
+    # 伝票を1個ずつに分ける注文は、品名に「×個数」を付けない（1枚＝1個）
+    suffix = f'×{order["qty"]}' if (order["qty"] or 1) > 1 and slip_count(order) == 1 else ""
     limit = 25 - len(suffix)
     if len(name) > limit:
         name = name[:limit]
@@ -145,5 +167,6 @@ def export_csv(orders: list, sender: dict) -> bytes:
     writer = csv.writer(buf, lineterminator="\r\n")
     writer.writerow(YAMATO_HEADER)
     for o in orders:
-        writer.writerow(build_row(o, sender))
+        for _ in range(slip_count(o)):
+            writer.writerow(build_row(o, sender))
     return buf.getvalue().encode("cp932", errors="replace")

@@ -1154,9 +1154,15 @@ def _recent_shipments(orders_all) -> None:
         opts[(f"{d}　" if d else "") + label] = o
     pick = st.selectbox("発送した注文を選ぶ", list(opts.keys()), key="ship_history_pick")
     o = opts[pick]
-    tno = (o["tracking_no"] or "").strip()
-    msg = (f"クロネコヤマト：{tno}にて手配いたしました！"
-           "到着まで今しばらくお待ちくださいませ✨")
+    tnos = [t.strip() for t in (o["tracking_no"] or "").split(",") if t.strip()]
+    tno = "\n".join(tnos)
+    if len(tnos) > 1:       # 30kgを3個など、複数の荷物に分けた発送
+        msg = (f"クロネコヤマト：{len(tnos)}個口に分けて手配いたしました！\n"
+               + "\n".join(f"・{t}" for t in tnos)
+               + "\n到着まで今しばらくお待ちくださいませ✨")
+    else:
+        msg = (f"クロネコヤマト：{tno}にて手配いたしました！"
+               "到着まで今しばらくお待ちくださいませ✨")
     st.caption("伝票番号（タップでコピー／追跡用）")
     st.code(tno, language=None)
     st.caption("お客様へ送る文面（右上のコピーで全文コピー→そのまま貼り付け）")
