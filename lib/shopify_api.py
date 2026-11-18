@@ -218,7 +218,13 @@ def _clean_address(addr: dict, zipc: str) -> tuple[str, str]:
             town = re.sub(r"[（(].*$", "", parts[1])
             if "以下に掲載がない場合" in town or "の次に" in town:
                 town = ""
-            digit_first = bool(re.match(r"[0-9]", unicodedata.normalize("NFKC", a1)))
+            a1_n = unicodedata.normalize("NFKC", a1)
+            digit_first = bool(re.match(r"[0-9]", a1_n))
+            m_roma = re.match(r"^[A-Za-z][A-Za-z.'\- ]*?\s*([0-9][0-9\-]*)\s*$", a1_n)
+            if m_roma and town and city_part.startswith(head):
+                # 町名がローマ字（「Kodaira Meguritacho 202-51」）→ 郵便番号の町名＋番地に直す。
+                # ローマ字のままだと送り状(B2)の取込みで「修正が必要」になる。
+                return f"{city_part}{town}{m_roma.group(1)}", a2
             if city_part.startswith(head) and city_part != head:
                 # 区が抜けている（「名古屋市」＋「川名山町3-2」）→ 郵便番号の市区郡で補う
                 if digit_first:
