@@ -24,6 +24,9 @@ from pathlib import Path
 NO_WINDOW = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
 
 
+PAPER_BIN = 259   # EP-810A の「下トレイ」（カセット②・A4普通紙）。上トレイ=258、自動=7
+
+
 def _find_sumatra() -> str | None:
     for p in [
         os.path.expandvars(r"%LOCALAPPDATA%\SumatraPDF\SumatraPDF.exe"),
@@ -238,7 +241,9 @@ def _print_pdf_unlocked(pdf_bytes: bytes, printer: str | None = None) -> tuple[b
             short = "EP-810A" if _epson_printer() == safe_name else safe_name
             return False, (f"{short}（{host}）が応答しません。電源・WiFi接続を確認してください"
                            "（印刷は送っていません）。")
-        mono = ["-print-settings", "monochrome"]  # 白黒（インク節約）
+        # 白黒（インク節約）＋ 給紙はカセット②（本体下トレイ・A4普通紙）。
+        # 指定しないと「自動給紙選択」になり、背面から出ることがあった。259＝「下トレイ」のbin番号
+        mono = ["-print-settings", f"monochrome,bin={PAPER_BIN}"]
         for attempt in range(3):
             before = _job_ids(safe_name)
             try:
