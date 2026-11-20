@@ -2257,6 +2257,11 @@ def _monthly_bulk_panel() -> None:
         _run_bg(f"{int(ym[5:])}月分の請求書を{len(picked)}件作成", _make_all, lock_name="billing")
 
 
+def _set_bill_focus(client_id: str) -> None:
+    """請求書の作成を始めた時点で、「この請求先の新しい請求書ができたら、そこへ移る」を予約する。"""
+    st.session_state["bill_focus"] = (client_id, set(billing.get_pendings()), __import__("time").time())
+
+
 def _billing_issue() -> None:
     _show_flash()
     with st.expander("📅 月の請求書をまとめて作成（1ボタン）", expanded=True):
@@ -2302,7 +2307,7 @@ def _billing_issue() -> None:
                         if not r.get("ok"):
                             return False, r.get("msg", "作成できませんでした。")
                         return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"
-                    st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
+                    _set_bill_focus(mcid)
                     _run_bg("請求書の作成", _create_m, lock_name="billing")
             else:
                 m3, m4, m5 = st.columns(3)
@@ -2338,7 +2343,7 @@ def _billing_issue() -> None:
                         if not r.get("ok"):
                             return False, r.get("msg", "作成できませんでした。")
                         return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"
-                    st.session_state["bill_focus"] = (mcid, "未確定", mdate.strftime("%Y-%m"))
+                    _set_bill_focus(mcid)
                     _run_bg("請求書の作成", _create, lock_name="billing")
 
 
@@ -2395,13 +2400,22 @@ def _billing_browser() -> None:
         d["sent"].sort(key=lambda t: (t[1]["issue_date"], t[0]), reverse=True)
     ids = sorted(by_client, key=lambda c: by_client[c]["name"])
 
-    # 作成・確定の直後に、その請求先・表示・月へ移る（ウィジェット生成の前に値を入れる）
-    focus = st.session_state.pop("bill_focus", None)
+    # 作成の直後に、その請求先・表示・月へ移る（ウィジェット生成の前に値を入れる）。
+    # 請求書は裏で作るので、できるまで予約を残す（作成前に使い切ると、まだ請求書のない請求先は
+    # 一覧に無く、先頭の別の請求先へ切り替わってしまっていた）
+    focus = st.session_state.get("bill_focus")
     if focus:
-        st.session_state["bill_client"] = focus[0]
-        st.session_state["bill_view"] = focus[1]
-        if focus[2]:
-            st.session_state[f"bill_ym_{focus[0]}"] = focus[2]
+        fcid, known, t0 = focus
+        newk = [k for k, p in pendings.items() if p["client_id"] == fcid and k not in known]
+        if fcid in ids:
+            st.session_state["bill_client"] = fcid
+        if newk:
+            p0 = pendings[newk[0]]
+            st.session_state["bill_view"] = "未確定"
+            st.session_state[f"bill_ym_{fcid}"] = p0.get("target_ym") or p0["issue_date"][:7]
+            st.session_state.pop("bill_focus", None)
+        elif __import__("time").time() - t0 > 90:   # 作成に失敗した場合などは、あきらめる
+            st.session_state.pop("bill_focus", None)
     if st.session_state.get("bill_client") not in ids:
         st.session_state["bill_client"] = ids[0]
 
