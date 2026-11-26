@@ -1973,7 +1973,8 @@ def _invoice_items_editor(key: str, init: list[dict]) -> list[dict]:
 
     単価は税抜・税込のどちらに入れてもよく、もう片方は自動で入る。税率は8%（お米）／
     10%（送料・資材など）を行ごとに選べる。
-    「1単位のkg」は在庫の出庫量と納品書の合計kgに使う（単位がkgの行は空欄でよい）。
+    「1単位のkg」は在庫の出庫量と納品書の合計kgに使う。単位がkgの行では「単価が何kgあたりか」
+    （30と入れると、金額＝単価×数量÷30）。
     """
     base_key, sig_key, ver_key = f"inv_base_{key}", f"inv_sig_{key}", f"inv_ver_{key}"
     sig = repr(init)
@@ -2005,7 +2006,9 @@ def _invoice_items_editor(key: str, init: list[dict]) -> list[dict]:
                                                    help="ここに入れると税抜が自動で入ります"),
             "税率": st.column_config.SelectboxColumn(options=_QUOTE_RATES, width="small"),
             "1単位のkg": st.column_config.NumberColumn(
-                step=1.0, min_value=0.0, help="例：5kg袋なら5。単位がkgの行は空欄でOK"),
+                step=1.0, min_value=0.0,
+                help="袋などの行：1個の重さ（5kg袋なら5）。単位がkgの行：単価が何kgあたりか"
+                     "（30なら30kgあたりの単価。空欄は1kgあたり）"),
             "_excl": None,
         })
     items = []
@@ -2031,6 +2034,10 @@ def _invoice_items_editor(key: str, init: list[dict]) -> list[dict]:
         k2.metric("税抜合計", f"¥{calc['excl']:,}")
         k3.metric("消費税等", f"¥{calc['tax']:,}")
         k4.metric("ご請求額（税込）", f"¥{calc['total']:,}")
+        for r in calc["rows"]:
+            if r["per"] > 1:     # kg単位で数量を入れ、単価が30kgなどあたりの行は、計算の中身を見せる
+                st.caption(f"{r['name']}：{r['qty']:g}kg ÷ {r['per']:g}kg × ¥{r['unit_excl']:,}"
+                           f"（{r['per']:g}kgあたり・税抜） ＝ 税抜 ¥{r['line_excl']:,}")
         if calc["kg"] > 0:
             st.caption(f"お米の合計 {calc['kg']:g}kg（在庫の出庫量と納品書の合計に使います）。")
     else:
@@ -2427,6 +2434,7 @@ def _billing_issue() -> None:
                             {"name": "", "qty": None, "unit": "", "price": 0, "rate": 8, "kg": None}]
                 man_items = _invoice_items_editor(f"man_{mcid}", init)
                 st.caption("数量を入れた行だけが請求書に載ります。行は下の「＋」で足せます。"
+                           "30kgあたりの単価でkg数を入れるときは、単位を「kg」、1単位のkgを「30」にします。"
                            "送料などは税率を10%にしてください。")
                 if st.button("作成する", type="primary", use_container_width=True,
                              disabled=not invoice_pdf.clean_items(man_items), key="man_create_m"):

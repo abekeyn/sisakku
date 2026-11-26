@@ -26,7 +26,8 @@ def clean_items(items) -> list[dict]:
     """明細行を正規化する。品名が空・数量が0以下の行は捨てる。
 
     kg は「1単位あたりの重さ（kg）」。在庫の出庫量と納品書の合計kgに使う。
-    単位が kg の行は、空欄なら 1 とみなす（数量がそのままkgになる）。
+    単位が kg の行は、数量がそのままkgで、kg は「単価が何kgあたりか」を表す
+    （30なら30kgあたりの単価。空欄は1＝1kgあたり）。
     """
     out = []
     for it in items or []:
@@ -62,9 +63,15 @@ def clean_items(items) -> list[dict]:
     return out
 
 
+def price_per_kg_basis(it: dict) -> float:
+    """単価が何単位ぶんの値段か。単位がkgで「1単位のkg」が30なら30（30kgあたりの単価）。それ以外は1。"""
+    return it["kg"] if it.get("unit") in _KG_UNITS and it.get("kg", 0) > 1 else 1.0
+
+
 def item_calc(items) -> dict:
     """明細の各行と、税率別・全体の金額。
 
+    単位がkgの行で「1単位のkg」が30なら、単価は30kgあたり：金額＝単価×数量(kg)÷30。
     税込で入力した行：税込金額＝round(税込単価×数量)、税抜金額＝round(税抜単価×数量)。
     税抜で入力した行（price_excl）：税抜金額＝round(税抜単価×数量)を税率ごとに合計してから、
     消費税を1回だけ端数処理する（インボイスの決まり：1請求書・税率ごとに1回）。
@@ -73,18 +80,20 @@ def item_calc(items) -> dict:
     rows, by_rate = [], {}
     for it in clean_items(items):
         g = by_rate.setdefault(it["rate"], {"excl": 0, "incl": 0, "from_excl": 0})
+        per = price_per_kg_basis(it)
         if it.get("price_excl"):
             unit_excl = round(it["price_excl"])
-            line_excl = round(it["price_excl"] * it["qty"])
+            line_excl = round(it["price_excl"] * it["qty"] / per)
             line_incl = round(line_excl * (100 + it["rate"]) / 100)
             g["from_excl"] += line_excl
         else:
             unit_excl = round(it["price"] / (1 + it["rate"] / 100))
-            line_excl = round(unit_excl * it["qty"])
-            line_incl = round(it["price"] * it["qty"])
+            line_excl = round(unit_excl * it["qty"] / per)
+            line_incl = round(it["price"] * it["qty"] / per)
             g["incl"] += line_incl
         g["excl"] += line_excl
-        rows.append({**it, "unit_excl": unit_excl, "line_excl": line_excl, "line_incl": line_incl})
+        rows.append({**it, "unit_excl": unit_excl, "line_excl": line_excl, "line_incl": line_incl,
+                     "per": per})
     for rate, g in by_rate.items():
         g["incl"] += round(g.pop("from_excl") * (100 + rate) / 100)
         g["tax"] = g["incl"] - g["excl"]
@@ -92,7 +101,7 @@ def item_calc(items) -> dict:
     total = sum(g["incl"] for g in by_rate.values())
     return {"rows": rows, "by_rate": dict(sorted(by_rate.items())), "excl": excl,
             "tax": total - excl, "total": total,
-            "kg": sum(r["qty"] * r["kg"] for r in rows)}
+            "kg": sum(r["qty"] if r["unit"] in _KG_UNITS else r["qty"] * r["kg"] for r in rows)}
 
 
 def items_summary(items) -> str:
@@ -162,7 +171,8 @@ def _build_items_pdf(invoice_to: str, items, issue_date: date, doc_no,
     plan = []
     for r in rows:
         nl = _wrap(r["name"], pc.FONT_NAME, fs, name_w)
-        plan.append({"r": r, "name": nl, "h": row_h + (len(nl) - 1) * lead})
+        n_lines_row = max(len(nl), 2 if (r["per"] > 1 and not is_dn) else 1)   # 「30kgあたり」の分
+        plan.append({"r": r, "name": nl, "h": row_h + (n_lines_row - 1) * lead})
     # 途中のページは下まで使う（発行者欄・合計欄が無いため）。最後のページだけ、合計欄の分を
     # 空けておく。入りきらなければ最後の行を次のページへ送る。
     mid_floor = 70
@@ -210,6 +220,8 @@ def _build_items_pdf(invoice_to: str, items, issue_date: date, doc_no,
             else:
                 text(214, ty, _qty_text(r), size=fs)
                 text(256, ty, f"¥{r['unit_excl']:,}", size=fs)
+                if r["per"] > 1:
+                    text(256, ty - lead, f"（{r['per']:g}kgあたり）", size=7)
                 text(312, ty, f"{r['rate']}%", size=fs)
                 text(w - m, ty, f"¥{r['line_excl']:,}", size=fs, align="right")
             ty -= pr["h"]
