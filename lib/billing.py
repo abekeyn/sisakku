@@ -338,7 +338,8 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
 def regenerate_pending(pending_key: str, qty: float, unit_price: float,
                        issue_date: date | None = None, unit_kg: float | None = None,
                        amount_override: int | None = None, allow_sent: bool = False,
-                       items: list[dict] | None = None) -> dict:
+                       items: list[dict] | None = None,
+                       unit_price_excl: int | None = None) -> dict:
     """承認待ちの数量・単価（・発行日）を修正し、PDFをその場で作り直す（書類番号は変えない）。
 
     items（複数商品の明細行）を渡すと、その明細で作り直す（数量・単価・金額の引数は使わない）。
@@ -384,6 +385,10 @@ def regenerate_pending(pending_key: str, qty: float, unit_price: float,
             qty=qty, unit_price=unit_price, issue_date=issue_date, doc_no=p["doc_number"],
             amount=amount)
         p.pop("items", None)
+    if unit_price_excl and not items:
+        p["unit_price_excl"] = int(unit_price_excl)
+    else:
+        p.pop("unit_price_excl", None)
     p.update({
         "qty": qty, "total_kg": total_kg, "unit_kg": unit_kg, "unit_price": unit_price,
         "amount": amount, "issue_date": issue_date.isoformat(),
@@ -451,7 +456,8 @@ def last_invoice_of(client_id: str) -> dict | None:
 @_locked
 def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: float,
                    unit_kg: float | None = None, amount_override: int | None = None,
-                   items: list[dict] | None = None) -> dict:
+                   items: list[dict] | None = None,
+                   unit_price_excl: int | None = None) -> dict:
     """自動集計を使わず、発行日・数量・単価を手入力して請求書をその場で新規作成する。
 
     LibreOffice/GitHub Actionsを使わず、アプリ内でreportlabにより即時生成する。
@@ -459,6 +465,8 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
     unit_kg: 1個あたりの重量（kg）。省略時は請求先マスタのunit_kg、それも無ければ
     UNIT_KG(5kg)。大口向けに30kg・60kgなど任意の単位で計算できるようにするため。
     amount_override: 端数調整のため計算結果と異なる金額で確定したい場合に指定する。
+    unit_price_excl: 単価を税抜で入力したときの税抜単価。次回の引き継ぎで税抜のまま出すために記録する
+    （金額の計算には、呼び出し側が渡す unit_price〔税込〕と amount_override を使う）。
     items: 複数商品の明細行（name・qty・unit・price〔税込〕・rate・kg）。渡すと、数量・単価・
     amount_override は使わず、明細の合計を請求額にする（税率は8%・10%を混ぜられる）。
     """
@@ -496,6 +504,7 @@ def prepare_manual(client_id: str, issue_date: date, qty: float, unit_price: flo
         "qty": qty, "total_kg": total_kg, "unit_kg": unit_kg, "unit_price": unit_price,
         "amount": amount, "rows": [], "source": "manual", "warning": "",
         **({"items": items} if items else {}),
+        **({"unit_price_excl": int(unit_price_excl)} if unit_price_excl and not items else {}),
         "pdf_b64": base64.b64encode(pdf).decode("ascii"),
         "pdf_name": invoice_pdf.invoice_filename(issue_date, client["name"]),
         "status": "pending", "prepared_at": datetime.now().isoformat(timespec="seconds"),

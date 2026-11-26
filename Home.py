@@ -1908,42 +1908,122 @@ def _receipt_button(key: str, p: dict) -> None:
                 lock_name="billing")
 
 
+_P_EXCL, _P_INCL = "税抜単価", "税込単価"
+
+
+def _to_incl(excl: float, rate: int) -> int:
+    return round(excl * (100 + rate) / 100)
+
+
+def _to_excl(incl: float, rate: int) -> int:
+    return round(incl * 100 / (100 + rate))
+
+
+def _row_rate(v) -> int:
+    return 8 if v is None or pd.isna(v) else int(str(v).split("%")[0])
+
+
+def _sync_item_row(row: dict, changed: dict) -> None:
+    """明細の1行で、入力された側の単価から、もう片方を計算し直す。"""
+    if _P_EXCL in changed:
+        row["_excl"] = True
+    elif _P_INCL in changed:
+        row["_excl"] = False
+    rate = _row_rate(row.get("税率"))
+    src, dst, fn = ((_P_EXCL, _P_INCL, _to_incl) if row.get("_excl") == True  # noqa: E712
+                    else (_P_INCL, _P_EXCL, _to_excl))
+    v = row.get(src)
+    row[dst] = None if v is None or pd.isna(v) else fn(float(v), rate)
+
+
+def _items_frame(rows: list[dict], columns=None) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=columns)
+    for c in ("数量", _P_EXCL, _P_INCL, "1単位のkg"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
+def _items_price_changed(base_key: str, ekey: str, ver_key: str) -> None:
+    """明細表で単価か税率が変わったら、片方の単価を計算して表を作り直す（data_editorの変更時）。"""
+    state = st.session_state.get(ekey) or {}
+    edited = {int(i): v for i, v in (state.get("edited_rows") or {}).items()}
+    added = state.get("added_rows") or []
+    watch = {_P_EXCL, _P_INCL, "税率"}
+    if not any(watch & set(c) for c in list(edited.values()) + list(added)):
+        return      # 内容・数量だけの変更では作り直さない（入力中の位置がずれないように）
+    rows = st.session_state[base_key].to_dict("records")
+    for i, changed in edited.items():
+        rows[i].update(changed)
+        if watch & set(changed):
+            _sync_item_row(rows[i], changed)
+    gone = {int(i) for i in state.get("deleted_rows") or []}
+    rows = [r for i, r in enumerate(rows) if i not in gone]
+    for changed in added:
+        row = {"内容": None, "数量": None, "単位": None, _P_EXCL: None, _P_INCL: None,
+               "税率": _QUOTE_RATES[0], "1単位のkg": None, "_excl": False}
+        row.update({k: v for k, v in changed.items() if k in row})
+        _sync_item_row(row, changed)
+        rows.append(row)
+    st.session_state[base_key] = _items_frame(rows, list(st.session_state[base_key].columns))
+    st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+
+
 def _invoice_items_editor(key: str, init: list[dict]) -> list[dict]:
     """請求書・納品書の複数商品の明細表。入力した行を明細リストにして返し、合計も見せる。
 
-    単価は税込。税率は8%（お米）／10%（送料・資材など）を行ごとに選べる。
+    単価は税抜・税込のどちらに入れてもよく、もう片方は自動で入る。税率は8%（お米）／
+    10%（送料・資材など）を行ごとに選べる。
     「1単位のkg」は在庫の出庫量と納品書の合計kgに使う（単位がkgの行は空欄でよい）。
     """
-    df = pd.DataFrame([{
-        "内容": i.get("name", ""), "数量": i.get("qty"), "単位": i.get("unit", ""),
-        "単価（税込）": int(i.get("price") or 0),
-        "税率": _QUOTE_RATES[0 if int(i.get("rate") or 8) == 8 else 1],
-        "1単位のkg": (i.get("kg") or None),
-    } for i in init])
+    base_key, sig_key, ver_key = f"inv_base_{key}", f"inv_sig_{key}", f"inv_ver_{key}"
+    sig = repr(init)
+    if st.session_state.get(sig_key) != sig or base_key not in st.session_state:
+        rows = []
+        for i in init:
+            rate = 8 if int(i.get("rate") or 8) == 8 else 10
+            by_excl = bool(i.get("price_excl"))
+            incl = int(i.get("price") or 0)
+            excl = int(i["price_excl"]) if by_excl else _to_excl(incl, rate)
+            rows.append({"内容": i.get("name", ""), "数量": i.get("qty"), "単位": i.get("unit", ""),
+                         _P_EXCL: excl, _P_INCL: _to_incl(excl, rate) if by_excl else incl,
+                         "税率": _QUOTE_RATES[0 if rate == 8 else 1],
+                         "1単位のkg": (i.get("kg") or None), "_excl": by_excl})
+        st.session_state[base_key] = _items_frame(rows)
+        st.session_state[sig_key] = sig
+        st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+    ekey = f"inv_items_{key}_{st.session_state[ver_key]}"
     ed = st.data_editor(
-        df, num_rows="dynamic", use_container_width=True, hide_index=True, key=f"inv_items_{key}",
+        st.session_state[base_key], num_rows="dynamic", use_container_width=True, hide_index=True,
+        key=ekey, on_change=_items_price_changed, args=(base_key, ekey, ver_key),
         column_config={
-            "内容": st.column_config.TextColumn(width="large"),
-            "数量": st.column_config.NumberColumn(step=1.0, min_value=0.0),
+            "内容": st.column_config.TextColumn(width="medium"),
+            "数量": st.column_config.NumberColumn(width="small", step=1.0, min_value=0.0),
             "単位": st.column_config.TextColumn(width="small", help="例：kg／個／袋／式"),
-            "単価（税込）": st.column_config.NumberColumn(format="%d", step=100, min_value=0),
-            "税率": st.column_config.SelectboxColumn(options=_QUOTE_RATES, width="medium"),
+            _P_EXCL: st.column_config.NumberColumn(width="small", format="%d", step=1, min_value=0,
+                                                   help="ここに入れると税込が自動で入ります"),
+            _P_INCL: st.column_config.NumberColumn(width="small", format="%d", step=1, min_value=0,
+                                                   help="ここに入れると税抜が自動で入ります"),
+            "税率": st.column_config.SelectboxColumn(options=_QUOTE_RATES, width="small"),
             "1単位のkg": st.column_config.NumberColumn(
                 step=1.0, min_value=0.0, help="例：5kg袋なら5。単位がkgの行は空欄でOK"),
+            "_excl": None,
         })
     items = []
     for _, r in ed.iterrows():
         name = "" if pd.isna(r["内容"]) else str(r["内容"]).strip()
         if not name:
             continue
-        items.append({
+        item = {
             "name": name,
             "qty": 0.0 if pd.isna(r["数量"]) else float(r["数量"]),
             "unit": "" if pd.isna(r["単位"]) else str(r["単位"]).strip(),
-            "price": 0.0 if pd.isna(r["単価（税込）"]) else float(r["単価（税込）"]),
-            "rate": 8 if pd.isna(r["税率"]) else int(str(r["税率"]).split("%")[0]),
+            "price": 0.0 if pd.isna(r[_P_INCL]) else float(r[_P_INCL]),
+            "rate": _row_rate(r["税率"]),
             "kg": 0.0 if pd.isna(r["1単位のkg"]) else float(r["1単位のkg"]),
-        })
+        }
+        if r["_excl"] == True and not pd.isna(r[_P_EXCL]):  # noqa: E712
+            item["price_excl"] = float(r[_P_EXCL])
+        items.append(item)
     calc = invoice_pdf.item_calc(items)
     if calc["rows"]:
         k1, k2, k3, k4 = st.columns(4)
@@ -1956,6 +2036,50 @@ def _invoice_items_editor(key: str, init: list[dict]) -> list[dict]:
     else:
         st.caption("品目を入力してください（内容と、0より大きい数量が必要です）。")
     return items
+
+
+def _price_pair(box_excl, box_incl, key: str, unit_kg: float, incl0: int,
+                excl0: int | None = None) -> tuple[int, int | None]:
+    """単価の入力欄（税抜・税込）。どちらに入れても、もう片方が自動で入る。
+
+    returns (税込単価, 税抜で入力した場合の税抜単価／税込で入力した場合は None)
+    """
+    ek, ik, mk, sk = f"{key}_excl", f"{key}_incl", f"{key}_mode", f"{key}_sig"
+    rate = round(billing.TAX_RATE * 100)
+    sig = (incl0, excl0)
+    if st.session_state.get(sk) != sig or ek not in st.session_state or ik not in st.session_state:
+        st.session_state[ek] = int(excl0) if excl0 else _to_excl(incl0, rate)
+        st.session_state[ik] = _to_incl(int(excl0), rate) if excl0 else int(incl0)
+        st.session_state[mk] = "excl" if excl0 else "incl"
+        st.session_state[sk] = sig
+
+    def _from_excl():
+        st.session_state[ik] = _to_incl(st.session_state[ek], rate)
+        st.session_state[mk] = "excl"
+
+    def _from_incl():
+        st.session_state[ek] = _to_excl(st.session_state[ik], rate)
+        st.session_state[mk] = "incl"
+
+    box_excl.number_input(f"単価（{unit_kg:g}kgあたり・税抜）", min_value=0, step=100, key=ek,
+                          on_change=_from_excl)
+    box_incl.number_input(f"単価（{unit_kg:g}kgあたり・税込／送料込）", min_value=0, step=100, key=ik,
+                          on_change=_from_incl)
+    excl = int(st.session_state[ek]) if st.session_state[mk] == "excl" else None
+    return int(st.session_state[ik]), excl
+
+
+def _line_total(count: float, incl: int, excl: int | None) -> int:
+    """1品目の請求額（税込）。税抜で入力した場合は、税抜金額に消費税を掛けて出す。"""
+    if excl:
+        return _to_incl(round(excl * count), round(billing.TAX_RATE * 100))
+    return round(count * incl)
+
+
+def _tax_split_caption(amount: int, count: float, incl: int, excl: int | None) -> None:
+    rate = round(billing.TAX_RATE * 100)
+    base = round((excl if excl else _to_excl(incl, rate)) * count)
+    st.caption(f"内訳：税抜 ¥{base:,} ＋ 消費税({rate}%) ¥{amount - base:,} ＝ 税込 ¥{amount:,}")
 
 
 def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
@@ -1973,7 +2097,8 @@ def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
             client = billing.get_client(p["client_id"]) or {}
             ukg = float(p.get("unit_kg") or billing.UNIT_KG)
             init = [{"name": client.get("item_desc", ""), "qty": float(p.get("qty") or 0), "unit": "個",
-                     "price": float(p.get("unit_price") or 0), "rate": 8, "kg": ukg}]
+                     "price": float(p.get("unit_price") or 0), "price_excl": p.get("unit_price_excl"),
+                     "rate": 8, "kg": ukg}]
         items = _invoice_items_editor(f"regen_{key}", init)
         if allow_sent:
             st.caption("書類番号はそのまま。システム上の記録もPCのファイルも同じものを更新します"
@@ -1995,25 +2120,28 @@ def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
             _run_bg(f"{p['client_name']}の請求書を{'再発行' if allow_sent else '作り直し'}", _regen_m,
                     lock_name="billing")
         return
-    e0, e1, e2 = st.columns(3)
+    e0, e1 = st.columns(2)
     e_unit_kg = e0.number_input("単位（kg）", min_value=0.1, step=1.0,
                                 value=float(p.get("unit_kg") or billing.UNIT_KG),
                                 key=f"eunitkg_{key}",
                                 help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
     ekg = e1.number_input("数量（kg）", min_value=0.0, step=e_unit_kg,
                           value=float(p["total_kg"]), key=f"ekg_{key}")
-    eprice = e2.number_input(f"単価（{e_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
-                             value=int(p.get("unit_price", 4000)),
-                             step=100, key=f"eprice_{key}")
-    ecalc = round(ekg / e_unit_kg * eprice) if ekg > 0 else 0
+    e2, e3 = st.columns(2)
+    prev_incl = int(p.get("unit_price") or 4000)
+    prev_excl = p.get("unit_price_excl")
+    eprice, eprice_excl = _price_pair(e2, e3, f"eprice_{key}", e_unit_kg, prev_incl, prev_excl)
+    ecalc = _line_total(ekg / e_unit_kg, eprice, eprice_excl) if ekg > 0 else 0
     # 数量・単価をまだ変えていなければ、前回の請求額（端数調整済みならその金額）を初期値にする
-    same = ecalc == round(float(p["total_kg"]) / float(p.get("unit_kg") or billing.UNIT_KG)
-                          * int(p.get("unit_price", 4000)))
+    same = ecalc == _line_total(float(p["total_kg"]) / float(p.get("unit_kg") or billing.UNIT_KG),
+                                prev_incl, prev_excl)
     eamount = st.number_input(
         "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
         value=int(p["amount"]) if same else ecalc,
-        step=1, key=f"eamount_{key}",
+        step=1, key=f"eamount_{key}_{ecalc}",
         help="通常は数量×単価の自動計算のままで構いません。")
+    if ekg > 0:
+        _tax_split_caption(int(eamount), ekg / e_unit_kg, eprice, eprice_excl)
     if ekg > 0 and eamount != ecalc:
         st.caption(f"自動計算では ¥{ecalc:,} ですが、¥{eamount:,} で作り直します。")
     if allow_sent:
@@ -2024,10 +2152,10 @@ def _regen_form(key: str, p: dict, allow_sent: bool = False) -> None:
     if st.button("この内容で再発行する" if allow_sent else "この内容で作り直す", key=f"regen_{key}",
                  use_container_width=True, disabled=ekg <= 0):
         def _regen(key=key, p=dict(p), qty=ekg / e_unit_kg, price=eprice, edate=edate,
-                   unit_kg=e_unit_kg, amount=eamount, allow_sent=allow_sent):
+                   unit_kg=e_unit_kg, amount=eamount, allow_sent=allow_sent, excl=eprice_excl):
             r = billing.regenerate_pending(key, qty, price, issue_date=edate,
                                            unit_kg=unit_kg, amount_override=amount,
-                                           allow_sent=allow_sent)
+                                           allow_sent=allow_sent, unit_price_excl=excl)
             if not r.get("ok"):
                 return False, r.get("msg", "作り直せませんでした。")
             client = billing.get_client(p["client_id"]) or {}
@@ -2310,7 +2438,7 @@ def _billing_issue() -> None:
                     _set_bill_focus(mcid)
                     _run_bg("請求書の作成", _create_m, lock_name="billing")
             else:
-                m3, m4, m5 = st.columns(3)
+                m3, m4 = st.columns(2)
                 # 前回が1品目なら、単位・数量・単価をそのまま初期値にする
                 p_single = prev if (prev and not prev_multi) else None
                 p_ukg = float(p_single.get("unit_kg") or billing.UNIT_KG) if p_single else \
@@ -2324,22 +2452,25 @@ def _billing_issue() -> None:
                                               help="大口向けに30kg・60kgなど5kg以外の単位でも計算できます")
                 mkg = m4.number_input("数量（kg）", min_value=0.0, step=man_unit_kg, value=p_kg,
                                       key=f"man_kg_{mcid}", help="上の単位あたりの単価で請求額を計算します")
-                mprice = m5.number_input(f"単価（{man_unit_kg:g}kgあたり・税込／送料込）", min_value=0,
-                                         value=p_price,
-                                         step=100, key=f"man_price_{mcid}")
-                man_calc = round(mkg / man_unit_kg * mprice) if mkg > 0 else 0
+                m5, m6 = st.columns(2)
+                mprice, mprice_excl = _price_pair(
+                    m5, m6, f"man_price_{mcid}", man_unit_kg, p_price,
+                    p_single.get("unit_price_excl") if p_single else None)
+                man_calc = _line_total(mkg / man_unit_kg, mprice, mprice_excl) if mkg > 0 else 0
                 man_amount = st.number_input(
                     "ご請求額（税込・端数調整したい場合はここで直接変更）", min_value=0,
                     value=man_calc, step=1, key=f"man_amount_{mcid}_{man_calc}",
                     help="通常は数量×単価の自動計算のままで構いません。")
+                if mkg > 0:
+                    _tax_split_caption(int(man_amount), mkg / man_unit_kg, mprice, mprice_excl)
                 if mkg > 0 and man_amount != man_calc:
                     st.caption(f"自動計算では ¥{man_calc:,} ですが、¥{man_amount:,} で作成します。")
                 if st.button("作成する", type="primary", use_container_width=True,
                             disabled=mkg <= 0, key="man_create"):
                     def _create(mcid=mcid, mdate=mdate, qty=mkg / man_unit_kg, price=mprice,
-                                unit_kg=man_unit_kg, amount=man_amount):
+                                unit_kg=man_unit_kg, amount=man_amount, excl=mprice_excl):
                         r = billing.prepare_manual(mcid, mdate, qty, price, unit_kg=unit_kg,
-                                                   amount_override=amount)
+                                                   amount_override=amount, unit_price_excl=excl)
                         if not r.get("ok"):
                             return False, r.get("msg", "作成できませんでした。")
                         return True, f"請求書を作成しました（¥{r['amount']:,}）。「未確定」から内容を確認して確定してください。"

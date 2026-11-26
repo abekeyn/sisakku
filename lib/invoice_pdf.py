@@ -49,27 +49,44 @@ def clean_items(items) -> list[dict]:
         except (TypeError, ValueError):
             price = 0.0
         rate = int(it.get("rate") or 8)
-        out.append({"name": name, "qty": qty, "unit": unit, "price": price,
-                    "rate": rate if rate in RATES else 8, "kg": max(kg, 0.0)})
+        rate = rate if rate in RATES else 8
+        row = {"name": name, "qty": qty, "unit": unit, "price": price, "rate": rate, "kg": max(kg, 0.0)}
+        try:
+            price_excl = float(it.get("price_excl") or 0)
+        except (TypeError, ValueError):
+            price_excl = 0.0
+        if price_excl > 0:      # 税抜で入力された行。税込単価は税抜から出し直して揃える
+            row["price_excl"] = price_excl
+            row["price"] = float(round(price_excl * (100 + rate) / 100))
+        out.append(row)
     return out
 
 
 def item_calc(items) -> dict:
-    """明細の各行と、税率別・全体の金額（税込の単価×数量を税込金額とする）。
+    """明細の各行と、税率別・全体の金額。
 
-    丸め方は1行請求書・見積書と同じ：税込金額＝round(税込単価×数量)、
-    税抜金額＝round(税抜単価×数量)。税率別の消費税＝税込小計−税抜小計。
+    税込で入力した行：税込金額＝round(税込単価×数量)、税抜金額＝round(税抜単価×数量)。
+    税抜で入力した行（price_excl）：税抜金額＝round(税抜単価×数量)を税率ごとに合計してから、
+    消費税を1回だけ端数処理する（インボイスの決まり：1請求書・税率ごとに1回）。
+    税率別の消費税＝税込小計−税抜小計。
     """
     rows, by_rate = [], {}
     for it in clean_items(items):
-        unit_excl = round(it["price"] / (1 + it["rate"] / 100))
-        line_excl = round(unit_excl * it["qty"])
-        line_incl = round(it["price"] * it["qty"])
-        rows.append({**it, "unit_excl": unit_excl, "line_excl": line_excl, "line_incl": line_incl})
-        g = by_rate.setdefault(it["rate"], {"excl": 0, "incl": 0})
+        g = by_rate.setdefault(it["rate"], {"excl": 0, "incl": 0, "from_excl": 0})
+        if it.get("price_excl"):
+            unit_excl = round(it["price_excl"])
+            line_excl = round(it["price_excl"] * it["qty"])
+            line_incl = round(line_excl * (100 + it["rate"]) / 100)
+            g["from_excl"] += line_excl
+        else:
+            unit_excl = round(it["price"] / (1 + it["rate"] / 100))
+            line_excl = round(unit_excl * it["qty"])
+            line_incl = round(it["price"] * it["qty"])
+            g["incl"] += line_incl
         g["excl"] += line_excl
-        g["incl"] += line_incl
-    for g in by_rate.values():
+        rows.append({**it, "unit_excl": unit_excl, "line_excl": line_excl, "line_incl": line_incl})
+    for rate, g in by_rate.items():
+        g["incl"] += round(g.pop("from_excl") * (100 + rate) / 100)
         g["tax"] = g["incl"] - g["excl"]
     excl = sum(g["excl"] for g in by_rate.values())
     total = sum(g["incl"] for g in by_rate.values())
