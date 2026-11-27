@@ -149,12 +149,15 @@ def _pdf_preview(b64: str, height: int = 480) -> None:
     pages = _pdf_pages_png_b64(b64)
     # 画像はページに直接埋め込む（st.image だと、Streamlitのメディア配信が途切れたときに
     # 「壊れた画像」になることがあった）。
-    # 縦横比を先に指定する（aspect-ratio＋width/height属性）。指定が無いと、画像を読み込むまで
-    # 高さ0で、あとから伸びる。そのとき画面の外枠の高さが追いつかず、スクロールバーは下まで
-    # 行っているのに、プレビューの途中までしか見えない（下に進めない）状態になった。
+    # 画像を入れる前に、ページごとの枠の高さを画面幅だけから決めて確保する。高さが画像の
+    # 読み込み次第だと、画面の外枠の計算が追いつかず、スクロールバーは下まで行っているのに
+    # プレビューの途中で止まる（下に進めない）ことがあった。幅いっぱいに引き伸ばすと1ページで
+    # 画面2枚分になるので、縦長は幅620px（横長は880px）までに抑えて、中央に置く。
     st.html("".join(
-        f'<img src="data:image/png;base64,{p}" width="{w}" height="{h}" alt="PDFプレビュー {i}ページ目" '
-        f'style="width:100%;height:auto;aspect-ratio:{w}/{h};display:block;margin:6px 0;border-radius:6px"/>'
+        f'<div style="height:calc(min({620 if h >= w else 880}px, 100vw - 64px) * {h / w:.4f});'
+        'margin:6px 0;display:flex;justify-content:center;overflow:hidden">'
+        f'<img src="data:image/png;base64,{p}" alt="PDFプレビュー {i}ページ目" '
+        'style="width:100%;height:100%;object-fit:contain;display:block"/></div>'
         for i, (p, w, h) in enumerate(pages, 1)))
 
 

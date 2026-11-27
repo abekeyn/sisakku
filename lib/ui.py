@@ -142,7 +142,9 @@ def inject_css() -> None:
 
         .block-container, [data-testid="stMainBlockContainer"] {{
             padding-top: 2.6rem !important;
-            padding-bottom: 4rem !important;
+            /* 一番下に余白を確保する。左下の通知欄や右下のクラウドのボタンに隠れる分、
+               画面の下端が少し切れる分があっても、最後の部品まで上へ送れるようにする */
+            padding-bottom: 14rem !important;
             max-width: 1400px;
         }}
 
@@ -403,7 +405,8 @@ def inject_css() -> None:
 
         /* スマホ最適化 */
         @media (max-width: 640px) {{
-            .block-container {{ padding: 2.7rem .6rem 4rem !important; }}
+            /* スマホは通知欄が画面の下半分近くを覆うことがあるので、下の余白を大きめに取る */
+            .block-container {{ padding: 2.7rem .6rem 45vh !important; }}
             .stButton > button, .stDownloadButton > button {{ width:100%; padding:.68rem; font-size:.95rem; }}
             [data-testid="stMetricValue"] {{ font-size:1.45rem; }}
             [data-testid="stMetricLabel"] p {{ font-size:.76rem; }}
@@ -615,6 +618,7 @@ def _login_css() -> str:
         .block-container, [data-testid="stMainBlockContainer"] {
             max-width: 440px !important;
             padding-top: 7vh !important;
+            padding-bottom: 2rem !important;
         }
         /* ロゴの背後だけにそっと置く、にじむ金の光 */
         .login-aura {
