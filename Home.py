@@ -2205,6 +2205,7 @@ def _render_pending_card(key: str, p: dict) -> None:
         st.download_button("📄 請求書PDFを開く / 保存", pdf, file_name=p["pdf_name"],
                            mime="application/pdf", key=f"dl_{key}",
                            use_container_width=True)
+        _print_pdf_button(pdf, f"i_{key}")
         _pdf_preview(p["pdf_b64"])
 
         with st.expander("📦 納品書を作る（請求書と同じ内容）"):
