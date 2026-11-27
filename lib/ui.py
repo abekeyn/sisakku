@@ -21,6 +21,14 @@ from . import config
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _table_rows(data):
+    """表の行数。数えられない形（列ごとの辞書など）は None。"""
+    data = getattr(data, "data", data)          # Styler は中の DataFrame を数える
+    if isinstance(data, list) or hasattr(data, "iloc"):
+        return len(data)
+    return None
+
+
 def _fit_tables() -> None:
     """表（st.dataframe / st.data_editor）を、内側でスクロールさせず内容の高さに広げる。
 
@@ -30,24 +38,29 @@ def _fit_tables() -> None:
     「下までスクロールできない」状態になる。高さを内容に合わせれば、表の中に隠れる行も
     なく、スクロールは必ずページに届く。高さを指定している呼び出しも、行数が少なければ
     （80行まで）同じように広げる。
+
+    行数が分かる表は、高さをpxの数字で渡して**表示の前に場所を確保する**。"content" だと、表の
+    部品が読み込まれるまで高さ0で、あとから数百px伸びる。そのときページの長さの計算が追いつかず、
+    スクロールバーは下まで行っているのに、下が切れて進めないことがあった。
+    行を足せる表（num_rows="dynamic" など）は、足した行の分だけ伸びる必要があるので "content" のまま。
     """
     for name in ("dataframe", "data_editor"):
-        orig = getattr(st, name)
-        if getattr(orig, "_abe_fit", False):
-            continue
+        cur = getattr(st, name)
+        # すでに包んであれば中身を取り出して包み直す（クラウドは更新後もプロセスが生き続けるので、
+        # 「包み済みなら何もしない」だと、直した内容が再起動まで効かない）
+        orig = (getattr(cur, "__kwdefaults__", None) or {}).get("__orig", cur)
 
         def wrapper(*args, __orig=orig, **kw):
             h = kw.get("height")
             data = args[0] if args else kw.get("data")
-            try:
-                n = len(data)
-            except Exception:  # noqa: BLE001  Styler など、行数が取れないものは小さいとみなす
-                n = 0
-            if h is None or (isinstance(h, (int, float)) and n <= 80):
-                kw["height"] = "content"
+            rows = _table_rows(data)
+            if h is None or h == "content" or (isinstance(h, (int, float)) and (rows or 0) <= 80):
+                if rows and kw.get("num_rows", "fixed") == "fixed" and not kw.get("row_height"):
+                    kw["height"] = (rows + 1) * 35 + 3     # 見出し＋行（1行35px）＋枠線
+                else:
+                    kw["height"] = "content"
             return __orig(*args, **kw)
 
-        wrapper._abe_fit = True
         setattr(st, name, wrapper)
 
 
