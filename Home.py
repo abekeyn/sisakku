@@ -2303,6 +2303,9 @@ def _monthly_bulk_panel() -> None:
         return int(round(kg / u * pr)) if kg > 0 else 0
 
     def _state(r):
+        if r["monthly"]:
+            return "月分は作成済み（" + "・".join(f'{ex_label.get(e["status"], e["status"])}¥{int(e["amount"] or 0):,}'
+                                           for e in r["monthly"]) + "）"
         if r["existing"]:
             return "作成済み（" + "・".join(f'{ex_label.get(e["status"], e["status"])}¥{int(e["amount"] or 0):,}'
                                           for e in r["existing"]) + "）"
@@ -2326,9 +2329,11 @@ def _monthly_bulk_panel() -> None:
         "_kg0": round(r["total_kg"], 2), "_auto0": _auto(r["total_kg"], r),
     } for r in rows])
     df = df.sort_values(["作成", "出荷件数"], ascending=[False, False]).reset_index(drop=True)
+    # 請求書が増減したら表とチェックを作り直す（前に付けたチェックが残って、もう一度作らないように）
+    made_sig = sum(len(r["existing"]) for r in rows)
     ed = st.data_editor(
         df, hide_index=True, use_container_width=True,
-        key=f"mb_tbl_{ym}_{mode}_{bulk_unit}_{bulk_price}",
+        key=f"mb_tbl_{ym}_{mode}_{bulk_unit}_{bulk_price}_{made_sig}",
         disabled=["請求先", "出荷件数", "状態", "注意"],
         column_config={
             "id": None, "_kg0": None, "_auto0": None,
@@ -2339,13 +2344,16 @@ def _monthly_bulk_panel() -> None:
         })
 
     # 手修正の反映：数量を直したら金額を自動で再計算、金額を直接直したらその金額で作る
-    picked = []
+    picked, blocked = [], []
     for _, r in ed.iterrows():
         if not r["作成"]:
             continue
         kg = float(r["数量kg"] or 0)
         amt = int(r["金額"] or 0)
         base = orig[r["id"]]
+        if base["monthly"]:      # 同じ月の分は1通だけ（2回作ると請求も合計も倍になる）
+            blocked.append(r["請求先"])
+            continue
         if abs(kg - float(r["_kg0"])) > 1e-9 and amt == int(r["_auto0"]):
             amt = _auto(kg, base)
         picked.append({"id": r["id"], "name": r["請求先"], "kg": kg, "amount": amt})
@@ -2357,8 +2365,11 @@ def _monthly_bulk_panel() -> None:
          "出荷件数・数量は、その月に**出荷確定した**出荷から出しています。金額は請求先マスタの単価で自動計算します。")
         + "金額を直接書き換えると、その金額で作成します。作成済み・出荷のない請求先は、チェックを外してあります。"
           "作った請求書は「未確定」に入るので、内容を確認してから確定できます。")
+    if blocked:
+        st.warning(f"{'、'.join(blocked)}は{int(ym[5:])}月分を作成済みのため、チェックしても作りません"
+                   "（二重作成の防止）。直すときは、下の一覧でその請求書を開いて作り直してください。")
     confirm_now = st.checkbox("作成したら、そのまま確定する（メール宛先のある請求先には、その場で送信されます）",
-                              key=f"mb_confirm_{ym}")
+                              key=f"mb_confirm_{ym}_{made_sig}")
     if confirm_now and picked:
         by_id = {c["id"]: c for c in billing.get_clients()}
         n_mail = sum(1 for x in picked if "@" in (by_id.get(x["id"], {}).get("email") or ""))

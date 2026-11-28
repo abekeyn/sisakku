@@ -155,6 +155,24 @@ def _summarize_shipments(raw: list[dict], client: dict, unit_kg: float = UNIT_KG
             "amount": int(round(qty * price)), "source": source, "warning": warning}
 
 
+def monthly_invoices(client_id: str, ym: str, allp: dict | None = None) -> list[dict]:
+    """その請求先の ym の「月分の請求書」（まとめて作成・月末の自動作成）。未確定・確定済みの両方。
+
+    1か月につき1通だけにするための判定に使う（2回作ると請求も合計も倍になるため）。
+    納品のたびに手入力した請求書は含めない。
+    """
+    allp = get_pendings() if allp is None else allp
+    return [p for p in allp.values()
+            if p.get("client_id") == client_id and p.get("target_ym") == ym
+            and (p.get("monthly") or p.get("source") in ("yamato", "seed"))]
+
+
+def _already_msg(ym: str, done: list[dict]) -> str:
+    nos = "・".join(str(p.get("doc_number")) for p in done)
+    return (f"{int(ym[5:])}月分の請求書は作成済みです（書類番号{nos}）。二重には作りません。"
+            "直すときは、その請求書の「修正して作り直す／再発行」を使ってください")
+
+
 def month_summary(ym: str) -> list[dict]:
     """全請求先の ym（'YYYY-MM'）の出荷集計と、その月の請求書の有無（一括作成の確認表用）。
 
@@ -206,6 +224,8 @@ def month_summary(ym: str) -> list[dict]:
             "amount": int(round(qty * price)), "warning": warning, "rows": sm["rows"],
             "existing": [{"status": p.get("status"), "amount": p.get("amount"), "issue_date": p.get("issue_date")}
                          for p in ex],
+            "monthly": [{"status": p.get("status"), "amount": p.get("amount"), "doc_number": p.get("doc_number")}
+                        for p in monthly_invoices(c["id"], ym, {str(i): p for i, p in enumerate(ex)})],
             "shared_customer": bool(c.get("customer_id")) and shared.get(c["customer_id"], 0) > 1,
         })
     return out
@@ -224,6 +244,9 @@ def prepare_month(client_id: str, ym: str, issue_date: date, total_kg: float | N
     client = get_client(client_id)
     if not client:
         return {"ok": False, "msg": "請求先マスタが見つかりません"}
+    done = monthly_invoices(client_id, ym)      # 画面の表が古くても、ここで必ず止める
+    if done:
+        return {"ok": False, "msg": _already_msg(ym, done)}
     row = next((r for r in month_summary(ym) if r["client_id"] == client_id), None)
     kg = float(total_kg) if total_kg is not None else (row["total_kg"] if row else 0.0)
     if not row or (row["count"] <= 0 and total_kg is None) or kg <= 0:
@@ -300,6 +323,11 @@ def prepare_client(client: dict, target_ym: str, soffice: str = "soffice",
                    workdir: str | Path = ".") -> dict:
     """1請求先の当月分を作成し承認待ちに登録。返り値はpendingの要約。"""
     y, m = int(target_ym[:4]), int(target_ym[5:7])
+    done = monthly_invoices(client["id"], target_ym)
+    if done:    # 先に手動でまとめて作ってあれば、自動作成では作らない（番号も払い出さない）
+        return {"client_id": client["id"], "status": "already", "name": client["name"],
+                "amount": done[0].get("amount") or 0,
+                "unconfirmed": any(p.get("status") != "sent" for p in done)}
     s = month_shipments(client, target_ym)
     if s["count"] == 0 or s["qty"] <= 0:
         return {"client_id": client["id"], "status": "no_shipments",
@@ -527,12 +555,19 @@ def prepare_all(target_ym: str | None = None, soffice: str = "soffice",
     if target_ym is None:
         target_ym = datetime.now().strftime("%Y-%m")
     m = int(target_ym[5:7])
-    prepared, skipped = [], []
+    prepared, skipped, already = [], [], []
     for c in get_clients():
         if not c.get("active", True):
             continue
         r = prepare_client(c, target_ym, soffice=soffice, workdir=workdir)
-        (prepared if r["status"] == "prepared" else skipped).append(r)
+        {"prepared": prepared, "already": already}.get(r["status"], skipped).append(r)
+    waiting = [a for a in already if a["unconfirmed"]]
+    if waiting:
+        _ntfy("Invoice: CHECK DRAFT",
+              f"📝 {m}月分は作成済みの未確定の請求書があるため、新しく作りませんでした。"
+              "金額を確認してください。\n"
+              + "\n".join(f"・{a['name']} ¥{a['amount']:,}" for a in waiting),
+              priority="high", tags="warning")
 
     app_url = config.get_secret("APP_URL", "")
     click = f"{app_url.rstrip('/')}/?tab=billing" if app_url else ""
